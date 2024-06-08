@@ -1,0 +1,12 @@
+1 - Set Up Development Environment: status not started
+    Install Golang, HTMX, Godot, PostgreSQL with pgvector, and necessary AI libraries.
+2 - Build Backend Infrastructure: status  not started
+    Implement a Golang backend server for data processing and handling requests.
+    Integrate OLLAMA server for AI model inference.
+    We will want to create a job queue in our golang program so that whenever an agent is called we push the job to server queue
+3 - Develop Sentry Mode:status started
+    Implement data collection (audio snippets, screenshots) and context analysis.
+    Create dynamic web interface using HTMX for real-time updates.
+
+
+
