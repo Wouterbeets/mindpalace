@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -43,6 +44,7 @@ func (c *Client) Prompt(promptText string) *Response {
 		Model:  c.Model,
 		Prompt: promptText,
 	}
+	fmt.Println("requestData.promptText", requestData.Prompt)
 
 	requestBody, err := json.Marshal(requestData)
 	if err != nil {
@@ -88,4 +90,3 @@ func (r *Response) ReadNext() (string, bool, error) {
 
 	return response.Response, response.Done, nil
 }
-
