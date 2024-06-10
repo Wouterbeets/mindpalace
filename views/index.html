@@ -8,14 +8,20 @@
     </head>
     <body>
         <h2>Chat Window</h2>
+        <div id="chat">
+        {{ template "chat" . }}
+        </div>
+    </body>
+</html>
+{{ end }}
+
+{{ block "chat" . }}
         <div id="chatbox">
             {{ .Request }}
             {{ .Response }}
             <!-- Chat messages go here -->
         </div>
-        <form id="chatForm">
-            <input type="text" id="chatinput" hx-post="/send" hx-target="body"></input>
+        <form hx-post="/send">
+            <input type="text" name="chatinput"></input>
         </form>
-    </body>
-</html>
 {{ end }}

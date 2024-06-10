@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"io"
 	"mindpalace/adapter/llmclient"
+	"mindpalace/usecase/chat"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -29,7 +30,7 @@ type LLMResponse struct {
 	Response string
 }
 
-func runInference(input string) LLMResponse {
+func runInference(input []llmclient.Message) LLMResponse {
 	client := llmclient.NewClient("http://localhost:11434/api/generate", "llama3")
 	fmt.Println("called run inference")
 	var out string
@@ -49,11 +50,26 @@ func main() {
 		fmt.Println("in index")
 		return c.Render(http.StatusOK, "index", nil)
 	})
-
+	convo := chat.NewConversation()
+	
 	e.POST("/send", func(c echo.Context) error {
 		userMessage := c.FormValue("chatinput")
-		aiResponse := runInference(userMessage)
-		return c.Render(http.StatusOK, "index", aiResponse)
+
+        	var conversation []llmclient.Message
+		convo.AddUserQuery(userMessage)
+
+		for _, m := range convo.History {
+                        role := "user"
+        		if message.Sender != "user" {
+        			role = "assistant"
+        		}
+        		conversation = append(conversation, llmclient.Message{
+        			Role:    role,
+        			Content: message.Content,
+        		})
+		}
+		aiResponse := runInference(conversation)
+		return c.Render(http.StatusOK, "chat", aiResponse)
 	})
 
 	fmt.Println("Server started at :8080")

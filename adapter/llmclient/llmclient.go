@@ -10,10 +10,16 @@ import (
 	"net/http"
 )
 
+// Message represents a single message in the conversation.
+type Message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 // Request is a struct for encoding the JSON request body.
 type Request struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
+	Model    string    `json:"model"`
+	Messages []Message `json:"messages"`
 }
 
 // Response represents a stream of responses from the LLM.
@@ -38,13 +44,12 @@ func NewClient(endpoint, model string) *Client {
 	}
 }
 
-// Prompt sends a prompt to the LLM and returns a Response.
-func (c *Client) Prompt(promptText string) *Response {
+// Prompt sends a conversation history to the LLM and returns a Response.
+func (c *Client) Prompt(conversation []Message) *Response {
 	requestData := Request{
-		Model:  c.Model,
-		Prompt: promptText,
+		Model:    c.Model,
+		Messages: conversation,
 	}
-	fmt.Println("requestData.promptText", requestData.Prompt)
 
 	requestBody, err := json.Marshal(requestData)
 	if err != nil {
@@ -90,3 +95,4 @@ func (r *Response) ReadNext() (string, bool, error) {
 
 	return response.Response, response.Done, nil
 }
+
