@@ -1,0 +1,21 @@
+{{ block "index" . }}
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <title>MindPalace</title>
+        <script src="https://unpkg.com/htmx.org/dist/htmx.min.js"></script>
+        <script>htmx.logAll();</script>
+    </head>
+    <body>
+        <h2>Chat Window</h2>
+        <div id="chatbox">
+            {{ .Request }}
+            {{ .Response }}
+            <!-- Chat messages go here -->
+        </div>
+        <form id="chatForm">
+            <input type="text" id="chatinput" hx-post="/send" hx-target="body"></input>
+        </form>
+    </body>
+</html>
+{{ end }}
