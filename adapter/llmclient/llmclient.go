@@ -55,6 +55,7 @@ func (c *Client) Prompt(conversation []Message) *Response {
 	if err != nil {
 		log.Fatalf("Failed to marshal request data: %v", err)
 	}
+	fmt.Println("prompt", string(requestBody))
 
 	req, err := http.NewRequest("POST", c.Endpoint, bytes.NewBuffer(requestBody))
 	if err != nil {
@@ -95,4 +96,3 @@ func (r *Response) ReadNext() (string, bool, error) {
 
 	return response.Response, response.Done, nil
 }
-

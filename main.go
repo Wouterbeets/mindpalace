@@ -31,14 +31,16 @@ type LLMResponse struct {
 }
 
 func runInference(input []llmclient.Message) LLMResponse {
-	client := llmclient.NewClient("http://localhost:11434/api/generate", "llama3")
+	client := llmclient.NewClient("http://localhost:11434/api/chat", "llama3")
 	fmt.Println("called run inference")
 	var out string
 	response := client.Prompt(input)
 	for responseText, done, err := response.ReadNext(); !done && err == nil; responseText, done, err = response.ReadNext() {
 		out += responseText
+		fmt.Println("out", out)
 	}
-	return LLMResponse{Request: input, Response: out}
+	lastResponse := input[len(input)-1]
+	return LLMResponse{Request: lastResponse.Content, Response: out}
 }
 
 func main() {
@@ -51,22 +53,22 @@ func main() {
 		return c.Render(http.StatusOK, "index", nil)
 	})
 	convo := chat.NewConversation()
-	
+
 	e.POST("/send", func(c echo.Context) error {
 		userMessage := c.FormValue("chatinput")
 
-        	var conversation []llmclient.Message
+		var conversation []llmclient.Message
 		convo.AddUserQuery(userMessage)
 
 		for _, m := range convo.History {
-                        role := "user"
-        		if message.Sender != "user" {
-        			role = "assistant"
-        		}
-        		conversation = append(conversation, llmclient.Message{
-        			Role:    role,
-        			Content: message.Content,
-        		})
+			role := "user"
+			if m.Sender != "user" {
+				role = "assistant"
+			}
+			conversation = append(conversation, llmclient.Message{
+				Role:    role,
+				Content: m.Content,
+			})
 		}
 		aiResponse := runInference(conversation)
 		return c.Render(http.StatusOK, "chat", aiResponse)
