@@ -5,7 +5,7 @@ import (
 	"html/template"
 	"io"
 	"mindpalace/adapter/llmclient"
-	"mindpalace/usecase/chat"
+	"mindpalace/usecase/agents"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -51,26 +51,19 @@ func main() {
 		fmt.Println("in index")
 		return c.Render(http.StatusOK, "index", nil)
 	})
-	convo := chat.NewConversation()
+	activeMode := agents.NewAgent(
+		"activeMode",
+		"You're a helpful assistant in the project mindpalace in active mode, help the user as best you can. Delegate work to async agents processing by calling an agent with @agentname: task",
+		"llama3",
+	)
 
 	e.POST("/send", func(c echo.Context) error {
 		userMessage := c.FormValue("chatinput")
-
-		var conversation []llmclient.Message
-		convo.AddUserQuery(userMessage)
-
-		for _, m := range convo.History {
-			role := "user"
-			if m.Sender != "user" {
-				role = "assistant"
-			}
-			conversation = append(conversation, llmclient.Message{
-				Role:    role,
-				Content: m.Content,
-			})
+		resp, err := activeMode.Call(userMessage)
+		if err != nil {
+			return err
 		}
-		aiResponse := runInference(conversation)
-		return c.Render(http.StatusOK, "chat", aiResponse)
+		return c.Render(http.StatusOK, "chat", LLMResponse{Request: userMessage, Response: resp})
 	})
 
 	fmt.Println("Server started at :8080")
