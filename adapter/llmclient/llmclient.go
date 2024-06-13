@@ -86,13 +86,17 @@ func (r *Response) ReadNext() (string, bool, error) {
 		return "", false, err
 	}
 
-	var response struct {
-		Response string `json:"response"`
-		Done     bool   `json:"done"`
+	type message struct {
+    		Content string `json:"content"`
 	}
+	var response struct {
+    		Message message `json:"message"` 
+    		Done     bool   `json:"done"`
+	}
+	fmt.Println("line",string(line))
 	if err := json.Unmarshal(line, &response); err != nil {
 		return "", false, err
 	}
 
-	return response.Response, response.Done, nil
+	return response.Message.Content, response.Done, nil
 }

@@ -37,7 +37,6 @@ func runInference(input []llmclient.Message) LLMResponse {
 	response := client.Prompt(input)
 	for responseText, done, err := response.ReadNext(); !done && err == nil; responseText, done, err = response.ReadNext() {
 		out += responseText
-		fmt.Println("out", out)
 	}
 	lastResponse := input[len(input)-1]
 	return LLMResponse{Request: lastResponse.Content, Response: out}
