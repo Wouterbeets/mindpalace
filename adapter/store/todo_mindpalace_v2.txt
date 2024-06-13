@@ -1,0 +1,23 @@
+    4 - Integrate Stable Diffusion:status  not started
+        Set up Stable Diffusion to generate images based on AI tasks.
+        Implement backend logic to call Stable Diffusion and update the web interface.
+
+    5 - Build Active Mode in Godot:status  not started
+        Develop 3D visualization and interaction environment in Godot.
+        Implement real-time updates and user interaction capabilities.
+
+    6 - Create Event Loop:status  not started
+        Develop an event loop to manage AI tasks, context updates, and data storage.
+
+    7 - User Interface and Experience:status  not started
+        Design intuitive interfaces for both Sentry and Active Modes.
+        Ensure seamless transition between modes.
+
+    8 - Testing and Refinement:status  not started
+        Conduct thorough testing to ensure functionality and performance.
+        Gather user feedback and iterate on the design.
+
+    9 - Deployment and Documentation:status  not started
+        Prepare deployment scripts and documentation for end-users.
+        Provide comprehensive guides and support materials.
+
