@@ -4,8 +4,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"mindpalace/adapter/llmclient"
-	"mindpalace/usecase/agents"
+	"mindpalace/usecase/orchestrate"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -27,19 +26,7 @@ func newTemplate() *Templates {
 
 type LLMResponse struct {
 	Request  string
-	Response string
-}
-
-func runInference(input []llmclient.Message) LLMResponse {
-	client := llmclient.NewClient("http://localhost:11434/api/chat", "llama3")
-	fmt.Println("called run inference")
-	var out string
-	response := client.Prompt(input)
-	for responseText, done, err := response.ReadNext(); !done && err == nil; responseText, done, err = response.ReadNext() {
-		out += responseText
-	}
-	lastResponse := input[len(input)-1]
-	return LLMResponse{Request: lastResponse.Content, Response: out}
+	Response template.HTML
 }
 
 func main() {
@@ -51,19 +38,25 @@ func main() {
 		fmt.Println("in index")
 		return c.Render(http.StatusOK, "index", nil)
 	})
-	activeMode := agents.NewAgent(
+	o := orchestrate.NewOrchestrator()
+	o.AddAgent(
 		"activeMode",
 		"You're a helpful assistant in the project mindpalace in active mode, help the user as best you can. Delegate work to async agents processing by calling an agent with @agentname: task",
 		"llama3",
 	)
+	o.AddAgent("htmxFormater", "You're a helpful htmx formatting assistant in the project mindpalace, help the user by formatting all the text that follows as pretty and usefull as possible, your output is diecrlty displayed as a subset of an html page, so output ONLY valid html", "codestral")
 
 	e.POST("/send", func(c echo.Context) error {
 		userMessage := c.FormValue("chatinput")
-		resp, err := activeMode.Call(userMessage)
+		resp, err := o.CallAgent("activeMode", userMessage)
 		if err != nil {
 			return err
 		}
-		return c.Render(http.StatusOK, "chat", LLMResponse{Request: userMessage, Response: resp})
+		resp, err = o.CallAgent("htmxFormater", resp)
+		if err != nil {
+			return err
+		}
+		return c.Render(http.StatusOK, "chat", LLMResponse{Request: userMessage, Response: template.HTML(resp)})
 	})
 
 	fmt.Println("Server started at :8080")
