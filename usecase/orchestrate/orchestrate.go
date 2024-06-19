@@ -93,15 +93,16 @@ func (o *Orchestrator) executeChain(agent *agents.Agent, task string) (string, e
 			if err != nil {
 				return "", err
 			}
-			agent.AddSubCommandResult(agentName, subCommandOut)
 			output = subCommandOut
+			agent.AddSubCommandResult(agentName, subCommandOut)
 		}
 	}
 	if subCommandsExectued {
-		output, err = agent.Call("evaluate the results of the subcommands and integrate them results in a coherent answer")
+		finalOutput, err := agent.Call("evaluate the results of the subcommands and integrate them results in a coherent answer")
 		if err != nil {
 			return "", err
 		}
+		return finalOutput, nil
 	}
 	return output, nil
 }
