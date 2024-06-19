@@ -21,3 +21,4 @@ mindpalace
 # Go workspace file
 go.work
 go.work.sum
+.aider*

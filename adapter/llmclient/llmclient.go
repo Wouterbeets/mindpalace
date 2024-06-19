@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 )
 
@@ -45,7 +44,7 @@ func NewClient(endpoint, model string) *Client {
 }
 
 // Prompt sends a conversation history to the LLM and returns a Response.
-func (c *Client) Prompt(conversation []Message) *Response {
+func (c *Client) Prompt(conversation []Message) (*Response, error) {
 	requestData := Request{
 		Model:    c.Model,
 		Messages: conversation,
@@ -53,26 +52,25 @@ func (c *Client) Prompt(conversation []Message) *Response {
 
 	requestBody, err := json.Marshal(requestData)
 	if err != nil {
-		log.Fatalf("Failed to marshal request data: %v", err)
+		return nil, fmt.Errorf("Failed to marshal request data: %v", err)
 	}
-	fmt.Println("prompt", string(requestBody))
 
 	req, err := http.NewRequest("POST", c.Endpoint, bytes.NewBuffer(requestBody))
 	if err != nil {
-		log.Fatalf("Failed to create request: %v", err)
+		return nil, fmt.Errorf("Failed to create request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatalf("Failed to send request: %v", err)
+		return nil, fmt.Errorf("Failed to send request: %v", err)
 	}
 
 	return &Response{
 		Reader: bufio.NewReader(resp.Body),
 		stream: resp.Body,
-	}
+	}, nil
 }
 
 // ReadNext reads the next part of the response stream.

@@ -41,11 +41,11 @@ func main() {
 	o := orchestrate.NewOrchestrator()
 	o.AddAgent(
 		"activeMode",
-		"You're a helpful assistant in the project mindpalace in active mode, help the user as best you can. Delegate work to async agents processing by calling an agent with @agentname: task",
-		"llama3",
+		`You're a helpful assistant in the project mindpalace in active mode,
+		help the user as best you can. Delegate work to async agents processing by calling an agent on a newline with <agent> @agentname: content</agent>`,
+		"mixtral",
 	)
-	o.AddAgent("htmxFormater", "You're a helpful htmx formatting assistant in the project mindpalace, help the user by formatting all the text that follows as pretty and usefull as possible, your output is diecrlty displayed as a subset of an html page, so output ONLY valid html", "codestral")
-
+	o.AddAgent("htmxFormater", "You're a helpful htmx formatting assistant in the project mindpalace, help the user by formatting all the text that follows as pretty and usefull as possible, add css inline inside of the html, your output is DIRECTLY INSERTED into the html page, OUTPUT ONLY html", "codestral")
 	e.POST("/send", func(c echo.Context) error {
 		userMessage := c.FormValue("chatinput")
 		resp, err := o.CallAgent("activeMode", userMessage)
@@ -56,6 +56,7 @@ func main() {
 		if err != nil {
 			return err
 		}
+		fmt.Println("finished")
 		return c.Render(http.StatusOK, "chat", LLMResponse{Request: userMessage, Response: template.HTML(resp)})
 	})
 

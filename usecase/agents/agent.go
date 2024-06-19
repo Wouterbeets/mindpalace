@@ -1,6 +1,8 @@
 package agents
 
 import (
+	"fmt"
+	"log"
 	"mindpalace/adapter/llmclient"
 	"mindpalace/usecase/chat"
 )
@@ -25,6 +27,7 @@ func NewAgent(name, systemPrompt string, modelName string) *Agent {
 }
 
 func (a *Agent) Call(task string) (string, error) {
+	fmt.Println("in", a.Name, task)
 	a.conversation.Add("user", task)
 	var conversation []llmclient.Message
 	for _, m := range a.conversation.History {
@@ -33,14 +36,27 @@ func (a *Agent) Call(task string) (string, error) {
 			Content: m.Contribution,
 		})
 	}
-	response := a.client.Prompt(conversation)
+	response, err := a.client.Prompt(conversation)
+	if err != nil {
+		return "", err
+	}
 
 	var out string
-	var err error
 	var responseText string
 	var done bool
+	fmt.Println("starting output read", a.Name)
 	for responseText, done, err = response.ReadNext(); !done && err == nil; responseText, done, err = response.ReadNext() {
 		out += responseText
+		fmt.Printf("%s", responseText)
 	}
+	if err != nil {
+		log.Println(err)
+		return "", err
+	}
+	a.conversation.Add(a.Name, out)
 	return out, err
+}
+
+func (a *Agent) AddSubCommandResult(name, result string) {
+	a.conversation.Add(name, result)
 }

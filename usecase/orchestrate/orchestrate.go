@@ -83,7 +83,7 @@ func (o *Orchestrator) executeChain(agent *agents.Agent, task string) (string, e
 				nextAgent, exists = o.GetAgent(agentName)
 				if !exists {
 					// Create a new agent with default system prompt and model name
-					nextAgent = o.CreateAgent(agentName, "as short as possible output", "llama3:70b")
+					nextAgent = o.CreateAgent(agentName, "be consise", "mixtral")
 				}
 			} else {
 				nextAgent = agent
