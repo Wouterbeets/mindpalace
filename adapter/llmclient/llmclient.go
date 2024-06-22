@@ -19,6 +19,11 @@ type Message struct {
 type Request struct {
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
+	Options  Options   `json:"options"`
+}
+
+type Options struct {
+	ContextLength int `json:"num_ctx"`
 }
 
 // Response represents a stream of responses from the LLM.
@@ -48,6 +53,7 @@ func (c *Client) Prompt(conversation []Message) (*Response, error) {
 	requestData := Request{
 		Model:    c.Model,
 		Messages: conversation,
+		Options:  Options{ContextLength: 32000},
 	}
 
 	requestBody, err := json.Marshal(requestData)
@@ -65,6 +71,9 @@ func (c *Client) Prompt(conversation []Message) (*Response, error) {
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to send request: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("response not 200:")
 	}
 
 	return &Response{

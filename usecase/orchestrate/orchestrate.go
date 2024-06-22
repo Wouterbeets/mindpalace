@@ -67,6 +67,7 @@ func (o *Orchestrator) executeChain(agent *agents.Agent, task string) (string, e
 	}
 	fmt.Println("agent output:", output)
 	var subCommandsExectued bool
+	var agentOutputs string
 	for {
 		tasks, agentNames := o.parseOutput(output)
 		if len(tasks) == 0 {
@@ -89,20 +90,20 @@ func (o *Orchestrator) executeChain(agent *agents.Agent, task string) (string, e
 				nextAgent = agent
 			}
 
-			subCommandOut, err := nextAgent.Call(parsedTask)
+			output, err = nextAgent.Call(parsedTask)
 			if err != nil {
 				return "", err
 			}
-			output = subCommandOut
-			agent.AddSubCommandResult(agentName, subCommandOut)
+			agentOutputs += "<" + nextAgent.Name + ">" + output + "</" + nextAgent.Name + ">"
 		}
 	}
 	if subCommandsExectued {
-		finalOutput, err := agent.Call("evaluate the results of the subcommands and integrate them results in a coherent answer")
+		fmt.Println("evaluating results--------------------------------------")
+		output, err = agent.Call("evaluate the results of the agents calls and integrate them into a coherent answer: " + agentOutputs)
 		if err != nil {
 			return "", err
 		}
-		return finalOutput, nil
+		return output, nil
 	}
 	return output, nil
 }

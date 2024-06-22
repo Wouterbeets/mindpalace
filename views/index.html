@@ -3,7 +3,7 @@
 <html lang="en">
     <head>
         <title>MindPalace</title>
-        <script src="https://unpkg.com/htmx.org/dist/htmx.min.js"></script>
+        <script src="https://unpkg.com/htmx.org@2.0.0"></script>
         <script>htmx.logAll();</script>
     </head>
     <body>
@@ -16,12 +16,17 @@
 {{ end }}
 
 {{ block "chat" . }}
-        <div id="chatbox">
-            {{ .Request }}
-            {{ .Response }}
-            <!-- Chat messages go here -->
+    <div id="chatbox" style="border: 1px solid #ccc; padding: 10px;">
+        <div style="border-bottom: 1px solid #ccc; padding: 10px;">
+            <div style="font-weight: bold; color: #000;">Request:</div>
+            <div style="padding: 5px; color: #555;">{{ .Request }}</div>
         </div>
-        <form hx-post="/send">
-            <input type="text" name="chatinput"></input>
-        </form>
+        <div style="padding: 10px;">
+            <div style="font-weight: bold; color: #000;">Response:</div>
+            <div style="padding: 5px; color: #555;">{{ .Response }}</div>
+        </div>
+    </div>
+    <form hx-post="/send" style="margin-top: 10px;">
+        <input type="text" name="chatinput" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px;"></input>
+    </form>
 {{ end }}

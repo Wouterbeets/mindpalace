@@ -53,7 +53,7 @@ func (a *Agent) Call(task string) (string, error) {
 		log.Println(err)
 		return "", err
 	}
-	a.conversation.Add(a.Name, out)
+	a.conversation.Add("assistant", out)
 	return out, err
 }
 
