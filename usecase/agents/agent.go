@@ -15,7 +15,7 @@ type Agent struct {
 }
 
 func NewAgent(name, systemPrompt string, modelName string) *Agent {
-	client := llmclient.NewClient("http://192.168.1.49:8000/api/chat", modelName)
+	client := llmclient.NewClient("http://mindpalace.hopto.org/api/chat", modelName)
 	conversation := chat.NewConversation()
 	conversation.Add("system", systemPrompt)
 	return &Agent{

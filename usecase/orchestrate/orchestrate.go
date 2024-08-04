@@ -12,9 +12,25 @@ type Orchestrator struct {
 }
 
 func NewOrchestrator() *Orchestrator {
-	return &Orchestrator{
+	o := &Orchestrator{
 		agents: make(map[string]*agents.Agent),
 	}
+	o.AddAgent(
+		"activeMode",
+		`You're a helpful assistant in the project mindpalace in active mode,
+		help the user as best you can. Delegate work to async agents processing by calling an agent on a newline with <agent> @agentname: content</agent>
+		avaiable agents:
+		taskmanager - add, update, remove tasks.
+		tasklister - list all tasks in a list, it will also output priority and labels
+		updateself - read, and write sourcecode of mindpalace
+
+		if no suitable agent is present in the list, invent one and it will be created dynamically
+		`,
+		"mixtral",
+	)
+	o.AddAgent("taskmanager", "You are the taskmanager, you will reveive commands add, update, remove tasks from todo lists. You manage this by calling functions like so on a newline:``` <name>, <todolist>, <task> ``` example: ```add, groceries, buy milk```", "mixtral")
+	o.AddAgent("htmxFormater", "You're a helpful htmx formatting assistant in the project mindpalace, help the user by formatting all the text that follows as pretty and usefull as possible but keep the context identical. Add css inline of the html. The output is DIRECTLY INSERTED into the html page, OUTPUT ONLY html", "mixtral")
+	return o
 }
 
 func (o *Orchestrator) AddAgent(name, systemPrompt, modelName string) {
@@ -65,7 +81,6 @@ func (o *Orchestrator) executeChain(agent *agents.Agent, task string) (string, e
 	if err != nil {
 		return "", err
 	}
-	fmt.Println("agent output:", output)
 	var subCommandsExectued bool
 	var agentOutputs string
 	for {
@@ -90,15 +105,15 @@ func (o *Orchestrator) executeChain(agent *agents.Agent, task string) (string, e
 				nextAgent = agent
 			}
 
-			output, err = nextAgent.Call(parsedTask)
+			subOutput, err := nextAgent.Call(parsedTask)
 			if err != nil {
 				return "", err
 			}
-			agentOutputs += "<" + nextAgent.Name + ">" + output + "</" + nextAgent.Name + ">"
+			agentOutputs += "<" + nextAgent.Name + ">" + subOutput + "</" + nextAgent.Name + ">"
 		}
 	}
 	if subCommandsExectued {
-		fmt.Println("evaluating results--------------------------------------")
+		fmt.Println("------------- evaluating results--------------------------------------")
 		output, err = agent.Call("evaluate the results of the agents calls and integrate them into a coherent answer: " + agentOutputs)
 		if err != nil {
 			return "", err

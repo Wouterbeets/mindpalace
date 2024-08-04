@@ -6,6 +6,26 @@
         <script src="https://unpkg.com/htmx.org@2.0.0"></script>
         <script>htmx.logAll();</script>
     </head>
+        <style>
+            .loader {
+              display: none; /* Hidden by default */
+              position: absolute;
+              left: 50%;
+              top: 50%;
+              transform: translate(-50%, -50%);
+              border: 16px solid #f3f3f3; /* Light grey */
+              border-top: 16px solid #3498db; /* Blue */
+              border-radius: 50%;
+              width: 120px;
+              height: 120px;
+              animation: spin 2s linear infinite;
+            }
+
+            @keyframes spin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
+            }
+        </style>
     <body>
         <h2>Chat Window</h2>
         <div id="chat">
@@ -26,7 +46,9 @@
             <div style="padding: 5px; color: #555;">{{ .Response }}</div>
         </div>
     </div>
-    <form hx-post="/send" style="margin-top: 10px;">
+    <form hx-post="/send" style="margin-top: 10px;" hx-indicator="#spinner">
         <input type="text" name="chatinput" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px;"></input>
     </form>
+    <div id="spinner" class="loader">
+    </div>
 {{ end }}
