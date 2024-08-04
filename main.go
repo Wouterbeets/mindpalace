@@ -2,42 +2,23 @@ package main
 
 import (
 	"fmt"
-	"html/template"
-	"io"
 	"mindpalace/usecase/orchestrate"
-	"net/http"
+	"mindpalace/views"
 
+	"github.com/a-h/templ"
 	"github.com/labstack/echo/v4"
 )
-
-type Templates struct {
-	templates *template.Template
-}
-
-func (t Templates) Render(w io.Writer, name string, data interface{}, c echo.Context) error {
-	return t.templates.ExecuteTemplate(w, name, data)
-}
-
-func newTemplate() *Templates {
-	return &Templates{
-		templates: template.Must(template.ParseGlob("views/*.html")),
-	}
-}
-
-type LLMResponse struct {
-	Request  string
-	Response template.HTML
-}
 
 func main() {
 	e := echo.New()
 
 	fmt.Println("checks if running")
-	e.Renderer = newTemplate()
+
 	e.GET("/", func(c echo.Context) error {
 		fmt.Println("in index")
-		return c.Render(http.StatusOK, "index", nil)
+		return render(c, views.Index())
 	})
+
 	o := orchestrate.NewOrchestrator()
 	e.POST("/send", func(c echo.Context) error {
 		userMessage := c.FormValue("chatinput")
@@ -51,9 +32,18 @@ func main() {
 			return err
 		}
 		fmt.Println("finished")
-		return c.Render(http.StatusOK, "chat", LLMResponse{Request: userMessage, Response: template.HTML(resp)})
+		return render(c, views.ChatContent(orchestrate.LLMResponse{Request: userMessage, Response: resp}))
 	})
 
 	fmt.Println("Server started at :8080")
 	e.Logger.Fatal(e.Start(":8080"))
+}
+
+func render(c echo.Context, component templ.Component) error {
+	return component.Render(c.Request().Context(), c.Response().Writer)
+}
+
+type LLMResponse struct {
+	Request  string
+	Response templ.Raw
 }
