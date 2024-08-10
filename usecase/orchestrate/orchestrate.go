@@ -31,10 +31,10 @@ func NewOrchestrator() *Orchestrator {
 
 		if no suitable agent is present in the list, invent one and it will be created dynamically
 		`,
-		"mixtral",
+		"llama3.1",
 	)
-	o.AddAgent("taskmanager", "You are the taskmanager, you will reveive commands add, update, remove tasks from todo lists. You manage this by calling functions like so on a newline:``` <name>, <todolist>, <task> ``` example: ```add, groceries, buy milk```", "mixtral")
-	o.AddAgent("htmxFormater", "You're a helpful htmx formatting assistant in the project mindpalace, help the user by formatting all the text that follows as pretty and usefull as possible but keep the context identical. Add css inline of the html. The output is DIRECTLY INSERTED into the html page, OUTPUT ONLY html", "mixtral")
+	o.AddAgent("taskmanager", "You are the taskmanager, you will reveive commands add, update, remove tasks from todo lists. You manage this by calling functions like so on a newline:``` <name>, <todolist>, <task> ``` example: ```add, groceries, buy milk```", "llama3.1")
+	o.AddAgent("htmxFormater", "You're a helpful htmx formatting assistant in the project mindpalace, help the user by formatting all the text that follows as pretty and usefull as possible but keep the context identical. Add css inline of the html. The output is DIRECTLY INSERTED into the html page, OUTPUT ONLY html", "llama3.1")
 	return o
 }
 
@@ -86,7 +86,7 @@ func (o *Orchestrator) executeChain(agent *agents.Agent, task string) (string, e
 	if err != nil {
 		return "", err
 	}
-	var subCommandsExectued bool
+	var subCommandsExecuted bool
 	var agentOutputs string
 	for {
 		tasks, agentNames := o.parseOutput(output)
@@ -94,8 +94,8 @@ func (o *Orchestrator) executeChain(agent *agents.Agent, task string) (string, e
 			break
 		}
 
+		subCommandsExecuted = true
 		for i, parsedTask := range tasks {
-			subCommandsExectued = true
 			agentName := agentNames[i]
 			var nextAgent *agents.Agent
 			var exists bool
@@ -104,7 +104,7 @@ func (o *Orchestrator) executeChain(agent *agents.Agent, task string) (string, e
 				nextAgent, exists = o.GetAgent(agentName)
 				if !exists {
 					// Create a new agent with default system prompt and model name
-					nextAgent = o.CreateAgent(agentName, "be consise", "mixtral")
+					nextAgent = o.CreateAgent(agentName, "be concise", "llama3.1")
 				}
 			} else {
 				nextAgent = agent
@@ -116,14 +116,17 @@ func (o *Orchestrator) executeChain(agent *agents.Agent, task string) (string, e
 			}
 			agentOutputs += "<" + nextAgent.Name + ">" + subOutput + "</" + nextAgent.Name + ">"
 		}
+
+		// Update the output with the results of the sub-agent calls
+		output = agentOutputs
+		agentOutputs = "" // Reset agentOutputs for the next iteration
 	}
-	if subCommandsExectued {
+	if subCommandsExecuted {
 		fmt.Println("------------- evaluating results--------------------------------------")
-		output, err = agent.Call("evaluate the results of the agents calls and integrate them into a coherent answer: " + agentOutputs)
+		output, err = agent.Call("evaluate the results of the agents calls and integrate them into a coherent answer: " + output)
 		if err != nil {
 			return "", err
 		}
-		return output, nil
 	}
 	return output, nil
 }
