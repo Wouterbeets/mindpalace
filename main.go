@@ -42,8 +42,3 @@ func main() {
 func render(c echo.Context, component templ.Component) error {
 	return component.Render(c.Request().Context(), c.Response().Writer)
 }
-
-type LLMResponse struct {
-	Request  string
-	Response templ.Raw
-}

@@ -11,6 +11,11 @@ type Orchestrator struct {
 	agents map[string]*agents.Agent
 }
 
+type LLMResponse struct {
+	Request  string
+	Response string
+}
+
 func NewOrchestrator() *Orchestrator {
 	o := &Orchestrator{
 		agents: make(map[string]*agents.Agent),
