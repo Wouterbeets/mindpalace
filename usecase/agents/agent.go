@@ -8,13 +8,19 @@ import (
 )
 
 type Agent struct {
-	Name         string
-	SystemPrompt string
-	conversation *chat.Conversation
-	client       *llmclient.Client
+	Name          string
+	SystemPrompt  string
+	conversation  *chat.Conversation
+	client        *llmclient.Client
+	postProcessor PostProcessor
 }
 
-func NewAgent(name, systemPrompt string, modelName string) *Agent {
+// PostProcessor is usefull for saving having llm respones be processed to a db or similar
+type PostProcessor interface {
+	PostProcess(originalQuery, agentResponse string) error
+}
+
+func NewAgent(name, systemPrompt string, modelName string, pp PostProcessor) *Agent {
 	client := llmclient.NewClient("http://mindpalace.hopto.org/api/chat", modelName)
 	conversation := chat.NewConversation()
 	conversation.Add("system", systemPrompt)
@@ -54,6 +60,12 @@ func (a *Agent) Call(task string) (string, error) {
 		return "", err
 	}
 	a.conversation.Add("assistant", out)
+	if a.postProcessor != nil {
+		err = a.postProcessor.PostProcess(task, out)
+		if err != nil {
+			return "", fmt.Errorf("error during postProcessor %w", err)
+		}
+	}
 	return out, err
 }
 
