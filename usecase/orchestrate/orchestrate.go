@@ -1,10 +1,10 @@
 package orchestrate
 
 import (
+	"encoding/json"
 	"fmt"
+	"log"
 	"mindpalace/usecase/agents"
-	"regexp"
-	"strings"
 )
 
 type Orchestrator struct {
@@ -21,21 +21,28 @@ func NewOrchestrator() *Orchestrator {
 		agents: make(map[string]*agents.Agent),
 	}
 	o.AddAgent(
-		agents.NewAgent("activeMode",
-			`You're a helpful assistant in the project mindpalace in active mode,
-        		help the user as best you can. Delegate work to async agents processing by calling an agent on a newline with <agent> @agentname: content </agent>
-        		make sure to close the tags
-        		avaiable agents:
-        		taskmanager - add, update, remove tasks.
-        		tasklister - list all tasks in a list, it will also output priority and labels
-        		updateself - read, and write sourcecode of mindpalace
+		agents.NewAgent("activeMode", `
+                    You're a helpful assistant in the project mindpalace in active mode. Help the user as best you can. 
+                    When you need to delegate work to other agents, include a "function_calls" array in your JSON response.
+                    Each function call should have a "name" (the agent's name) and "arguments" (the task for that agent).
 
-        		if no suitable agent is present in the list, invent one and it will be created dynamically`,
-			"llama3.1",
-			nil,
-		),
+                    Available agents:
+                    - taskmanager: add, update, remove, and list tasks
+                    - updateself: read and write sourcecode of mindpalace
+
+                    Your response should always be in this JSON format:
+                    {
+                        "content": "Your response to the user",
+                        "function_calls": [
+                            {
+                                "name": "agentName",
+                                "arguments": "task for the agent"
+                            }
+                        ]
+                    }
+                    `, "llama3.1", nil),
 	)
-	o.AddAgent(agents.NewAgent("taskmanager", "You are the taskmanager, you will reveive commands add, update, remove, and list tasks from todo lists. You manage this by calling functions like so on a newline:``` <name>, <todolist>, <task> ``` example: ```add, groceries, buy milk```", "llama3.1", agents.NewTaskManager()))
+	o.AddAgent(agents.NewAgent("taskmanager", "You are the taskmanager, you will receive requests to manage the task lists, you are able to preformthe following actions: add, update, remove, and list tasks. Your job is to interpret the request and transform it function calls like so: on a newline:``` <action>, <todolist>, <task> ``` example: ```add, groceries, buy milk```", "llama3.1", agents.NewTaskManager()))
 	o.AddAgent(agents.NewAgent("htmxFormater", "You're a helpful htmx formatting assistant in the project mindpalace, help the user by formatting all the text that follows as pretty and usefull as possible but keep the context identical. Add css inline of the html. The output is DIRECTLY INSERTED into the html page, OUTPUT ONLY html", "llama3.1", nil))
 	return o
 }
@@ -63,71 +70,123 @@ func (o *Orchestrator) CallAgent(agentName, task string) (string, error) {
 	return o.executeChain(agent, task)
 }
 
-// parseOutput parses the output of an LLM call to extract tasks and agent names
-// The expected format is one or more lines in the format "<agent> @agentName: task</agent>"
-func (o *Orchestrator) parseOutput(output string) (tasks []string, agentNames []string) {
-	lines := strings.Split(output, "\n")
-	agentPattern := regexp.MustCompile(`<agent>\s*@(\w+):\s*(.*?)\s*</agent>`)
+type FunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
 
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		matches := agentPattern.FindStringSubmatch(line)
-		if len(matches) == 3 {
-			agentName := strings.TrimSpace(matches[1])
-			task := strings.TrimSpace(matches[2])
-			tasks = append(tasks, task)
-			agentNames = append(agentNames, agentName)
-		}
+type AIResponse struct {
+	Content       string         `json:"content"`
+	FunctionCalls []FunctionCall `json:"function_calls"`
+}
+
+func (o *Orchestrator) parseOutput(output string) (content string, tasks []string, agentNames []string, err error) {
+	var response AIResponse
+	err = json.Unmarshal([]byte(output), &response)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("failed to parse AI output: %v", err)
 	}
-	return tasks, agentNames
+
+	content = response.Content
+	for _, call := range response.FunctionCalls {
+		tasks = append(tasks, call.Arguments)
+		agentNames = append(agentNames, call.Name)
+	}
+
+	return content, tasks, agentNames, nil
 }
 
 func (o *Orchestrator) executeChain(agent *agents.Agent, task string) (string, error) {
+	log.Println("Entering executeChain function")
+	log.Printf("Initial task: %s", task)
+
+	log.Println("Calling initial agent")
 	output, err := agent.Call(task)
 	if err != nil {
+		log.Printf("Error in initial agent call: %v", err)
 		return "", err
 	}
+	log.Printf("Initial agent output: %s", output)
+
 	var subCommandsExecuted bool
 	var agentOutputs string
+	iterationCount := 0
+
 	for {
-		tasks, agentNames := o.parseOutput(output)
+		iterationCount++
+		log.Printf("Starting iteration %d of main loop", iterationCount)
+
+		log.Println("Parsing output")
+		content, tasks, agentNames, err := o.parseOutput(output)
+		if err != nil {
+			log.Printf("Error parsing output: %v", err)
+			return "", fmt.Errorf("failed to parse output: %v", err)
+		}
+		log.Printf("Parsed content: %s", content)
+		log.Printf("Parsed tasks: %v", tasks)
+		log.Printf("Parsed agent names: %v", agentNames)
+
 		if len(tasks) == 0 {
+			log.Println("No tasks found")
+			if content != "" {
+				log.Println("Returning content as no tasks were found")
+				return content, nil
+			}
+			log.Println("Breaking main loop as no tasks or content were found")
 			break
 		}
 
 		subCommandsExecuted = true
 		for i, parsedTask := range tasks {
+			log.Printf("Processing task %d: %s", i, parsedTask)
 			agentName := agentNames[i]
 			var nextAgent *agents.Agent
 			var exists bool
 
 			if agentName != "" {
+				log.Printf("Looking for agent: %s", agentName)
 				nextAgent, exists = o.GetAgent(agentName)
 				if !exists {
-					// Create a new agent with default system prompt and model name
+					log.Printf("Agent %s not found, creating new agent", agentName)
 					nextAgent = o.CreateAgent(agentName, "be concise", "llama3.1")
 				}
 			} else {
+				log.Println("Using original agent for this task")
 				nextAgent = agent
 			}
 
+			log.Printf("Calling agent %s with task: %s", nextAgent.Name, parsedTask)
 			subOutput, err := nextAgent.Call(parsedTask)
 			if err != nil {
+				log.Printf("Error in agent %s call: %v", nextAgent.Name, err)
 				return "", err
 			}
-			agentOutputs += "<" + nextAgent.Name + ">" + subOutput + "</" + nextAgent.Name + ">"
+			log.Printf("Agent %s output: %s", nextAgent.Name, subOutput)
+
+			agentOutputs += fmt.Sprintf("<%s>%s</%s>", nextAgent.Name, subOutput, nextAgent.Name)
 		}
 
-		// Update the output with the results of the sub-agent calls
+		log.Println("Updating output with agent results")
 		output = agentOutputs
 		agentOutputs = "" // Reset agentOutputs for the next iteration
+		log.Printf("Updated output: %s", output)
 	}
+
 	if subCommandsExecuted {
-		fmt.Println("------------- evaluating results--------------------------------------")
-		output, err = agent.Call("evaluate the results of the agents calls and integrate them into a coherent answer: " + output)
+		log.Println("Sub-commands were executed, evaluating results")
+		evaluationPrompt := "evaluate the results of the agents calls and integrate them into a coherent answer: " + output
+		log.Printf("Evaluation prompt: %s", evaluationPrompt)
+
+		output, err = agent.Call(evaluationPrompt)
 		if err != nil {
+			log.Printf("Error in final evaluation call: %v", err)
 			return "", err
 		}
+		log.Printf("Final evaluation output: %s", output)
+	} else {
+		log.Println("No sub-commands were executed")
 	}
+
+	log.Println("Exiting executeChain function")
 	return output, nil
 }

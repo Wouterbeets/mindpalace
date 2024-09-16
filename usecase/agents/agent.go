@@ -25,15 +25,16 @@ func NewAgent(name, systemPrompt string, modelName string, pp PostProcessor) *Ag
 	conversation := chat.NewConversation()
 	conversation.Add("system", systemPrompt)
 	return &Agent{
-		Name:         name,
-		SystemPrompt: systemPrompt,
-		client:       client,
-		conversation: conversation,
+		Name:          name,
+		SystemPrompt:  systemPrompt,
+		client:        client,
+		conversation:  conversation,
+		postProcessor: pp,
 	}
 }
 
 func (a *Agent) Call(task string) (string, error) {
-	fmt.Println("in", a.Name, task)
+	fmt.Println("in agent:", a.Name, task)
 	a.conversation.Add("user", task)
 	var conversation []llmclient.Message
 	for _, m := range a.conversation.History {
@@ -60,12 +61,16 @@ func (a *Agent) Call(task string) (string, error) {
 		return "", err
 	}
 	a.conversation.Add("assistant", out)
+	fmt.Println("\npostProcess", a.postProcessor)
 	if a.postProcessor != nil {
+		fmt.Println("postProcess != nil")
 		err = a.postProcessor.PostProcess(task, out)
 		if err != nil {
+			fmt.Println("error during post processing")
 			return "", fmt.Errorf("error during postProcessor %w", err)
 		}
 	}
+	fmt.Println("returning from agent call", a.Name)
 	return out, err
 }
 
