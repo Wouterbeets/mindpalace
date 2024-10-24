@@ -2,13 +2,13 @@ package orchestrate
 
 import (
 	"fmt"
-	"log"
 	"mindpalace/internal/adapter/llmclient"
 	"mindpalace/internal/usecase/agents"
 )
 
 type Orchestrator struct {
 	agents map[string]*agents.Agent
+	tasks  []string
 }
 
 type LLMResponse struct {
@@ -23,7 +23,8 @@ func NewOrchestrator() *Orchestrator {
 
 	// Define function implementations
 	functionMap := map[string]func(map[string]interface{}) (string, error){
-		"add_task": o.addTask,
+		"add_task":   o.addTask,
+		"list_tasks": o.listTasks,
 		// Add more functions as needed
 	}
 
@@ -43,25 +44,49 @@ func NewOrchestrator() *Orchestrator {
 				Required: []string{"task"},
 			},
 		},
-		// Add more functions as needed
+		{
+			Name:        "list_tasks",
+			Description: "list tasks in the task manager",
+			Parameters: llmclient.FunctionDeclarationParam{
+				Type: "object",
+				Properties: map[string]interface{}{
+					"search": map[string]interface{}{
+						"type":        "string",
+						"description": "task contains string",
+					},
+				},
+				Required: []string{""},
+			},
+		},
 	}
 
 	o.AddAgent(
-		agents.NewAgent("activeMode", `
-You're a helpful assistant in the project MindPalace in active mode. Help the user as best you can. After having executed a function successfully please make a summary of the actions taken so the user get feedback
-`, "llama3.1", functionMap, functions),
+		agents.NewAgent("mindpalace", `
+You're a helpful assistant in the project MindPalace in active mode. Help the user as best you can. You are interact with the user in the most natural way you can, normal chit chat is encouraged but remember that you aren't capable of doing external actions outside of outputting text and calling the configured functions`, "llama3.1", functionMap, functions),
 	)
-	o.AddAgent(agents.NewAgent("htmlformatter", "repeat the input with html and inline css for pretty formatting", "llama3.1", nil, nil))
-	// Add other agents as needed
+	o.AddAgent(agents.NewAgent("htmlformatter", "repeat back the input with html and inline css for pretty formatting", "llama3.1", nil, nil))
 	return o
 }
 
 func (o *Orchestrator) addTask(args map[string]interface{}) (string, error) {
-	task := args["task"]
-	// Implement your task addition logic here
-	log.Printf("Adding task: %s", task)
-	// For simplicity, we'll just return a confirmation message
-	return fmt.Sprintf("Task '%s' added successfully.", task), nil
+	if args != nil {
+		var task string
+		var ok bool
+		task, ok = args["task"].(string)
+		if ok {
+			o.tasks = append(o.tasks, task)
+		}
+		return fmt.Sprintf("Task '%s' added successfully. task id = %d", o.tasks[len(o.tasks)-1], len(o.tasks)), nil
+	}
+	return "no task added", nil
+}
+
+func (o *Orchestrator) listTasks(args map[string]interface{}) (string, error) {
+	var taskList string
+	for i, s := range o.tasks {
+		taskList += fmt.Sprintf("%d:%s\n", i, s)
+	}
+	return taskList, nil
 }
 
 func (o *Orchestrator) AddAgent(agent *agents.Agent) {
@@ -78,28 +103,9 @@ func (o *Orchestrator) CallAgent(agentName, task string) (string, error) {
 	if !exists {
 		return "", fmt.Errorf("agent %s not found", agentName)
 	}
-	return o.executeChain(agent, task)
-}
-
-func (o *Orchestrator) executeChain(agent *agents.Agent, task string) (string, error) {
 	output, err := agent.Call(task)
 	if err != nil {
 		return "", err
 	}
-	log.Printf("Raw LLM Output: %s", output)
 	return output, nil
-}
-
-func (o *Orchestrator) handleFunctionCall(functionName string, arguments map[string]interface{}) (string, error) {
-	// Implement your function handling logic here
-	// For example, call a specific agent or perform an action
-	switch functionName {
-	case "add_task":
-		// Handle adding a task
-		taskDescription := arguments["task"].(string)
-		// Perform the task addition logic
-		return fmt.Sprintf("Task '%s' added successfully.", taskDescription), nil
-	default:
-		return "", fmt.Errorf("unknown function: %s", functionName)
-	}
 }

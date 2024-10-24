@@ -39,7 +39,7 @@ func handleSend(c echo.Context, orchestrator *orchestrate.Orchestrator) error {
 		return c.String(http.StatusBadRequest, "Message cannot be empty.")
 	}
 
-	response, err := orchestrator.CallAgent("activeMode", userMessage)
+	response, err := orchestrator.CallAgent("mindpalace", userMessage)
 	if err != nil {
 		log.Println("Error calling agent:", err)
 		return c.String(http.StatusInternalServerError, "Internal Server Error")
