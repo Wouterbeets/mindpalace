@@ -17,4 +17,7 @@ type Event interface {
 
 	// Version might be used for versioning events if you evolve event structures
 	Version() int
+
+	// Applies the event to the aggregate, must not error on unknown aggregates
+	Apply(Aggregate) error
 }

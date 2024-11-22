@@ -13,33 +13,28 @@ type EventStorer interface {
 	Load(aggregateID string) ([]interfaces.Event, error)
 }
 
-// CommandToEventGenerator is a function type that generates an event from a command
-type CommandToEventGenerator func(command interfaces.Command, aggregate interfaces.Aggregate) (interfaces.Event, error)
-
 type Source struct {
-	EventStorer    EventStorer
-	CommandToEvent CommandToEventGenerator
+	EventStorer EventStorer
 }
 
-func NewSource(es EventStorer, generator CommandToEventGenerator) *Source {
+func NewSource(es EventStorer) *Source {
 	return &Source{
-		EventStorer:    es,
-		CommandToEvent: generator,
+		EventStorer: es,
 	}
 }
 
 func (s *Source) Dispatch(aggregate interfaces.Aggregate, command interfaces.Command) error {
-	// Check if the command can be processed (basic validations if any)
+	// Validate if the command can be processed, if necessary
 
-	// Generate event from command using the injected function
-	event, err := s.CommandToEvent(command, aggregate)
+	// Run the command to generate an event
+	event, err := command.Run(aggregate)
 	if err != nil {
-		return fmt.Errorf("failed to generate event from command: %w", err)
+		return fmt.Errorf("failed to execute command: %w", err)
 	}
 
-	// Apply the event to the aggregate
-	if err := aggregate.Apply(event); err != nil {
-		return fmt.Errorf("failed to apply event: %w", err)
+	err = event.Apply(aggregate)
+	if err != nil {
+		return fmt.Errorf("failed to apply event to aggregate: %w", err)
 	}
 
 	// Persist the event
@@ -65,10 +60,10 @@ func (bc *BaseCommand) IssuedAt() time.Time {
 	return bc.Issued
 }
 
-func NewBaseCommand(aggegateID string) BaseCommand {
+func NewBaseCommand(aggregateID string) BaseCommand {
 	return BaseCommand{
 		CommandID: uuid.New().String(),
-		AggID:     aggegateID,
+		AggID:     aggregateID,
 		Issued:    time.Now(),
 	}
 }

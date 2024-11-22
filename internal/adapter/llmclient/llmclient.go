@@ -87,13 +87,10 @@ func (c *Client) Prompt(conversation []Message, functions []FunctionDeclaration)
 		Tools:    tools, // Updated to use "tools"
 	}
 
-	fmt.Println("in prompt:", conversation)
-
 	requestBody, err := json.Marshal(requestData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request data: %w", err)
 	}
-	fmt.Println("requestBody", string(requestBody))
 
 	req, err := http.NewRequest("POST", c.Endpoint, bytes.NewBuffer(requestBody))
 	if err != nil {

@@ -1,6 +1,15 @@
 package interfaces
 
-import "time"
+import (
+	"reflect"
+	"time"
+)
+
+// CommandCreator helps with dynamic command creation
+type CommandCreator interface {
+	Specs() map[string]reflect.Type
+	Create(map[string]interface{}) (Command, error)
+}
 
 // Command interface defines the basic structure that all commands must adhere to
 type Command interface {
@@ -12,4 +21,7 @@ type Command interface {
 
 	// IssuedAt returns the time when the command was issued
 	IssuedAt() time.Time
+
+	// Run executes the command and generates the associated event
+	Run(aggregate Aggregate) (Event, error)
 }

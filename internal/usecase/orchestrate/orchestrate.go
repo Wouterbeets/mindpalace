@@ -1,9 +1,11 @@
 package orchestrate
 
 import (
+	"bufio"
 	"fmt"
 	"mindpalace/internal/adapter/llmclient"
 	"mindpalace/internal/usecase/agents"
+	"os"
 )
 
 type Orchestrator struct {
@@ -75,17 +77,48 @@ func (o *Orchestrator) addTask(args map[string]interface{}) (string, error) {
 		task, ok = args["task"].(string)
 		if ok {
 			o.tasks = append(o.tasks, task)
+
+			// Open the file in append mode, create if it doesn't exist
+			file, err := os.OpenFile("todo", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if err != nil {
+				return "", fmt.Errorf("failed to open todo file: %v", err)
+			}
+			defer file.Close()
+
+			// Write the task to the file
+			if _, err := file.WriteString(task + "\n"); err != nil {
+				return "", fmt.Errorf("failed to write task to todo file: %v", err)
+			}
+
+			return fmt.Sprintf("Task '%s' added successfully. task id = %d", task, len(o.tasks)), nil
 		}
-		return fmt.Sprintf("Task '%s' added successfully. task id = %d", o.tasks[len(o.tasks)-1], len(o.tasks)), nil
 	}
 	return "no task added", nil
 }
 
 func (o *Orchestrator) listTasks(args map[string]interface{}) (string, error) {
 	var taskList string
-	for i, s := range o.tasks {
-		taskList += fmt.Sprintf("%d:%s\n", i, s)
+
+	// Open the file in read-only mode
+	file, err := os.Open("todo")
+	if err != nil {
+		return "", fmt.Errorf("failed to open todo file: %v", err)
 	}
+	defer file.Close()
+
+	// Read tasks line by line and append to taskList
+	scanner := bufio.NewScanner(file)
+	i := 0
+	for scanner.Scan() {
+		taskList += fmt.Sprintf("%d: %s\n", i, scanner.Text())
+		i++
+	}
+
+	// Check for errors in reading the file
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("error reading todo file: %v", err)
+	}
+
 	return taskList, nil
 }
 
