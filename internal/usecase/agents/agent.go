@@ -36,7 +36,6 @@ func (a *Agent) Call(task string) (string, error) {
 	a.conversation.Add("user", task)
 
 	for {
-		fmt.Println("looping")
 		conversation := a.conversation.ToLLMMessages()
 		response, err := a.client.Prompt(conversation, a.functions)
 		if err != nil {

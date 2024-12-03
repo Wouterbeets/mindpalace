@@ -22,10 +22,15 @@ type Loader struct {
 }
 
 // NewLoader initializes a new plugin loader
-func NewLoader() *Loader {
-	return &Loader{
+func NewLoader(path string) (*Loader, error) {
+	l := &Loader{
 		plugins: make(map[string]*plugin.Plugin),
 	}
+	err := l.LoadPlugins(path)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load plugins for path: %s, error: %w", path, err)
+	}
+	return l, nil
 }
 
 // LoadPlugins loads the plugins from the provided path and watches for changes.
@@ -316,6 +321,11 @@ func (cc CommandCreator) Specs() map[string]reflect.Type {
 	specs := make(map[string]reflect.Type)
 	getStructSpecs(cc.CommandType, "", specs)
 	return specs
+}
+
+// Name returns the command name
+func (cc CommandCreator) Name() string {
+	return cc.CommandType.Name()
 }
 
 func NewCommandCreator(command interface{}) CommandCreator {

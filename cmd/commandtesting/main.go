@@ -18,9 +18,8 @@ func main() {
 		panic(err.Error())
 	}
 
-	loader := plugins.NewLoader()
-	loader.LoadPlugins("../../plugins") // Load from the plugins directory
-	defer loader.Close()                // Register event types with the event store
+	loader, err := plugins.NewLoader("../../plugins")
+	defer loader.Close()
 	es := eventsourcing.NewSource(store)
 
 	for _, plug := range loader.Plugins() {

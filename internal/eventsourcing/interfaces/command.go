@@ -9,6 +9,7 @@ import (
 type CommandCreator interface {
 	Specs() map[string]reflect.Type
 	Create(map[string]interface{}) (Command, error)
+	Name() string
 }
 
 // Command interface defines the basic structure that all commands must adhere to

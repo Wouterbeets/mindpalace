@@ -3,9 +3,13 @@ package orchestrate
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"mindpalace/internal/adapter/llmclient"
+	"mindpalace/internal/eventsourcing/interfaces"
 	"mindpalace/internal/usecase/agents"
+	"mindpalace/plugins"
 	"os"
+	"reflect"
 )
 
 type Orchestrator struct {
@@ -22,44 +26,35 @@ func NewOrchestrator() *Orchestrator {
 	o := &Orchestrator{
 		agents: make(map[string]*agents.Agent),
 	}
+	l, err := plugins.NewLoader("../../plugins")
+	if err != nil {
+		panic("error loading plugings" + err.Error())
+	}
+
+	functions := []llmclient.FunctionDeclaration{}
+	for _, plug := range l.Plugins() {
+		symbol, err := plug.Lookup("CommandCreator")
+		if err != nil {
+			log.Printf("Error looking up NewCommand in plugin: %v", err)
+			continue
+		}
+
+		// Assert that the symbol is of type `func() interfaces.Command`
+		cc, ok := symbol.(interfaces.CommandCreator)
+		if !ok {
+			log.Printf("Invalid command function signature in plugin")
+			continue
+		}
+		declaration := GenerateFunctionDeclaration(cc)
+		functions = append(functions, declaration)
+	}
+	fmt.Printf("%+v\n", functions)
 
 	// Define function implementations
 	functionMap := map[string]func(map[string]interface{}) (string, error){
 		"add_task":   o.addTask,
 		"list_tasks": o.listTasks,
 		// Add more functions as needed
-	}
-
-	// Define functions for the agent
-	functions := []llmclient.FunctionDeclaration{
-		{
-			Name:        "add_task",
-			Description: "Add a task to the task manager",
-			Parameters: llmclient.FunctionDeclarationParam{
-				Type: "object",
-				Properties: map[string]interface{}{
-					"task": map[string]interface{}{
-						"type":        "string",
-						"description": "The task description",
-					},
-				},
-				Required: []string{"task"},
-			},
-		},
-		{
-			Name:        "list_tasks",
-			Description: "list tasks in the task manager",
-			Parameters: llmclient.FunctionDeclarationParam{
-				Type: "object",
-				Properties: map[string]interface{}{
-					"search": map[string]interface{}{
-						"type":        "string",
-						"description": "task contains string",
-					},
-				},
-				Required: []string{""},
-			},
-		},
 	}
 
 	o.AddAgent(
@@ -141,4 +136,47 @@ func (o *Orchestrator) CallAgent(agentName, task string) (string, error) {
 		return "", err
 	}
 	return output, nil
+}
+
+func GenerateFunctionDeclaration(creator interfaces.CommandCreator) llmclient.FunctionDeclaration {
+	specs := creator.Specs()
+	parameters := llmclient.FunctionDeclarationParam{
+		Type:       "object",
+		Properties: make(map[string]interface{}),
+		Required:   []string{},
+	}
+
+	for fieldName, fieldType := range specs {
+		parameters.Properties[fieldName] = map[string]interface{}{
+			"type":        mapGoTypeToJSONType(fieldType),
+			"description": fmt.Sprintf("Parameter %s of type %s", fieldName, fieldType.Name()),
+		}
+		parameters.Required = append(parameters.Required, fieldName)
+	}
+
+	return llmclient.FunctionDeclaration{
+		Name:        creator.Name(),
+		Description: fmt.Sprintf("Executes the %s command", creator.Name()),
+		Parameters:  parameters,
+	}
+}
+
+func mapGoTypeToJSONType(t reflect.Type) string {
+	// Map Go types to JSON types
+	switch t.Kind() {
+	case reflect.String:
+		return "string"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return "integer"
+	case reflect.Float32, reflect.Float64:
+		return "number"
+	case reflect.Bool:
+		return "boolean"
+	case reflect.Slice, reflect.Array:
+		return "array"
+	case reflect.Map, reflect.Struct:
+		return "object"
+	default:
+		return "string" // default to string if unknown
+	}
 }
