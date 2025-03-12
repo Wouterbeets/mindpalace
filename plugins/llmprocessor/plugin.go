@@ -83,56 +83,67 @@ func ProcessUserRequest(data map[string]interface{}, state map[string]interface{
 	}
 	log.Printf("Processing user request: %s", requestText)
 
+	systemPrompt := `...` // Your system prompt here
+
 	// Prepare the request to Ollama
 	ollamaReq := OllamaRequest{
-		Model: "llama3", // Adjust to your preferred model
+		Model: "qwq",
 		Messages: []Message{
+			{
+				Role:    "system",
+				Content: systemPrompt,
+			},
 			{
 				Role:    "user",
 				Content: requestText,
 			},
 		},
-		Stream: false, // Set to false for a single response
+		Stream: false,
 	}
 
 	reqBody, err := json.Marshal(ollamaReq)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal Ollama request: %v", err)
+		log.Printf("Failed to marshal Ollama request: %v", err)
+		return nil, nil
 	}
 
 	// Send the request to Ollama
 	resp, err := http.Post("http://localhost:11434/api/chat", "application/json", bytes.NewBuffer(reqBody))
 	if err != nil {
-		return nil, fmt.Errorf("failed to call Ollama API: %v", err)
+		log.Printf("Failed to call Ollama API: %v", err)
+		return nil, nil
+
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("Ollama API returned non-OK status: %d, body: %s", resp.StatusCode, string(body))
+		log.Printf("Ollama API returned non-OK status: %d, body: %s", resp.StatusCode, string(body))
+		return nil, nil
+
 	}
 
 	// Parse the response
 	var ollamaResp OllamaResponse
 	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
-		return nil, fmt.Errorf("failed to decode Ollama response: %v", err)
+		log.Printf("Failed to decode Ollama response: %v", err)
+		return nil, nil
+
 	}
 
 	responseText := ollamaResp.Message.Content
 	log.Printf("Received response from Ollama: %s", responseText)
 
-	// Generate an event with the LLM response
-	return []eventsourcing.Event{
-		&eventsourcing.GenericEvent{
-			EventType: "LLMProcessingCompleted", // Updated from LLMProcessingStarted
-			Data: map[string]interface{}{
-				"RequestText":  requestText,
-				"ResponseText": responseText,
-			},
+	// Generate the completion event
+	event := &eventsourcing.GenericEvent{
+		EventType: "LLMProcessingCompleted",
+		Data: map[string]interface{}{
+			"RequestText":  requestText,
+			"ResponseText": responseText,
 		},
-	}, nil
+	}
+	return []eventsourcing.Event{event}, nil
 }
-
 func NewPlugin() eventsourcing.Plugin {
 	return &LLMProcessorPlugin{}
 }

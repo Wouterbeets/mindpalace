@@ -3,16 +3,33 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"log"
+	"regexp"
 	"strings"
-
-	"mindpalace/pkg/eventsourcing"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+
+	"mindpalace/pkg/eventsourcing"
 )
+
+// CustomTheme overrides the default theme to set text colors
+type CustomTheme struct {
+	fyne.Theme
+}
+
+func (t *CustomTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	switch name {
+	case theme.ColorNameForeground:
+		return color.White // Default text color
+	default:
+		return t.Theme.Color(name, variant)
+	}
+}
 
 type App struct {
 	eventStore    *EventStore
@@ -28,9 +45,16 @@ type App struct {
 	transcriber   *VoiceTranscriber
 	transcribing  bool
 	transcriptBox *widget.Entry
+	chatHistory   *fyne.Container   // VBox for chat messages
+	chatScroll    *container.Scroll // Reference to the scroll container
+	eventChan     chan eventsourcing.Event
 }
 
+var submitEvent func(eventsourcing.Event)
+
+// NewApp initializes the App struct with chatScroll set up
 func NewApp(es *EventStore, pm *PluginManager) *App {
+	chatHistory := container.NewVBox()
 	a := &App{
 		eventStore:    es,
 		pluginManager: pm,
@@ -42,13 +66,30 @@ func NewApp(es *EventStore, pm *PluginManager) *App {
 		transcriber:   NewVoiceTranscriber(),
 		transcribing:  false,
 		transcriptBox: widget.NewMultiLineEntry(),
+		chatHistory:   chatHistory,
+		chatScroll:    container.NewScroll(chatHistory), // Initialize here
 		eventLog: widget.NewList(
 			func() int { return 0 },
 			func() fyne.CanvasObject { return widget.NewLabel("Event") },
 			func(id widget.ListItemID, obj fyne.CanvasObject) {},
 		),
 		eventDetail: widget.NewMultiLineEntry(),
+		eventChan:   make(chan eventsourcing.Event, 10),
 	}
+	a.ui.Settings().SetTheme(&CustomTheme{theme.DefaultTheme()})
+	submitEvent = func(event eventsourcing.Event) {
+		a.eventChan <- event
+	}
+	go func() {
+		for event := range a.eventChan {
+			fyne.CurrentApp().Driver().DoFromGoroutine(func() {
+				a.processEvents([]eventsourcing.Event{event})
+			}, false)
+		}
+	}()
+	a.chatScroll.Direction = container.ScrollVerticalOnly // Set direction early
+
+	a.chatScroll.SetMinSize(fyne.NewSize(0, 300)) // Set size early
 	a.transcriptBox.SetPlaceHolder("Transcriptions will appear here...")
 	a.eventDetail.Disable()
 	a.eventDetail.SetText("Select an event to view details")
@@ -58,7 +99,7 @@ func NewApp(es *EventStore, pm *PluginManager) *App {
 	a.commands = commands
 	a.eventHandlers = eventHandlers
 
-	// Existing transcriber callback
+	// Transcriber callback
 	a.transcriber.SetSessionEventCallback(func(eventType string, data map[string]interface{}) {
 		var cmdName string
 		switch eventType {
@@ -86,7 +127,6 @@ func NewApp(es *EventStore, pm *PluginManager) *App {
 	return a
 }
 
-// processEvents handles appending events and triggering handlers
 func (a *App) processEvents(events []eventsourcing.Event) {
 	if len(events) == 0 {
 		return
@@ -101,7 +141,7 @@ func (a *App) processEvents(events []eventsourcing.Event) {
 		}
 		newEvents := a.pluginManager.ProcessEvent(event, a.globalAgg.State, a.commands)
 		a.events = append(a.events, event)
-		a.processEvents(newEvents) // Recursively process new events
+		a.processEvents(newEvents)
 	}
 	a.refreshUI()
 }
@@ -138,7 +178,7 @@ func (a *App) InitUI() {
 func (a *App) Run() {
 	window := a.ui.NewWindow("MindPalace")
 
-	startStopButton := widget.NewButton("Start Audio Test", nil)
+	startStopButton := widget.NewButton("Start Audio", nil)
 	startStopButton.OnTapped = func() {
 		if !a.transcribing {
 			a.transcriptBox.SetText("")
@@ -158,15 +198,15 @@ func (a *App) Run() {
 				log.Printf("Failed to start audio: %v", err)
 				return
 			}
-			startStopButton.SetText("Stop Audio Test")
+			startStopButton.SetText("Stop Audio")
 			a.transcribing = true
 		} else {
 			a.transcriber.Stop()
-			startStopButton.SetText("Start Audio Test")
+			startStopButton.SetText("Start Audio")
 			a.transcribing = false
 		}
 	}
-	a.transcriptBox.SetMinRowsVisible(20)
+	a.transcriptBox.SetMinRowsVisible(5)
 
 	submitButton := widget.NewButton("Submit", func() {
 		log.Println("Submit button pressed")
@@ -188,27 +228,31 @@ func (a *App) Run() {
 			log.Printf("Failed to execute ReceiveRequest: %v", err)
 			return
 		}
-		a.processEvents(events) // Trigger the event chain
+		a.processEvents(events)
 		a.transcriptBox.SetText("")
 		log.Printf("Submitted request: '%s'", transcriptionText)
 	})
-
-	testTab := container.NewVBox(
-		widget.NewLabel("Audio Test"),
-		startStopButton,
-		container.NewMax(a.transcriptBox),
-		submitButton,
+	mindPalaceTab := container.NewVBox(
+		widget.NewLabel("MindPalace"),
+		a.chatScroll,
+		container.NewBorder(
+			nil,
+			nil,
+			startStopButton,
+			submitButton,
+			a.transcriptBox,
+		),
 	)
 	stateScrollable := container.NewScroll(a.stateDisplay)
 	split := container.NewHSplit(a.eventLog, a.eventDetail)
 	split.SetOffset(0.3)
 
 	tabs := container.NewAppTabs(
+		container.NewTabItem("MindPalace", mindPalaceTab),
 		container.NewTabItem("Plugin Explorer", a.buildPluginExplorer()),
 		container.NewTabItem("Command Execution", a.buildCommandExecution()),
 		container.NewTabItem("State Display", stateScrollable),
 		container.NewTabItem("Event Log", split),
-		container.NewTabItem("Audio Test", testTab),
 	)
 
 	window.SetContent(tabs)
@@ -295,25 +339,64 @@ func (a *App) buildCommandExecution() fyne.CanvasObject {
 }
 
 func (a *App) refreshUI() {
-	// Format the state display with proper indentation for readability
-	state := a.globalAgg.GetState()
+	a.chatHistory.Objects = nil
 
-	// Create a nicely formatted representation of the state
-	var stateStr strings.Builder
-	stateStr.WriteString("{\n")
+	for _, event := range a.events {
+		genericEvent, ok := event.(*eventsourcing.GenericEvent)
+		if !ok {
+			log.Printf("Skipping non-GenericEvent: %v", event)
+			continue
+		}
 
-	for k, v := range state {
-		// Format value with indentation for better readability
-		valStr := fmt.Sprintf("%v", v)
+		switch genericEvent.EventType {
+		case "UserRequestReceived":
+			reqText, _ := genericEvent.Data["RequestText"].(string)
+			label := widget.NewLabel("You: " + reqText)
+			label.Wrapping = fyne.TextWrapWord
+			a.chatHistory.Add(label)
 
-		// Format with indentation
-		stateStr.WriteString(fmt.Sprintf("  %s: %s\n", k, valStr))
+		case "LLMProcessingStarted":
+			reqText, _ := genericEvent.Data["RequestText"].(string)
+			label := widget.NewLabel("Assistant: Processing '" + reqText + "'...")
+			label.Wrapping = fyne.TextWrapWord
+			a.chatHistory.Add(label)
+
+		case "LLMProcessingCompleted":
+			respText, _ := genericEvent.Data["ResponseText"].(string)
+			thinks, regular := parseResponseText(respText)
+
+			for _, think := range thinks {
+				thinkLabel := widget.NewLabel("Assistant [think]: " + think)
+				thinkLabel.Wrapping = fyne.TextWrapWord
+				a.chatHistory.Add(thinkLabel)
+			}
+
+			if regular != "" {
+				regularLabel := widget.NewLabel("Assistant: " + regular)
+				regularLabel.Wrapping = fyne.TextWrapWord
+				a.chatHistory.Add(regularLabel)
+			}
+		}
 	}
-	stateStr.WriteString("}")
 
-	// Update the text display with the full state (scrollable)
-	a.stateDisplay.SetText(stateStr.String())
+	a.chatHistory.Refresh()
+	if len(a.chatHistory.Objects) > 0 {
+		a.chatScroll.ScrollToBottom()
+	}
+
+	a.stateDisplay.SetText(fmt.Sprintf("%v", a.globalAgg.GetState()))
 	a.eventLog.Refresh()
+}
+
+// parseResponseText extracts think content and regular text from LLM response
+func parseResponseText(responseText string) (thinks []string, regular string) {
+	re := regexp.MustCompile(`(?s)<think>(.*?)</think>`)
+	matches := re.FindAllStringSubmatch(responseText, -1)
+	for _, match := range matches {
+		thinks = append(thinks, match[1])
+	}
+	regular = re.ReplaceAllString(responseText, "")
+	return thinks, strings.TrimSpace(regular)
 }
 
 func (a *App) RebuildState() {
