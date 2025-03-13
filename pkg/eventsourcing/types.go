@@ -7,10 +7,19 @@ import (
 
 type PluginType string
 
+// SubmitEvent is a function that plugins can use to submit events asynchronously.
+var SubmitEvent func(Event)
+
 const (
 	SystemPlugin PluginType = "system" // Plugins for internal system operations
 	LLMPlugin    PluginType = "llm"    // Plugins usable by the LLM
 )
+
+type EventStore interface {
+	Append(events ...Event) error
+	GetEvents() []Event
+	Load() error
+}
 
 // Event defines the interface for all events in the system
 type Event interface {

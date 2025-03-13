@@ -22,7 +22,7 @@ func NewPluginManager() *PluginManager {
 	}
 }
 
-func (pm *PluginManager) LoadPlugins(pluginDir string) {
+func (pm *PluginManager) LoadPlugins(pluginDir string, ep *eventsourcing.EventProcessor) {
 	// Log the directory we're starting to scan
 	log.Printf("Starting to load plugins from directory: %s", pluginDir)
 	err := filepath.Walk(pluginDir, func(path string, info os.FileInfo, err error) error {
@@ -98,6 +98,11 @@ func (pm *PluginManager) LoadPlugins(pluginDir string) {
 	if err != nil {
 		// Log any overall error from filepath.Walk
 		log.Printf("Failed to walk plugin directory %s: %v", pluginDir, err)
+	}
+	for _, plugin := range pm.plugins {
+		for eventType, handler := range plugin.GetEventHandlers() {
+			ep.RegisterEventHandler(eventType, handler)
+		}
 	}
 	// Log the final state of loaded plugins
 	log.Printf("Finished loading plugins, total loaded: %d", len(pm.plugins))

@@ -32,42 +32,40 @@ func (t *CustomTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant)
 }
 
 type App struct {
-	eventStore    *EventStore
-	pluginManager *PluginManager
-	commands      map[string]eventsourcing.CommandHandler
-	ui            fyne.App
-	globalAgg     *eventsourcing.GlobalAggregate
-	stateDisplay  *widget.Entry
-	eventLog      *widget.List
-	eventDetail   *widget.Entry
-	eventHandlers map[string][]eventsourcing.EventHandler
-	events        []eventsourcing.Event
-	transcriber   *VoiceTranscriber
-	transcribing  bool
-	transcriptBox *widget.Entry
-	chatHistory   *fyne.Container   // VBox for chat messages
-	chatScroll    *container.Scroll // Reference to the scroll container
-	eventChan     chan eventsourcing.Event
+	eventProcessor *eventsourcing.EventProcessor
+	globalAgg      *eventsourcing.GlobalAggregate
+	eventChan      chan eventsourcing.Event
+	pluginManager  *PluginManager
+	commands       map[string]eventsourcing.CommandHandler
+	ui             fyne.App
+	stateDisplay   *widget.Entry
+	eventLog       *widget.List
+	eventDetail    *widget.Entry
+	eventHandlers  map[string][]eventsourcing.EventHandler
+	events         []eventsourcing.Event
+	transcriber    *VoiceTranscriber
+	transcribing   bool
+	transcriptBox  *widget.Entry
+	chatHistory    *fyne.Container   // VBox for chat messages
+	chatScroll     *container.Scroll // Reference to the scroll container
 }
 
-var submitEvent func(eventsourcing.Event)
-
 // NewApp initializes the App struct with chatScroll set up
-func NewApp(es *EventStore, pm *PluginManager) *App {
+func NewApp(pm *PluginManager, ep *eventsourcing.EventProcessor) *App {
 	chatHistory := container.NewVBox()
 	a := &App{
-		eventStore:    es,
-		pluginManager: pm,
-		commands:      make(map[string]eventsourcing.CommandHandler),
-		eventHandlers: make(map[string][]eventsourcing.EventHandler),
-		ui:            app.New(),
-		globalAgg:     &eventsourcing.GlobalAggregate{State: make(map[string]interface{})},
-		events:        []eventsourcing.Event{},
-		transcriber:   NewVoiceTranscriber(),
-		transcribing:  false,
-		transcriptBox: widget.NewMultiLineEntry(),
-		chatHistory:   chatHistory,
-		chatScroll:    container.NewScroll(chatHistory), // Initialize here
+		eventProcessor: ep,
+		pluginManager:  pm,
+		commands:       make(map[string]eventsourcing.CommandHandler),
+		eventHandlers:  make(map[string][]eventsourcing.EventHandler),
+		ui:             app.New(),
+		globalAgg:      &eventsourcing.GlobalAggregate{State: make(map[string]interface{})},
+		events:         []eventsourcing.Event{},
+		transcriber:    NewVoiceTranscriber(),
+		transcribing:   false,
+		transcriptBox:  widget.NewMultiLineEntry(),
+		chatHistory:    chatHistory,
+		chatScroll:     container.NewScroll(chatHistory), // Initialize here
 		eventLog: widget.NewList(
 			func() int { return 0 },
 			func() fyne.CanvasObject { return widget.NewLabel("Event") },
@@ -77,7 +75,7 @@ func NewApp(es *EventStore, pm *PluginManager) *App {
 		eventChan:   make(chan eventsourcing.Event, 10),
 	}
 	a.ui.Settings().SetTheme(&CustomTheme{theme.DefaultTheme()})
-	submitEvent = func(event eventsourcing.Event) {
+	eventsourcing.SubmitEvent = func(event eventsourcing.Event) {
 		a.eventChan <- event
 	}
 	go func() {
@@ -131,17 +129,9 @@ func (a *App) processEvents(events []eventsourcing.Event) {
 	if len(events) == 0 {
 		return
 	}
-	if err := a.eventStore.Append(events...); err != nil {
-		log.Printf("Failed to append events: %v", err)
+	if err := a.eventProcessor.ProcessEvents(events, a.commands); err != nil {
+		log.Printf("Failed to process events: %v", err)
 		return
-	}
-	for _, event := range events {
-		if err := a.globalAgg.ApplyEvent(event); err != nil {
-			log.Printf("Failed to apply event: %v", err)
-		}
-		newEvents := a.pluginManager.ProcessEvent(event, a.globalAgg.State, a.commands)
-		a.events = append(a.events, event)
-		a.processEvents(newEvents)
 	}
 	a.refreshUI()
 }
@@ -314,18 +304,10 @@ func (a *App) buildCommandExecution() fyne.CanvasObject {
 			log.Printf("Failed to execute command %s: %v", selectedCmd, err)
 			return
 		}
-
-		if err := a.eventStore.Append(events...); err != nil {
-			log.Printf("Failed to append events: %v", err)
+		if err := a.eventProcessor.ProcessEvents(events, a.commands); err != nil {
+			log.Printf("Failed to process events: %v", err)
 			return
 		}
-
-		for _, event := range events {
-			if err := a.globalAgg.ApplyEvent(event); err != nil {
-				log.Printf("Failed to apply event: %v", err)
-			}
-		}
-		a.events = append(a.events, events...)
 		a.refreshUI()
 	})
 
@@ -401,7 +383,7 @@ func parseResponseText(responseText string) (thinks []string, regular string) {
 
 func (a *App) RebuildState() {
 	a.globalAgg.State = make(map[string]interface{})
-	a.events = a.eventStore.GetEvents()
+	a.events = a.eventProcessor.GetEvents()
 	for _, event := range a.events {
 		if err := a.globalAgg.ApplyEvent(event); err != nil {
 			log.Printf("Failed to apply event during rebuild: %v", err)
