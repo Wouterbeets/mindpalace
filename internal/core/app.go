@@ -14,6 +14,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"mindpalace/internal/audio"
 	"mindpalace/pkg/eventsourcing"
 )
 
@@ -42,7 +43,7 @@ type App struct {
 	eventLog       *widget.List
 	eventDetail    *widget.Entry
 	events         []eventsourcing.Event
-	transcriber    *VoiceTranscriber
+	transcriber    *audio.VoiceTranscriber
 	transcribing   bool
 	transcriptBox  *widget.Entry
 	chatHistory    *fyne.Container
@@ -57,7 +58,7 @@ func NewApp(pm *PluginManager, ep *eventsourcing.EventProcessor, agg *AppAggrega
 		pluginManager:  pm,
 		commands:       make(map[string]eventsourcing.CommandHandler),
 		ui:             app.New(),
-		transcriber:    NewVoiceTranscriber(),
+		transcriber:    audio.NewVoiceTranscriber(),
 		transcribing:   false,
 		transcriptBox:  widget.NewMultiLineEntry(),
 		chatHistory:    chatHistory,
