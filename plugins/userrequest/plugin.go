@@ -8,13 +8,13 @@ import (
 
 type UserRequestPlugin struct{}
 
-func (p *UserRequestPlugin) GetCommands() map[string]eventsourcing.CommandHandler {
+func (p *UserRequestPlugin) Commands() map[string]eventsourcing.CommandHandler {
 	return map[string]eventsourcing.CommandHandler{
 		"ReceiveRequest": ReceiveRequestHandler,
 	}
 }
 
-func (p *UserRequestPlugin) GetSchemas() map[string]map[string]interface{} {
+func (p *UserRequestPlugin) Schemas() map[string]map[string]interface{} {
 	return map[string]map[string]interface{}{}
 }
 
@@ -38,10 +38,10 @@ func NewPlugin() eventsourcing.Plugin {
 	return &UserRequestPlugin{}
 }
 
-func (p *UserRequestPlugin) GetType() eventsourcing.PluginType {
+func (p *UserRequestPlugin) Type() eventsourcing.PluginType {
 	return eventsourcing.SystemPlugin
 }
 
-func (p *UserRequestPlugin) GetEventHandlers() map[string]eventsourcing.EventHandler {
+func (p *UserRequestPlugin) EventHandlers() map[string]eventsourcing.EventHandler {
 	return nil // No event handlers needed here
 }

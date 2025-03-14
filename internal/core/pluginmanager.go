@@ -22,6 +22,16 @@ func NewPluginManager() *PluginManager {
 	}
 }
 
+// In PluginManager
+func (pm *PluginManager) GetLLMPlugins() []eventsourcing.Plugin {
+	var llmPlugins []eventsourcing.Plugin
+	for _, plugin := range pm.plugins {
+		if plugin.Type() == eventsourcing.LLMPlugin {
+			llmPlugins = append(llmPlugins, plugin)
+		}
+	}
+	return llmPlugins
+}
 func (pm *PluginManager) LoadPlugins(pluginDir string, ep *eventsourcing.EventProcessor) {
 	// Log the directory we're starting to scan
 	log.Printf("Starting to load plugins from directory: %s", pluginDir)
@@ -100,7 +110,7 @@ func (pm *PluginManager) LoadPlugins(pluginDir string, ep *eventsourcing.EventPr
 		log.Printf("Failed to walk plugin directory %s: %v", pluginDir, err)
 	}
 	for _, plugin := range pm.plugins {
-		for eventType, handler := range plugin.GetEventHandlers() {
+		for eventType, handler := range plugin.EventHandlers() {
 			ep.RegisterEventHandler(eventType, handler)
 		}
 	}
@@ -111,14 +121,14 @@ func (pm *PluginManager) LoadPlugins(pluginDir string, ep *eventsourcing.EventPr
 func (pm *PluginManager) RegisterCommands() (map[string]eventsourcing.CommandHandler, map[string][]eventsourcing.EventHandler) {
 	commands := make(map[string]eventsourcing.CommandHandler)
 	for _, p := range pm.plugins {
-		for name, handler := range p.GetCommands() {
+		for name, handler := range p.Commands() {
 			if _, exists := commands[name]; exists {
 				log.Printf("Command %s already registered", name)
 				continue
 			}
 			commands[name] = handler
 		}
-		for eventType, handler := range p.GetEventHandlers() {
+		for eventType, handler := range p.EventHandlers() {
 			pm.eventHandlers[eventType] = append(pm.eventHandlers[eventType], handler)
 		}
 	}

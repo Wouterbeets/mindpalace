@@ -92,10 +92,10 @@ type EventHandler func(event Event, state map[string]interface{}, commands map[s
 
 // Plugin defines the interface for plugins in the system
 type Plugin interface {
-	GetCommands() map[string]CommandHandler
-	GetSchemas() map[string]map[string]interface{}
-	GetType() PluginType
-	GetEventHandlers() map[string]EventHandler // Add this method
+	Commands() map[string]CommandHandler
+	Schemas() map[string]map[string]interface{}
+	Type() PluginType
+	EventHandlers() map[string]EventHandler // Add this method
 }
 
 // DefaultEventHandler is a no-op handler for plugins that don't handle events

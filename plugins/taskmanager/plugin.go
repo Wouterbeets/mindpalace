@@ -7,13 +7,13 @@ import (
 
 type TaskPlugin struct{}
 
-func (p *TaskPlugin) GetCommands() map[string]eventsourcing.CommandHandler {
+func (p *TaskPlugin) Commands() map[string]eventsourcing.CommandHandler {
 	return map[string]eventsourcing.CommandHandler{
 		"CreateTask": CreateTaskHandler,
 	}
 }
 
-func (p *TaskPlugin) GetSchemas() map[string]map[string]interface{} {
+func (p *TaskPlugin) Schemas() map[string]map[string]interface{} {
 	return map[string]map[string]interface{}{}
 }
 
@@ -33,10 +33,10 @@ func NewPlugin() eventsourcing.Plugin {
 	return &TaskPlugin{}
 }
 
-func (p *TaskPlugin) GetType() eventsourcing.PluginType {
+func (p *TaskPlugin) Type() eventsourcing.PluginType {
 	return eventsourcing.LLMPlugin
 }
 
-func (p *TaskPlugin) GetEventHandlers() map[string]eventsourcing.EventHandler {
+func (p *TaskPlugin) EventHandlers() map[string]eventsourcing.EventHandler {
 	return nil // No event handlers needed
 }

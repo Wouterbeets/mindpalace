@@ -30,6 +30,7 @@ type VoiceTranscriber struct {
 	wordHistory           []string
 	historySize           int
 	transcriptionText     string
+	transcriptionHistory  []string
 	sessionID             string
 	startTime             time.Time
 	totalSegments         int
@@ -138,39 +139,72 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 }
 
 func (vt *VoiceTranscriber) Stop() {
-	vt.mu.Lock()
-	defer vt.mu.Unlock()
+	fmt.Println("in stop")
 
+	// Set running to false first without holding the lock for long
+	vt.mu.Lock()
 	if !vt.running {
+		vt.mu.Unlock()
 		return
 	}
+	vt.running = false // Signal processAudio to stop
+	vt.mu.Unlock()
 
+	// Stop and close the stream outside the lock
+	fmt.Println("stream stop")
 	if vt.stream != nil {
-		vt.stream.Stop()
-		vt.stream.Close()
+		if err := vt.stream.Stop(); err != nil {
+			fmt.Printf("Error stopping stream: %v\n", err)
+		}
+		if err := vt.stream.Close(); err != nil {
+			fmt.Printf("Error closing stream: %v\n", err)
+		}
+		vt.stream = nil
 	}
+
+	fmt.Println("audio file closing")
 	if vt.audioFile != nil {
 		vt.updateWAVHeader()
-		vt.audioFile.Close()
+		if err := vt.audioFile.Close(); err != nil {
+			fmt.Printf("Error closing audio file: %v\n", err)
+		}
+		vt.audioFile = nil
 	}
+	fmt.Println("audio file closed")
+
+	fmt.Println("killing whisper")
 	if vt.cmd != nil {
-		vt.cmd.Process.Kill()
+		if err := vt.cmd.Process.Kill(); err != nil {
+			fmt.Printf("Error killing command: %v\n", err)
+		}
+		vt.cmd = nil
 	}
-	portaudio.Terminate()
-	vt.running = false
+	fmt.Println("killed")
+
+	fmt.Println("terminate portaudio")
+	if err := portaudio.Terminate(); err != nil {
+		fmt.Printf("Error terminating PortAudio: %v\n", err)
+	}
+	fmt.Println("terminated")
 
 	// Calculate duration
 	duration := time.Since(vt.startTime).Seconds()
 
 	// Trigger "stop" event
 	if vt.sessionCallback != nil {
+		fmt.Println("calling callback")
 		vt.sessionCallback("stop", map[string]interface{}{
 			"SessionID":    vt.sessionID,
 			"DurationSecs": duration,
 			"SampleCount":  vt.sampleCount,
 		})
+		fmt.Println("done")
 	}
+
+	vt.mu.Lock()
 	vt.wordHistory = vt.wordHistory[:0]
+	vt.mu.Unlock()
+
 	log.Printf("Audio stream stopped, saved %d samples", vt.sampleCount)
 }
 
@@ -239,27 +273,58 @@ func (vt *VoiceTranscriber) readTranscription() {
 }
 
 // cleanTranscription and similarity functions remain unchanged
+// cleanTranscription with sentence overlap detection
 func (vt *VoiceTranscriber) cleanTranscription(text string) string {
-	words := strings.Fields(strings.TrimSpace(text))
-	if len(words) == 0 {
+	if text == "" {
 		return ""
 	}
 
-	newWords := make([]string, 0, len(words))
-	for _, word := range words {
-		if !vt.isSimilarInHistory(word) {
-			newWords = append(newWords, word)
+	// Trim and split into words
+	newWords := strings.Fields(strings.TrimSpace(text))
+	if len(newWords) == 0 {
+		return ""
+	}
+	newText := strings.Join(newWords, " ")
+
+	// Check for exact duplicates in history
+	for _, histText := range vt.transcriptionHistory {
+		if newText == histText {
+			return "" // Discard if identical to a recent segment
 		}
 	}
 
-	for _, word := range newWords {
-		vt.wordHistory = append(vt.wordHistory, word)
-		if len(vt.wordHistory) > vt.historySize {
-			vt.wordHistory = vt.wordHistory[1:]
+	// Get current transcription as words
+	currentWords := strings.Fields(vt.transcriptionText)
+	if len(currentWords) == 0 {
+		vt.transcriptionText = newText
+		vt.updateHistory(newText)
+		return newText
+	}
+
+	// Find the longest suffix of current that matches prefix of new
+	overlapLen := 0
+	maxOverlap := min(len(currentWords), len(newWords))
+	for i := 1; i <= maxOverlap; i++ {
+		suffix := currentWords[len(currentWords)-i:]
+		prefix := newWords[:i]
+		if strings.Join(suffix, " ") == strings.Join(prefix, " ") {
+			overlapLen = i
+		} else {
+			break
 		}
 	}
 
-	return strings.Join(newWords, " ")
+	// Extract non-overlapping part
+	if overlapLen == len(newWords) {
+		return "" // New segment fully overlaps, discard
+	}
+	nonOverlapWords := newWords[overlapLen:]
+	nonOverlapText := strings.Join(nonOverlapWords, " ")
+
+	// Append non-overlapping part
+	vt.transcriptionText = vt.transcriptionText + " " + nonOverlapText
+	vt.updateHistory(newText)
+	return nonOverlapText
 }
 
 func (vt *VoiceTranscriber) isSimilarInHistory(word string) bool {
@@ -269,6 +334,14 @@ func (vt *VoiceTranscriber) isSimilarInHistory(word string) bool {
 		}
 	}
 	return false
+}
+
+// updateHistory adds to transcription history
+func (vt *VoiceTranscriber) updateHistory(text string) {
+	vt.transcriptionHistory = append(vt.transcriptionHistory, text)
+	if len(vt.transcriptionHistory) > vt.historySize {
+		vt.transcriptionHistory = vt.transcriptionHistory[1:]
+	}
 }
 
 func levenshteinDistance(s, t string) int {
@@ -303,19 +376,6 @@ func levenshteinDistance(s, t string) int {
 		}
 	}
 	return v1[len(t)]
-}
-
-func min(a, b, c int) int {
-	if a < b {
-		if a < c {
-			return a
-		}
-		return c
-	}
-	if b < c {
-		return b
-	}
-	return c
 }
 
 func float32ToByte(f []float32) []byte {

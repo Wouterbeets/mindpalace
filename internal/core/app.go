@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"log"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"fyne.io/fyne/v2"
@@ -97,6 +98,12 @@ func NewApp(pm *PluginManager, ep *eventsourcing.EventProcessor) *App {
 	a.commands = commands
 	a.eventHandlers = eventHandlers
 
+	//// Pass pluginManager to LLMProcessorPlugin
+	//for _, p := range pm.plugins {
+	//if p. {
+	//llmPlugin.SetPluginManager(pm)
+	//}
+	//}
 	// Transcriber callback
 	a.transcriber.SetSessionEventCallback(func(eventType string, data map[string]interface{}) {
 		var cmdName string
@@ -169,30 +176,48 @@ func (a *App) Run() {
 	window := a.ui.NewWindow("MindPalace")
 
 	startStopButton := widget.NewButton("Start Audio", nil)
+	log.Println("Run running on goroutine:", runtime.NumGoroutine())
 	startStopButton.OnTapped = func() {
+		log.Println("OnTapped running on goroutine:", runtime.NumGoroutine())
 		if !a.transcribing {
-			a.transcriptBox.SetText("")
-			log.Println("Cleared transcript box")
+			// Clear the transcript box on the main thread
+			fyne.CurrentApp().Driver().DoFromGoroutine(func() {
+				a.transcriptBox.SetText("")
+				log.Println("Cleared transcript box")
+			}, false)
+
+			// Start transcription (non-UI, assumed thread-safe)
 			err := a.transcriber.Start(func(text string) {
 				if strings.TrimSpace(text) != "" {
-					current := a.transcriptBox.Text
-					if current == "" {
-						a.transcriptBox.SetText(text)
-					} else {
-						a.transcriptBox.SetText(current + "\n" + text)
-					}
-					log.Printf("Added text to transcript: '%s'", text)
+					fyne.CurrentApp().Driver().DoFromGoroutine(func() {
+						current := a.transcriptBox.Text
+						if current == "" {
+							a.transcriptBox.SetText(text)
+						} else {
+							a.transcriptBox.SetText(current + " " + text) // Use space instead of newline
+						}
+						log.Printf("Added text to transcript: '%s'", text)
+					}, false)
 				}
 			})
 			if err != nil {
 				log.Printf("Failed to start audio: %v", err)
 				return
 			}
-			startStopButton.SetText("Stop Audio")
+
+			// Update button text on the main thread
+			fyne.CurrentApp().Driver().DoFromGoroutine(func() {
+				startStopButton.SetText("Stop Audio")
+			}, false)
 			a.transcribing = true
 		} else {
+			// Stop transcription (non-UI, assumed thread-safe)
 			a.transcriber.Stop()
-			startStopButton.SetText("Start Audio")
+
+			// Update button text on the main thread
+			fyne.CurrentApp().Driver().DoFromGoroutine(func() {
+				startStopButton.SetText("Start Audio")
+			}, false)
 			a.transcribing = false
 		}
 	}

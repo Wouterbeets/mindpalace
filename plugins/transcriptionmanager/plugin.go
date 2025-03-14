@@ -8,14 +8,14 @@ import (
 
 type TranscriptionPlugin struct{}
 
-func (p *TranscriptionPlugin) GetCommands() map[string]eventsourcing.CommandHandler {
+func (p *TranscriptionPlugin) Commands() map[string]eventsourcing.CommandHandler {
 	return map[string]eventsourcing.CommandHandler{
 		"StartTranscription": StartTranscriptionHandler,
 		"StopTranscription":  StopTranscriptionHandler,
 	}
 }
 
-func (p *TranscriptionPlugin) GetSchemas() map[string]map[string]interface{} {
+func (p *TranscriptionPlugin) Schemas() map[string]map[string]interface{} {
 	return map[string]map[string]interface{}{}
 }
 
@@ -65,10 +65,10 @@ func NewPlugin() eventsourcing.Plugin {
 	return &TranscriptionPlugin{}
 }
 
-func (p *TranscriptionPlugin) GetType() eventsourcing.PluginType {
+func (p *TranscriptionPlugin) Type() eventsourcing.PluginType {
 	return eventsourcing.SystemPlugin
 }
 
-func (p *TranscriptionPlugin) GetEventHandlers() map[string]eventsourcing.EventHandler {
+func (p *TranscriptionPlugin) EventHandlers() map[string]eventsourcing.EventHandler {
 	return nil // No event handlers needed
 }
