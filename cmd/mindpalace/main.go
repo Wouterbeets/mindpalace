@@ -16,7 +16,7 @@ func main() {
 	ep := eventsourcing.NewEventProcessor(store, agg)
 	pluginManager.LoadPlugins("plugins", ep)
 
-	app := core.NewApp(pluginManager, ep)
+	app := core.NewApp(pluginManager, ep, agg)
 	app.InitUI()
 	app.RebuildState()
 	app.Run()

@@ -49,19 +49,19 @@ type App struct {
 	chatScroll     *container.Scroll
 }
 
-func NewApp(pm *PluginManager, ep *eventsourcing.EventProcessor) *App {
+func NewApp(pm *PluginManager, ep *eventsourcing.EventProcessor, agg *AppAggregate) *App {
 	chatHistory := container.NewVBox()
 	a := &App{
+		globalAgg:      agg,
 		eventProcessor: ep,
 		pluginManager:  pm,
 		commands:       make(map[string]eventsourcing.CommandHandler),
 		ui:             app.New(),
-		globalAgg:      &AppAggregate{State: make(map[string]interface{}), ChatHistory: []ChatMessage{}}, events: []eventsourcing.Event{},
-		transcriber:   NewVoiceTranscriber(),
-		transcribing:  false,
-		transcriptBox: widget.NewMultiLineEntry(),
-		chatHistory:   chatHistory,
-		chatScroll:    container.NewScroll(chatHistory),
+		transcriber:    NewVoiceTranscriber(),
+		transcribing:   false,
+		transcriptBox:  widget.NewMultiLineEntry(),
+		chatHistory:    chatHistory,
+		chatScroll:     container.NewScroll(chatHistory),
 		eventLog: widget.NewList(
 			func() int { return 0 },
 			func() fyne.CanvasObject { return widget.NewLabel("Event") },
@@ -73,6 +73,7 @@ func NewApp(pm *PluginManager, ep *eventsourcing.EventProcessor) *App {
 	a.ui.Settings().SetTheme(&CustomTheme{theme.DefaultTheme()})
 	eventsourcing.SubmitEvent = func(event eventsourcing.Event) {
 		a.eventChan <- event
+		log.Printf("Submitted event to channel: %v", event)
 	}
 	go func() {
 		for event := range a.eventChan {
@@ -90,6 +91,7 @@ func NewApp(pm *PluginManager, ep *eventsourcing.EventProcessor) *App {
 	// Register commands only
 	commands, _ := pm.RegisterCommands()
 	a.commands = commands
+	a.eventProcessor.RegisterCommands(commands)
 
 	// Transcriber callback using executeCommand
 	a.transcriber.SetSessionEventCallback(func(eventType string, data map[string]interface{}) {
@@ -103,28 +105,13 @@ func NewApp(pm *PluginManager, ep *eventsourcing.EventProcessor) *App {
 			log.Printf("Unknown event type: %s", eventType)
 			return
 		}
-		err := a.executeCommand(cmdName, data)
+		err := a.eventProcessor.ExecuteCommand(cmdName, data)
 		if err != nil {
 			log.Printf("Failed to execute %s: %v", cmdName, err)
 		}
 	})
 
 	return a
-}
-
-func (a *App) executeCommand(commandName string, data map[string]interface{}) error {
-	handler, exists := a.commands[commandName]
-	if !exists {
-		return fmt.Errorf("command %s not found", commandName)
-	}
-	events, err := handler(data, a.globalAgg.State)
-	if err != nil {
-		return err
-	}
-	for _, event := range events {
-		eventsourcing.SubmitEvent(event)
-	}
-	return nil
 }
 
 func (a *App) processEvents(events []eventsourcing.Event) {
@@ -228,7 +215,7 @@ func (a *App) Run() {
 		data := map[string]interface{}{
 			"RequestText": transcriptionText,
 		}
-		err := a.executeCommand("ReceiveRequest", data)
+		err := a.eventProcessor.ExecuteCommand("ReceiveRequest", data)
 		if err != nil {
 			log.Printf("Failed to execute ReceiveRequest: %v", err)
 			return
@@ -306,7 +293,7 @@ func (a *App) buildCommandExecution() fyne.CanvasObject {
 			log.Printf("Invalid JSON input: %v", err)
 			return
 		}
-		err := a.executeCommand(selectedCmd, inputData)
+		err := a.eventProcessor.ExecuteCommand(selectedCmd, inputData)
 		if err != nil {
 			log.Printf("Failed to execute command %s: %v", selectedCmd, err)
 		}
@@ -321,9 +308,12 @@ func (a *App) buildCommandExecution() fyne.CanvasObject {
 }
 
 func (a *App) refreshUI() {
+	log.Println("Refreshing UI in real-time")
 	a.chatHistory.Objects = nil
 
+	fmt.Println("chatHistory", a.globalAgg.ChatHistory)
 	for _, msg := range a.globalAgg.ChatHistory {
+		log.Printf("Adding to UI: %s: %s", msg.Role, msg.Content)
 		label := widget.NewLabel(msg.Role + ": " + msg.Content)
 		label.Wrapping = fyne.TextWrapWord
 		a.chatHistory.Add(label)
@@ -336,6 +326,7 @@ func (a *App) refreshUI() {
 
 	a.stateDisplay.SetText(fmt.Sprintf("%v", a.globalAgg.GetState()))
 	a.eventLog.Refresh()
+	fmt.Println("refresh ui finished")
 }
 
 func (a *App) RebuildState() {
