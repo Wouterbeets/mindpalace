@@ -181,9 +181,16 @@ func handleAllToolCallsCompleted(event eventsourcing.Event, state map[string]int
 
 // buildMessagesForToolCompletion reconstructs the chat history for a given requestID.
 func buildMessagesForToolCompletion(state map[string]interface{}, requestID string, toolResults []map[string]interface{}) ([]llmmodels.Message, error) {
-	// Get the conversation history (includes the system prompt)
+	// Create a new state that includes the latest tool calls for more accurate task list
+	// Make a shallow copy of the state
+	enhancedState := make(map[string]interface{})
+	for k, v := range state {
+		enhancedState[k] = v
+	}
+	
+	// Get the conversation history with enhanced state (includes the system prompt)
 	// Limited to last 10 turns to avoid context overflow
-	messages := buildChatHistory(state, 10)
+	messages := buildChatHistory(enhancedState, 10)
 	
 	// Find the specific request and make sure it's included
 	var currentRequestText string
@@ -233,8 +240,62 @@ func buildMessagesForToolCompletion(state map[string]interface{}, requestID stri
 	
 	// Add tool results
 	for _, result := range toolResults {
-		toolContent := fmt.Sprintf("%v", result["result"])
-		// Add the tool call result
+		// Convert tool content to a more readable format
+		var toolContent string
+		resultData, ok := result["result"].(map[string]interface{})
+		if ok {
+			// Handle different types of tool results with better formatting
+			if status, ok := resultData["status"].(string); ok {
+				switch status {
+				case "created":
+					taskID, _ := resultData["taskID"].(string)
+					title, _ := resultData["title"].(string)
+					toolContent = fmt.Sprintf("Task created successfully: ID=%s, Title=\"%s\"", taskID, title)
+				case "updated":
+					taskID, _ := resultData["taskID"].(string)
+					toolContent = fmt.Sprintf("Task updated successfully: ID=%s", taskID)
+				case "deleted":
+					taskID, _ := resultData["taskID"].(string)
+					toolContent = fmt.Sprintf("Task deleted successfully: ID=%s", taskID)
+				case "completed":
+					taskID, _ := resultData["taskID"].(string)
+					title, _ := resultData["title"].(string)
+					toolContent = fmt.Sprintf("Task marked as completed: ID=%s, Title=\"%s\"", taskID, title)
+				case "success":
+					count, _ := resultData["count"].(float64)
+					if count > 0 {
+						toolContent = fmt.Sprintf("Listed %d tasks", int(count))
+						// Add task list if available
+						if tasks, ok := resultData["tasks"].([]interface{}); ok && len(tasks) > 0 {
+							toolContent += ":\n"
+							for i, task := range tasks {
+								if taskMap, ok := task.(map[string]interface{}); ok {
+									taskID, _ := taskMap["TaskID"].(string)
+									title, _ := taskMap["Title"].(string)
+									status, _ := taskMap["Status"].(string)
+									if taskID != "" && title != "" {
+										toolContent += fmt.Sprintf("%d. %s: \"%s\" (Status: %s)\n", i+1, taskID, title, status)
+									}
+								}
+							}
+						}
+					} else {
+						toolContent = "No tasks found"
+					}
+				default:
+					// For other types, use a generic format
+					toolContent = fmt.Sprintf("%v", resultData)
+				}
+			} else {
+				// Fallback for unrecognized structure
+				toolContent = fmt.Sprintf("%v", resultData)
+			}
+		} else {
+			// Simple string conversion for non-map results
+			toolContent = fmt.Sprintf("%v", result["result"])
+		}
+		
+		// Add the formatted tool call result
 		filteredMessages = append(filteredMessages, llmmodels.Message{
 			Role:    "tool",
 			Content: toolContent,
@@ -266,11 +327,133 @@ func callOllamaAPI(request llmmodels.OllamaRequest) (*llmmodels.OllamaResponse, 
 	return &ollamaResp, nil
 }
 
+// appendTaskInfo adds information about existing tasks to the system prompt
+// getActiveTasks returns a list of active tasks with their IDs, titles, and status
+func getActiveTasks(state map[string]interface{}) []map[string]interface{} {
+	var activeTasks []map[string]interface{}
+	
+	// First, get all task IDs that have been deleted
+	deletedTaskIDs := make(map[string]bool)
+	if deletionEvents, ok := state["TaskDeleted"].([]interface{}); ok {
+		for _, delEvent := range deletionEvents {
+			if delData, ok := delEvent.(map[string]interface{}); ok {
+				if delID, ok := delData["TaskID"].(string); ok && delID != "" {
+					deletedTaskIDs[delID] = true
+				}
+			}
+		}
+	}
+	
+	// Map of task IDs to latest task data (including updates)
+	taskData := make(map[string]map[string]interface{})
+	
+	// First get all created tasks
+	if tasksEvents, ok := state["TaskCreated"].([]interface{}); ok {
+		for _, taskEvent := range tasksEvents {
+			if data, ok := taskEvent.(map[string]interface{}); ok {
+				taskID, _ := data["TaskID"].(string)
+				if taskID != "" && !deletedTaskIDs[taskID] {
+					// Create a copy of the data
+					taskCopy := make(map[string]interface{})
+					for k, v := range data {
+						taskCopy[k] = v
+					}
+					taskData[taskID] = taskCopy
+				}
+			}
+		}
+	}
+	
+	// Apply updates
+	if updateEvents, ok := state["TaskUpdated"].([]interface{}); ok {
+		for _, updateEvent := range updateEvents {
+			if updateData, ok := updateEvent.(map[string]interface{}); ok {
+				taskID, _ := updateData["TaskID"].(string)
+				if taskID != "" && !deletedTaskIDs[taskID] {
+					if task, exists := taskData[taskID]; exists {
+						// Apply update fields to the task data
+						for k, v := range updateData {
+							if k != "TaskID" { // Don't overwrite the TaskID
+								task[k] = v
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	// Apply completion status
+	if completionEvents, ok := state["TaskCompleted"].([]interface{}); ok {
+		for _, completionEvent := range completionEvents {
+			if completionData, ok := completionEvent.(map[string]interface{}); ok {
+				taskID, _ := completionData["TaskID"].(string)
+				if taskID != "" && !deletedTaskIDs[taskID] {
+					if task, exists := taskData[taskID]; exists {
+						task["Status"] = "Completed"
+						if completedAt, ok := completionData["CompletedAt"].(string); ok {
+							task["CompletedAt"] = completedAt
+						}
+						if notes, ok := completionData["CompletionNotes"].(string); ok {
+							task["CompletionNotes"] = notes
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	// Convert map to slice
+	for taskID, task := range taskData {
+		// Double-check that task hasn't been deleted
+		if !deletedTaskIDs[taskID] {
+			activeTasks = append(activeTasks, task)
+		}
+	}
+	
+	return activeTasks
+}
+
+func appendTaskInfo(basePrompt string, state map[string]interface{}) string {
+	// Get all active tasks
+	activeTasks := getActiveTasks(state)
+	
+	// No tasks? Return the base prompt
+	if len(activeTasks) == 0 {
+		return basePrompt
+	}
+	
+	// Create task info strings
+	var taskInfo []string
+	for _, task := range activeTasks {
+		taskID, _ := task["TaskID"].(string)
+		title, _ := task["Title"].(string)
+		status, _ := task["Status"].(string)
+		
+		if taskID == "" || title == "" {
+			continue
+		}
+		
+		taskInfo = append(taskInfo, fmt.Sprintf("- %s: \"%s\" (Status: %s)", taskID, title, status))
+	}
+	
+	// Add task info to prompt if tasks exist
+	if len(taskInfo) > 0 {
+		taskSection := "\n\n### Current Tasks\nThe following tasks already exist in the system. When updating or referencing existing tasks, use EXACTLY these IDs:\n"
+		taskSection += strings.Join(taskInfo, "\n")
+		taskSection += "\n\nIMPORTANT: Always use these exact task IDs when referencing existing tasks. Do not make up new IDs for existing tasks."
+		return basePrompt + taskSection
+	}
+	
+	return basePrompt
+}
+
 // buildChatHistory builds a full conversation history from past events
 func buildChatHistory(state map[string]interface{}, maxMessages int) []llmmodels.Message {
-	// Start with the system prompt
+	// Start with the system prompt, enhanced with task information
+	enhancedPrompt := appendTaskInfo(systemPrompt, state)
 	messages := []llmmodels.Message{
-		{Role: "system", Content: systemPrompt},
+		{Role: "system", Content: enhancedPrompt},
 	}
 	
 	// Build a chronological history of user requests and LLM responses
