@@ -224,17 +224,25 @@ func UpdateTaskHandler(data map[string]interface{}, state map[string]interface{}
 		return nil, fmt.Errorf("missing TaskID")
 	}
 	
+	// Fix taskID format: convert "task-123" to "task_123" for LLM compatibility
+	fixedTaskID := taskID
+	if len(taskID) > 5 && taskID[:5] == "task-" {
+		fixedTaskID = "task_" + taskID[5:]
+		// Update the taskID in the data map
+		data["TaskID"] = fixedTaskID
+	}
+	
 	// Get current tasks from state to check if task exists
 	tasksEvents, exists := state["TaskCreated"].([]interface{})
 	if !exists {
 		return nil, fmt.Errorf("no tasks exist")
 	}
 	
-	// Check if task exists
+	// Check if task exists (using our fixed ID)
 	taskExists := false
 	for _, taskEvent := range tasksEvents {
 		if taskEventMap, ok := taskEvent.(map[string]interface{}); ok {
-			if existingTaskID, ok := taskEventMap["TaskID"].(string); ok && existingTaskID == taskID {
+			if existingTaskID, ok := taskEventMap["TaskID"].(string); ok && existingTaskID == fixedTaskID {
 				taskExists = true
 				break
 			}
@@ -242,12 +250,12 @@ func UpdateTaskHandler(data map[string]interface{}, state map[string]interface{}
 	}
 	
 	if !taskExists {
-		return nil, fmt.Errorf("task with ID %s not found", taskID)
+		return nil, fmt.Errorf("task with ID %s not found", fixedTaskID)
 	}
 	
 	// Prepare update data
 	updateData := map[string]interface{}{
-		"TaskID": taskID,
+		"TaskID": fixedTaskID, // Use the fixed task ID
 	}
 	
 	// Only include fields that are being updated
@@ -309,17 +317,25 @@ func DeleteTaskHandler(data map[string]interface{}, state map[string]interface{}
 		return nil, fmt.Errorf("missing TaskID")
 	}
 	
+	// Fix taskID format: convert "task-123" to "task_123" for LLM compatibility
+	fixedTaskID := taskID
+	if len(taskID) > 5 && taskID[:5] == "task-" {
+		fixedTaskID = "task_" + taskID[5:]
+		// Update the taskID in the data map
+		data["TaskID"] = fixedTaskID
+	}
+	
 	// Get current tasks from state to check if task exists
 	tasksEvents, exists := state["TaskCreated"].([]interface{})
 	if !exists {
 		return nil, fmt.Errorf("no tasks exist")
 	}
 	
-	// Check if task exists
+	// Check if task exists (using our fixed ID)
 	taskExists := false
 	for _, taskEvent := range tasksEvents {
 		if taskEventMap, ok := taskEvent.(map[string]interface{}); ok {
-			if existingTaskID, ok := taskEventMap["TaskID"].(string); ok && existingTaskID == taskID {
+			if existingTaskID, ok := taskEventMap["TaskID"].(string); ok && existingTaskID == fixedTaskID {
 				taskExists = true
 				break
 			}
@@ -327,7 +343,7 @@ func DeleteTaskHandler(data map[string]interface{}, state map[string]interface{}
 	}
 	
 	if !taskExists {
-		return nil, fmt.Errorf("task with ID %s not found", taskID)
+		return nil, fmt.Errorf("task with ID %s not found", fixedTaskID)
 	}
 	
 	// Standard event metadata
@@ -337,7 +353,7 @@ func DeleteTaskHandler(data map[string]interface{}, state map[string]interface{}
 	events := []eventsourcing.Event{
 		&eventsourcing.GenericEvent{
 			EventType: "TaskDeleted",
-			Data:      map[string]interface{}{"TaskID": taskID},
+			Data:      map[string]interface{}{"TaskID": fixedTaskID},
 		},
 	}
 	
@@ -347,7 +363,7 @@ func DeleteTaskHandler(data map[string]interface{}, state map[string]interface{}
 			Data: map[string]interface{}{
 				"RequestID":  requestID,
 				"ToolCallID": toolCallID,
-				"Result":     map[string]interface{}{"taskID": taskID, "status": "deleted"},
+				"Result":     map[string]interface{}{"taskID": fixedTaskID, "status": "deleted"},
 			},
 		})
 	}
@@ -360,18 +376,26 @@ func CompleteTaskHandler(data map[string]interface{}, state map[string]interface
 		return nil, fmt.Errorf("missing TaskID")
 	}
 	
+	// Fix taskID format: convert "task-123" to "task_123" for LLM compatibility
+	fixedTaskID := taskID
+	if len(taskID) > 5 && taskID[:5] == "task-" {
+		fixedTaskID = "task_" + taskID[5:]
+		// Update the taskID in the data map
+		data["TaskID"] = fixedTaskID
+	}
+	
 	// Get current tasks from state to check if task exists
 	tasksEvents, exists := state["TaskCreated"].([]interface{})
 	if !exists {
 		return nil, fmt.Errorf("no tasks exist")
 	}
 	
-	// Check if task exists
+	// Check if task exists (using our fixed ID)
 	taskExists := false
 	var taskTitle string
 	for _, taskEvent := range tasksEvents {
 		if taskEventMap, ok := taskEvent.(map[string]interface{}); ok {
-			if existingTaskID, ok := taskEventMap["TaskID"].(string); ok && existingTaskID == taskID {
+			if existingTaskID, ok := taskEventMap["TaskID"].(string); ok && existingTaskID == fixedTaskID {
 				taskExists = true
 				if title, ok := taskEventMap["Title"].(string); ok {
 					taskTitle = title
@@ -382,11 +406,11 @@ func CompleteTaskHandler(data map[string]interface{}, state map[string]interface
 	}
 	
 	if !taskExists {
-		return nil, fmt.Errorf("task with ID %s not found", taskID)
+		return nil, fmt.Errorf("task with ID %s not found", fixedTaskID)
 	}
 	
 	completionData := map[string]interface{}{
-		"TaskID":      taskID,
+		"TaskID":      fixedTaskID, // Use the fixed task ID
 		"Status":      "Completed",
 		"CompletedAt": eventsourcing.ISOTimestamp(),
 	}
@@ -414,7 +438,7 @@ func CompleteTaskHandler(data map[string]interface{}, state map[string]interface
 				"RequestID":  requestID,
 				"ToolCallID": toolCallID,
 				"Result": map[string]interface{}{
-					"taskID": taskID,
+					"fixedTaskID": taskID,
 					"title":  taskTitle,
 					"status": "completed",
 				},
