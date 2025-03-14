@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -26,96 +27,170 @@ func NewPluginManager() *PluginManager {
 func (pm *PluginManager) GetLLMPlugins() []eventsourcing.Plugin {
 	var llmPlugins []eventsourcing.Plugin
 	for _, plugin := range pm.plugins {
+		fmt.Println(plugin, plugin.Name(), plugin.Schemas())
 		if plugin.Type() == eventsourcing.LLMPlugin {
 			llmPlugins = append(llmPlugins, plugin)
 		}
 	}
 	return llmPlugins
 }
+// LoadPlugins finds, compiles if needed, and loads all plugins from the given directory
 func (pm *PluginManager) LoadPlugins(pluginDir string, ep *eventsourcing.EventProcessor) {
-	// Log the directory we're starting to scan
 	log.Printf("Starting to load plugins from directory: %s", pluginDir)
-	err := filepath.Walk(pluginDir, func(path string, info os.FileInfo, err error) error {
-		// Log any errors encountered while traversing the directory tree
+	
+	// First, discover all plugin directories (they contain plugin.go files)
+	pluginDirs, err := pm.discoverPluginDirectories(pluginDir)
+	if err != nil {
+		log.Printf("Error discovering plugin directories: %v", err)
+		return
+	}
+	
+	// For each plugin directory, ensure the SO file is up to date and load it
+	for _, dir := range pluginDirs {
+		pluginName := filepath.Base(dir)
+		goFile := filepath.Join(dir, "plugin.go")
+		soFile := filepath.Join(dir, pluginName+".so")
+		
+		// Check if we need to build/rebuild the plugin
+		shouldBuild, err := pm.shouldBuildPlugin(goFile, soFile)
 		if err != nil {
-			log.Printf("Error walking path %s: %v", path, err)
-			return nil // Continue despite errors to avoid stopping the walk
+			log.Printf("Error checking if plugin needs building: %v", err)
+			continue
 		}
-		// Log the current file or directory being checked
-		log.Printf("Checking path: %s, IsDir: %t, Ext: %s", path, info.IsDir(), filepath.Ext(info.Name()))
+		
+		if shouldBuild {
+			// Build the plugin
+			if err := pm.buildPlugin(goFile, soFile); err != nil {
+				log.Printf("Failed to build plugin %s: %v", goFile, err)
+				continue
+			}
+		}
+		
+		// Always attempt to load the plugin
+		plugin, err := pm.loadPlugin(soFile)
+		if err != nil {
+			log.Printf("Failed to load plugin %s: %v", soFile, err)
+			continue
+		}
+		
+		if plugin != nil {
+			pm.plugins = append(pm.plugins, plugin)
+			log.Printf("Successfully loaded plugin: %s", plugin.Name())
+			
+			// Register event handlers
+			for eventType, handler := range plugin.EventHandlers() {
+				ep.RegisterEventHandler(eventType, handler)
+			}
+		}
+	}
+	
+	log.Printf("Finished loading plugins, total loaded: %d", len(pm.plugins))
+}
 
-		// Skip if it's a directory or not an .so file
-		if info.IsDir() || filepath.Ext(info.Name()) != ".so" {
-			// If it's a directory, check for a .go file and build if no .so exists
-			if info.IsDir() {
-				goFile := filepath.Join(path, "plugin.go")
-				soFile := filepath.Join(path, info.Name()+".so")
-				if _, err := os.Stat(goFile); err == nil { // .go file exists
-					if _, err := os.Stat(soFile); os.IsNotExist(err) { // .so file doesn't exist
-						log.Printf("No .so file found for %s, attempting to build from %s", path, goFile)
-						cmd := exec.Command("go", "build", "-buildmode=plugin", "-o", soFile, goFile)
-						cmd.Stdout = os.Stdout
-						cmd.Stderr = os.Stderr
-						if err := cmd.Run(); err != nil {
-							log.Printf("Failed to build plugin %s: %v", goFile, err)
-							return nil
-						}
-						log.Printf("Successfully built %s into %s", goFile, soFile)
-						path = soFile // Update path to the newly built .so file
-					} else if err != nil && !os.IsNotExist(err) {
-						log.Printf("Error checking .so file %s: %v", soFile, err)
-						return nil
-					}
-				}
-			}
-			// Log skipping directories or non-.so files
-			if filepath.Ext(info.Name()) != ".so" {
-				log.Printf("Skipping %s: not an .so file", path)
-				return nil
-			}
+// discoverPluginDirectories finds all directories containing plugin.go files
+func (pm *PluginManager) discoverPluginDirectories(rootDir string) ([]string, error) {
+	var pluginDirs []string
+	
+	err := filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		
+		// We're only interested in directories at this point
+		if !info.IsDir() {
 			return nil
 		}
-
-		// Log attempt to open the .so file
-		log.Printf("Attempting to open plugin file: %s", path)
-		plug, err := plugin.Open(path)
-		if err != nil {
-			log.Printf("Failed to load plugin %s: %v", path, err)
-			return nil // Continue to next file if opening fails
+		
+		// Check if this directory contains a plugin.go file
+		goFile := filepath.Join(path, "plugin.go")
+		if _, err := os.Stat(goFile); err == nil {
+			pluginDirs = append(pluginDirs, path)
+			log.Printf("Found plugin directory: %s", path)
 		}
-
-		// Log attempt to lookup the NewPlugin symbol
-		log.Printf("Looking up 'NewPlugin' in %s", path)
-		sym, err := plug.Lookup("NewPlugin")
-		if err != nil {
-			log.Printf("Plugin %s does not export NewPlugin: %v", path, err)
-			return nil // Continue if symbol lookup fails
-		}
-
-		// Log type assertion attempt
-		log.Printf("Asserting NewPlugin type for %s", path)
-		newPlugin, ok := sym.(func() eventsourcing.Plugin)
-		if !ok {
-			log.Printf("NewPlugin in %s is not a function returning Plugin", path)
-			return nil // Continue if type assertion fails
-		}
-
-		// Log successful plugin addition
-		log.Printf("Successfully loaded plugin from %s, appending to pm.plugins", path)
-		pm.plugins = append(pm.plugins, newPlugin())
+		
 		return nil
 	})
+	
+	return pluginDirs, err
+}
+
+// shouldBuildPlugin checks if a plugin should be built based on file existence or modification times
+func (pm *PluginManager) shouldBuildPlugin(goFile, soFile string) (bool, error) {
+	// Check if the source file exists
+	goInfo, err := os.Stat(goFile)
 	if err != nil {
-		// Log any overall error from filepath.Walk
-		log.Printf("Failed to walk plugin directory %s: %v", pluginDir, err)
+		return false, fmt.Errorf("source file error: %w", err)
 	}
-	for _, plugin := range pm.plugins {
-		for eventType, handler := range plugin.EventHandlers() {
-			ep.RegisterEventHandler(eventType, handler)
+	
+	// Check if the SO file exists
+	soInfo, err := os.Stat(soFile)
+	if os.IsNotExist(err) {
+		// SO doesn't exist, we should build
+		log.Printf("Plugin SO file doesn't exist, will build: %s", soFile)
+		return true, nil
+	} else if err != nil {
+		return false, fmt.Errorf("SO file check error: %w", err)
+	}
+	
+	// Both files exist, check if GO file is newer than SO file
+	if goInfo.ModTime().After(soInfo.ModTime()) {
+		log.Printf("Plugin source is newer than SO, will rebuild: %s", goFile)
+		return true, nil
+	}
+	
+	// SO file exists and is up to date
+	log.Printf("Plugin SO file is up to date: %s", soFile)
+	return false, nil
+}
+
+// buildPlugin compiles a plugin from the given source to the given output
+func (pm *PluginManager) buildPlugin(goFile, soFile string) error {
+	log.Printf("Building plugin from %s to %s", goFile, soFile)
+	
+	// If SO file already exists, remove it first to avoid any issues
+	if _, err := os.Stat(soFile); err == nil {
+		if err := os.Remove(soFile); err != nil {
+			return fmt.Errorf("failed to remove existing SO file: %w", err)
 		}
 	}
-	// Log the final state of loaded plugins
-	log.Printf("Finished loading plugins, total loaded: %d", len(pm.plugins))
+	
+	cmd := exec.Command("go", "build", "-buildmode=plugin", "-o", soFile, goFile)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("build command failed: %w", err)
+	}
+	
+	// Verify the file was actually created
+	if _, err := os.Stat(soFile); os.IsNotExist(err) {
+		return fmt.Errorf("build appeared to succeed but file wasn't created")
+	}
+	
+	log.Printf("Successfully built plugin: %s", soFile)
+	return nil
+}
+
+// loadPlugin loads a plugin from the given SO file
+func (pm *PluginManager) loadPlugin(soFile string) (eventsourcing.Plugin, error) {
+	log.Printf("Loading plugin from: %s", soFile)
+	
+	plug, err := plugin.Open(soFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open plugin: %w", err)
+	}
+	
+	sym, err := plug.Lookup("NewPlugin")
+	if err != nil {
+		return nil, fmt.Errorf("plugin does not export NewPlugin: %w", err)
+	}
+	
+	newPlugin, ok := sym.(func() eventsourcing.Plugin)
+	if !ok {
+		return nil, fmt.Errorf("NewPlugin is not of the correct type")
+	}
+	
+	return newPlugin(), nil
 }
 
 func (pm *PluginManager) RegisterCommands() (map[string]eventsourcing.CommandHandler, map[string][]eventsourcing.EventHandler) {

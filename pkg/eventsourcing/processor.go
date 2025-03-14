@@ -2,7 +2,6 @@ package eventsourcing
 
 import (
 	"fmt"
-	"log"
 )
 
 type EventProcessor struct {
@@ -10,10 +9,25 @@ type EventProcessor struct {
 	aggregate     Aggregate
 	eventHandlers map[string][]EventHandler
 	commands      map[string]CommandHandler
+	EventBus      EventBus  // Changed from unexported to exported
 }
 
 func NewEventProcessor(store EventStore, aggregate Aggregate) *EventProcessor {
-	return &EventProcessor{store: store, aggregate: aggregate, eventHandlers: make(map[string][]EventHandler), commands: make(map[string]CommandHandler)}
+	// Create an event bus that will be used for event distribution
+	eventBus := NewSimpleEventBus(store, aggregate)
+	
+	ep := &EventProcessor{
+		store:         store,
+		aggregate:     aggregate,
+		eventHandlers: make(map[string][]EventHandler),
+		commands:      make(map[string]CommandHandler),
+		EventBus:      eventBus,
+	}
+	
+	// Set the global event bus
+	SetGlobalEventBus(eventBus)
+	
+	return ep
 }
 
 func (ep *EventProcessor) GetEvents() []Event {
@@ -21,7 +35,11 @@ func (ep *EventProcessor) GetEvents() []Event {
 }
 
 func (ep *EventProcessor) RegisterEventHandler(eventType string, handler EventHandler) {
+	// Store in local map for backward compatibility
 	ep.eventHandlers[eventType] = append(ep.eventHandlers[eventType], handler)
+	
+	// Also register with the event bus
+	ep.EventBus.Subscribe(eventType, handler)
 }
 
 func (ep *EventProcessor) RegisterCommands(commands map[string]CommandHandler) {
@@ -29,29 +47,10 @@ func (ep *EventProcessor) RegisterCommands(commands map[string]CommandHandler) {
 }
 
 func (ep *EventProcessor) ProcessEvents(events []Event, commands map[string]CommandHandler) error {
-	if err := ep.store.Append(events...); err != nil {
-		return err
-	}
+	// Instead of direct processing, publish to the event bus
+	// This lets the bus handle event storage, aggregate updates, and handler distribution
 	for _, event := range events {
-		if err := ep.aggregate.ApplyEvent(event); err != nil {
-			return err
-		}
-		// Trigger registered handlers
-		if handlers, exists := ep.eventHandlers[event.Type()]; exists {
-			for _, handler := range handlers {
-				newEvents, err := handler(event, ep.aggregate.GetState(), commands)
-				if err != nil {
-					log.Printf("Error in event handler for %s: %v", event.Type(), err)
-					continue // Log and continue to avoid halting on handler errors
-				}
-				// Process any new events returned by the handler
-				if len(newEvents) > 0 {
-					if err := ep.ProcessEvents(newEvents, commands); err != nil {
-						return err
-					}
-				}
-			}
-		}
+		ep.EventBus.Publish(event)
 	}
 	return nil
 }
@@ -65,8 +64,10 @@ func (ep *EventProcessor) ExecuteCommand(commandName string, data map[string]int
 	if err != nil {
 		return err
 	}
+	
+	// Instead of using SubmitEvent directly, publish to the local event bus
 	for _, event := range events {
-		SubmitEvent(event)
+		ep.EventBus.Publish(event)
 	}
 	return nil
 }

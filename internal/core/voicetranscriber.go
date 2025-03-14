@@ -58,32 +58,48 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 		return nil
 	}
 
-	vt.transcriptionText = "" // Initialize transcription text
+	log.Println("Initializing voice transcription...")
+	
+	// Initialize data structures
+	vt.transcriptionText = ""
 	vt.audioBuffer = make([]float32, 0, 64000)
 	vt.transcriptionCallback = transcriptionCallback
 	vt.sessionID = fmt.Sprintf("session-%d", time.Now().UnixNano())
 	vt.startTime = time.Now()
 	vt.totalSegments = 0
+	vt.wordHistory = make([]string, 0, 3)
+	vt.transcriptionHistory = make([]string, 0, 3)
 
+	// Start Python transcription process
+	log.Println("Starting Python transcription process...")
 	vt.cmd = exec.Command("/home/mindpalace/mindpalace_venv/bin/python3", "transcribe.py")
 	stdin, err := vt.cmd.StdinPipe()
 	if err != nil {
+		log.Printf("Failed to create stdin pipe: %v", err)
 		return err
 	}
 	stdout, err := vt.cmd.StdoutPipe()
 	if err != nil {
+		log.Printf("Failed to create stdout pipe: %v", err)
 		return err
 	}
 	stderr, err := vt.cmd.StderrPipe()
 	if err != nil {
+		log.Printf("Failed to create stderr pipe: %v", err)
 		return err
 	}
+	
+	// Start the process
 	if err := vt.cmd.Start(); err != nil {
+		log.Printf("Failed to start Python process: %v", err)
 		return err
 	}
+	
+	// Create buffered readers/writers
 	vt.writer = bufio.NewWriter(stdin)
 	vt.reader = bufio.NewReader(stdout)
 
+	// Handle Python stderr output
 	go func() {
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
@@ -94,31 +110,42 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 		}
 	}()
 
+	// Create audio file for debugging
+	log.Println("Creating audio debug file...")
 	vt.audioFile, err = os.Create("test_audio.wav")
 	if err != nil {
+		log.Printf("Failed to create audio file: %v", err)
 		vt.cmd.Process.Kill()
 		return err
 	}
 	vt.writeWAVHeader()
 
+	// Initialize PortAudio
+	log.Println("Initializing PortAudio...")
 	err = portaudio.Initialize()
 	if err != nil {
+		log.Printf("Failed to initialize PortAudio: %v", err)
 		vt.audioFile.Close()
 		vt.cmd.Process.Kill()
 		return err
 	}
 
-	// Device selection logic (simplified for brevity, adjust as needed)
+	// Open audio stream
+	log.Println("Opening audio stream...")
 	vt.stream, err = portaudio.OpenDefaultStream(1, 0, 16000, 2048, vt.processAudio)
 	if err != nil {
+		log.Printf("Failed to open audio stream: %v", err)
 		vt.audioFile.Close()
 		vt.cmd.Process.Kill()
 		portaudio.Terminate()
 		return err
 	}
 
+	// Start audio stream
 	vt.running = true
 	if err := vt.stream.Start(); err != nil {
+		log.Printf("Failed to start audio stream: %v", err)
+		vt.running = false
 		vt.stream.Close()
 		vt.audioFile.Close()
 		vt.cmd.Process.Kill()
@@ -130,11 +157,28 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 	if vt.sessionCallback != nil {
 		vt.sessionCallback("start", map[string]interface{}{
 			"SessionID":  vt.sessionID,
-			"DeviceInfo": "default", // Replace with actual device info if available
+			"DeviceInfo": "default",
 		})
 	}
-	log.Println("Audio stream started")
+	
+	log.Println("Audio transcription started successfully")
+	
+	// Start the transcription reader goroutine
 	go vt.readTranscription()
+	
+	// Start a separate goroutine to monitor the audio stream
+	go func() {
+		log.Println("Starting audio reading loop...")
+		readCount := 0
+		for vt.running {
+			readCount++
+			if readCount % 10 == 0 {
+				log.Printf("Reading audio data from stream... (read count: %d)", readCount)
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}()
+	
 	return nil
 }
 
@@ -193,12 +237,25 @@ func (vt *VoiceTranscriber) Stop() {
 	// Trigger "stop" event
 	if vt.sessionCallback != nil {
 		fmt.Println("calling callback")
-		vt.sessionCallback("stop", map[string]interface{}{
-			"SessionID":    vt.sessionID,
-			"DurationSecs": duration,
-			"SampleCount":  vt.sampleCount,
-		})
-		fmt.Println("done")
+		
+		// Use eventsourcing's recovery pattern directly
+		sessionCallback := vt.sessionCallback
+		sessionID := vt.sessionID
+		
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("RECOVERED PANIC in transcriber session callback: %v", r)
+				}
+			}()
+			
+			sessionCallback("stop", map[string]interface{}{
+				"SessionID":    sessionID,
+				"DurationSecs": duration,
+				"SampleCount":  vt.sampleCount,
+			})
+		}()
+		fmt.Println("callback dispatched")
 	}
 
 	vt.mu.Lock()
@@ -216,12 +273,47 @@ func (vt *VoiceTranscriber) processAudio(in []float32) {
 		return
 	}
 
-	vt.audioBuffer = append(vt.audioBuffer, in...)
+	// Log audio level for debugging
+	maxAmp := float32(0)
+	for _, sample := range in {
+		if abs := float32(math.Abs(float64(sample))); abs > maxAmp {
+			maxAmp = abs
+		}
+	}
+	log.Printf("Got valid audio data - max amplitude: %f (read count: %d)", maxAmp, vt.sampleCount/32000)
+	
+	// Apply gain to boost audio level
+	gainFactor := float32(5.0) // Increase volume by 5x
+	amplifiedBuffer := make([]float32, len(in))
+	for i, sample := range in {
+		// Apply gain with clipping prevention
+		amplifiedSample := sample * gainFactor
+		if amplifiedSample > 1.0 {
+			amplifiedSample = 1.0
+		} else if amplifiedSample < -1.0 {
+			amplifiedSample = -1.0
+		}
+		amplifiedBuffer[i] = amplifiedSample
+	}
+	
+	// Append amplified audio to buffer
+	vt.audioBuffer = append(vt.audioBuffer, amplifiedBuffer...)
 
+	// Process chunks of 32000 samples (2 seconds at 16kHz)
 	for len(vt.audioBuffer) >= 32000 {
 		chunk := vt.audioBuffer[:32000]
 		vt.audioBuffer = vt.audioBuffer[32000:]
+		
+		// Calculate max amplitude of chunk for logging
+		chunkMaxAmp := float32(0)
+		for _, sample := range chunk {
+			if abs := float32(math.Abs(float64(sample))); abs > chunkMaxAmp {
+				chunkMaxAmp = abs
+			}
+		}
+		log.Printf("Processing audio chunk with max amplitude: %f", chunkMaxAmp)
 
+		// Write to WAV file (original format for debugging)
 		for _, sample := range chunk {
 			sampleInt16 := int16(sample * 32767)
 			if err := binary.Write(vt.audioFile, binary.LittleEndian, sampleInt16); err != nil {
@@ -230,46 +322,78 @@ func (vt *VoiceTranscriber) processAudio(in []float32) {
 			vt.sampleCount++
 		}
 
+		// Send to Python process
 		b := float32ToByte(chunk)
 		if _, err := vt.writer.Write(b); err != nil {
 			log.Printf("Failed to send audio to Whisper: %v", err)
 			return
 		}
-		vt.writer.Flush()
+		if err := vt.writer.Flush(); err != nil {
+			log.Printf("Failed to flush audio data: %v", err)
+			return
+		}
+		log.Printf("Sent %d bytes to Python process", len(b))
 	}
 }
 
 func (vt *VoiceTranscriber) readTranscription() {
+	log.Println("Starting transcription processing goroutine...")
+	log.Println("Waiting for transcription from Python process...")
+	
 	for vt.running {
 		if vt.reader == nil {
+			time.Sleep(100 * time.Millisecond)
 			continue
 		}
+		
+		// Set a deadline for reading to prevent blocking indefinitely
 		text, err := vt.reader.ReadString('\n')
 		if err != nil {
 			if vt.running {
 				log.Printf("Error reading transcription: %v", err)
+				// Short pause to prevent CPU spinning on error
+				time.Sleep(100 * time.Millisecond)
 			}
-			break
+			continue // Continue trying to read instead of breaking
 		}
+		
+		// Log raw transcription for debugging
+		log.Printf("Received raw transcription: %q", strings.TrimSpace(text))
+		
 		vt.mu.Lock()
 		if vt.running {
 			cleanedText := vt.cleanTranscription(text)
 			if cleanedText != "" {
+				log.Printf("Cleaned transcription text: %q", cleanedText)
+				
 				// Accumulate transcription text
 				if vt.transcriptionText != "" {
 					vt.transcriptionText += " " // Use space as separator
 				}
 				vt.transcriptionText += cleanedText
 
-				// Update UI in real-time
+				// Update UI in real-time with panic recovery
 				if vt.transcriptionCallback != nil {
-					vt.transcriptionCallback(cleanedText)
+					func() {
+						defer func() {
+							if r := recover(); r != nil {
+								log.Printf("RECOVERED PANIC in transcription callback: %v", r)
+							}
+						}()
+						vt.transcriptionCallback(cleanedText)
+						log.Printf("Successfully called transcription callback with text: %q", cleanedText)
+					}()
+				} else {
+					log.Println("Warning: No transcription callback set")
 				}
-				vt.totalSegments++ // Optional: keep for stats if desired
+				vt.totalSegments++
+			} else {
+				log.Println("Transcription text was empty after cleaning")
 			}
 		}
 		vt.mu.Unlock()
 	}
+	log.Println("Transcription processing goroutine exiting")
 }
 
 // cleanTranscription and similarity functions remain unchanged

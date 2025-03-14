@@ -2,12 +2,26 @@ package eventsourcing
 
 import (
 	"encoding/json"
+	"sync/atomic"
+	"time"
 )
 
 type PluginType string
 
+// Global event bus instance
+var globalEventBus EventBus
+
 // SubmitEvent is a function that plugins can use to submit events asynchronously.
-var SubmitEvent func(Event)
+var SubmitEvent = func(event Event) {
+	if globalEventBus != nil {
+		globalEventBus.Publish(event)
+	}
+}
+
+// SetGlobalEventBus sets the global event bus instance
+func SetGlobalEventBus(eb EventBus) {
+	globalEventBus = eb
+}
 
 const (
 	SystemPlugin PluginType = "system" // Plugins for internal system operations
@@ -52,6 +66,11 @@ type Aggregate interface {
 	GetState() map[string]interface{}
 }
 
+// CommandProvider is an interface for objects that can provide access to all registered commands
+type CommandProvider interface {
+	GetAllCommands() map[string]CommandHandler
+}
+
 // CommandHandler defines the signature for command handling functions, now with access to state
 type CommandHandler func(data map[string]interface{}, state map[string]interface{}) ([]Event, error)
 
@@ -85,4 +104,17 @@ func (e *GenericEvent) ApplyEvent(state map[string]interface{}) error {
 		state[key] = []interface{}{e.Data}
 	}
 	return nil
+}
+
+// Counter for generating unique IDs
+var idCounter uint64 = 0
+
+// GenerateUniqueID generates a unique ID for entities like tasks
+func GenerateUniqueID() uint64 {
+	return atomic.AddUint64(&idCounter, 1)
+}
+
+// ISOTimestamp returns the current time as an ISO 8601 formatted string
+func ISOTimestamp() string {
+	return time.Now().UTC().Format(time.RFC3339)
 }

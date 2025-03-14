@@ -71,27 +71,32 @@ func NewApp(pm *PluginManager, ep *eventsourcing.EventProcessor, agg *AppAggrega
 		eventChan:   make(chan eventsourcing.Event, 10),
 	}
 	a.ui.Settings().SetTheme(&CustomTheme{theme.DefaultTheme()})
-	eventsourcing.SubmitEvent = func(event eventsourcing.Event) {
-		a.eventChan <- event
-		log.Printf("Submitted event to channel: %v", event)
-	}
-	go func() {
-		for event := range a.eventChan {
-			fyne.CurrentApp().Driver().DoFromGoroutine(func() {
-				a.processEvents([]eventsourcing.Event{event})
-			}, false)
-		}
-	}()
+	
+	// Get the event bus from the event processor
+	eventBus := ep.EventBus
+	
+	// Subscribe to all events for UI updates using wildcard subscription
+	eventBus.Subscribe("*", func(event eventsourcing.Event, state map[string]interface{}, commands map[string]eventsourcing.CommandHandler) ([]eventsourcing.Event, error) {
+		// Update UI on the main thread
+		fyne.CurrentApp().Driver().DoFromGoroutine(func() {
+			a.refreshUI()
+		}, false)
+		return nil, nil
+	})
+	
 	a.chatScroll.Direction = container.ScrollVerticalOnly
 	a.chatScroll.SetMinSize(fyne.NewSize(0, 300))
 	a.transcriptBox.SetPlaceHolder("Transcriptions will appear here...")
 	a.eventDetail.Disable()
 	a.eventDetail.SetText("Select an event to view details")
 
-	// Register commands only
+	// Register commands
 	commands, _ := pm.RegisterCommands()
 	a.commands = commands
 	a.eventProcessor.RegisterCommands(commands)
+	
+	// Store commands in the aggregate so they're available to event handlers
+	a.globalAgg.AllCommands = commands
 
 	// Transcriber callback using executeCommand
 	a.transcriber.SetSessionEventCallback(func(eventType string, data map[string]interface{}) {
@@ -122,7 +127,7 @@ func (a *App) processEvents(events []eventsourcing.Event) {
 		log.Printf("Failed to process events: %v", err)
 		return
 	}
-	a.refreshUI()
+	// UI refresh now happens via event bus subscription in the constructor
 }
 
 func (a *App) InitUI() {
@@ -168,18 +173,23 @@ func (a *App) Run() {
 				log.Println("Cleared transcript box")
 			}, false)
 
-			// Start transcription (non-UI, assumed thread-safe)
+			// Start transcription with panic-safe callback
 			err := a.transcriber.Start(func(text string) {
 				if strings.TrimSpace(text) != "" {
-					fyne.CurrentApp().Driver().DoFromGoroutine(func() {
-						current := a.transcriptBox.Text
-						if current == "" {
-							a.transcriptBox.SetText(text)
-						} else {
-							a.transcriptBox.SetText(current + " " + text) // Use space instead of newline
-						}
-						log.Printf("Added text to transcript: '%s'", text)
-					}, false)
+					// Wrap UI update in panic recovery
+					eventsourcing.SafeGo("TranscriptionCallback", map[string]interface{}{
+						"text": text,
+					}, func() {
+						fyne.CurrentApp().Driver().DoFromGoroutine(func() {
+							current := a.transcriptBox.Text
+							if current == "" {
+								a.transcriptBox.SetText(text)
+							} else {
+								a.transcriptBox.SetText(current + " " + text) // Use space instead of newline
+							}
+							log.Printf("Added text to transcript: '%s'", text)
+						}, false)
+					})
 				}
 			})
 			if err != nil {
@@ -206,22 +216,28 @@ func (a *App) Run() {
 	a.transcriptBox.SetMinRowsVisible(5)
 
 	submitButton := widget.NewButton("Submit", func() {
-		log.Println("Submit button pressed")
-		transcriptionText := a.transcriptBox.Text
-		if transcriptionText == "" {
-			log.Println("No transcription text to submit")
-			return
-		}
-		data := map[string]interface{}{
-			"RequestText": transcriptionText,
-		}
-		err := a.eventProcessor.ExecuteCommand("ReceiveRequest", data)
-		if err != nil {
-			log.Printf("Failed to execute ReceiveRequest: %v", err)
-			return
-		}
-		a.transcriptBox.SetText("")
-		log.Printf("Submitted request: '%s'", transcriptionText)
+		// Wrap submit action in SafeGo for panic recovery
+		eventsourcing.SafeGo("SubmitTranscription", nil, func() {
+			log.Println("Submit button pressed")
+			transcriptionText := a.transcriptBox.Text
+			if transcriptionText == "" {
+				log.Println("No transcription text to submit")
+				return
+			}
+			data := map[string]interface{}{
+				"RequestText": transcriptionText,
+			}
+			err := a.eventProcessor.ExecuteCommand("ReceiveRequest", data)
+			if err != nil {
+				log.Printf("Failed to execute ReceiveRequest: %v", err)
+				return
+			}
+			
+			// Use DoFromGoroutine with the UI operations
+			fyne.CurrentApp().Driver().DoFromGoroutine(func() {
+				a.transcriptBox.SetText("")
+			}, false)
+		})
 	})
 	mindPalaceTab := container.NewVBox(
 		widget.NewLabel("MindPalace"),
@@ -311,9 +327,7 @@ func (a *App) refreshUI() {
 	log.Println("Refreshing UI in real-time")
 	a.chatHistory.Objects = nil
 
-	fmt.Println("chatHistory", a.globalAgg.ChatHistory)
 	for _, msg := range a.globalAgg.ChatHistory {
-		log.Printf("Adding to UI: %s: %s", msg.Role, msg.Content)
 		label := widget.NewLabel(msg.Role + ": " + msg.Content)
 		label.Wrapping = fyne.TextWrapWord
 		a.chatHistory.Add(label)
@@ -325,10 +339,15 @@ func (a *App) refreshUI() {
 	}
 
 	a.stateDisplay.SetText(fmt.Sprintf("%v", a.globalAgg.GetState()))
-	a.eventLog.Refresh()
-	fmt.Println("refresh ui finished")
-}
 
+	// Update event log with latest events
+	a.events = a.eventProcessor.GetEvents()
+	a.eventLog.Length = func() int { return len(a.events) }
+	a.eventLog.UpdateItem = func(id widget.ListItemID, obj fyne.CanvasObject) {
+		obj.(*widget.Label).SetText(a.events[id].Type())
+	}
+	a.eventLog.Refresh()
+}
 func (a *App) RebuildState() {
 	a.globalAgg.State = make(map[string]interface{})
 	a.globalAgg.ChatHistory = nil // Reset chat history
