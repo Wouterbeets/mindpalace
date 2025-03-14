@@ -248,9 +248,18 @@ func (a *App) Run() {
 		}
 	}
 	a.transcriptBox.SetPlaceHolder("Type your request or speak using the 'Start Audio' button...")
-	a.transcriptBox.SetMinRowsVisible(3) // Smaller input box to give more space to content
+	// Set transcript box to have more visible rows for better text editing
+	a.transcriptBox.SetMinRowsVisible(5) // Increased from 3 to give more space for editing
+	a.transcriptBox.Wrapping = fyne.TextWrapWord // Enable word wrapping for better readability
 
-	submitButton := widget.NewButton("Submit", func() {
+	// Create a spinner for indicating processing state
+	processingSpinner := widget.NewProgressBarInfinite()
+	processingSpinner.Hide()
+	
+	// Define submitButton in advance so we can reference it inside the closure
+	var submitButton *widget.Button
+	
+	submitButton = widget.NewButton("Submit", func() {
 		// Wrap submit action in SafeGo for panic recovery
 		eventsourcing.SafeGo("SubmitTranscription", nil, func() {
 			log.Println("Submit button pressed")
@@ -259,28 +268,59 @@ func (a *App) Run() {
 				log.Println("No transcription text to submit")
 				return
 			}
+			
+			// Show processing spinner in transcript box
+			fyne.CurrentApp().Driver().DoFromGoroutine(func() {
+				a.transcriptBox.SetText("Processing request...")
+				a.transcriptBox.Disable() // Disable editing while processing
+				submitButton.Disable()    // Disable submit button while processing
+				processingSpinner.Show()
+			}, false)
+			
 			data := map[string]interface{}{
 				"RequestText": transcriptionText,
 			}
 			err := a.eventProcessor.ExecuteCommand("ReceiveRequest", data)
 			if err != nil {
 				log.Printf("Failed to execute ReceiveRequest: %v", err)
+				// Re-enable UI elements if there's an error
+				fyne.CurrentApp().Driver().DoFromGoroutine(func() {
+					a.transcriptBox.SetText(transcriptionText) // Restore original text
+					a.transcriptBox.Enable()
+					submitButton.Enable()
+					processingSpinner.Hide()
+				}, false)
 				return
 			}
 			
-			// Use DoFromGoroutine with the UI operations
+			// Clear the input and reset UI state after command is executed
 			fyne.CurrentApp().Driver().DoFromGoroutine(func() {
 				a.transcriptBox.SetText("")
+				a.transcriptBox.Enable()
+				submitButton.Enable()
+				processingSpinner.Hide()
 			}, false)
 		})
 	})
 	submitButton.Importance = widget.HighImportance
 	
+	// Wrap transcript box in scroll container to allow scrolling for long inputs
+	transcriptScroll := container.NewScroll(a.transcriptBox)
+	transcriptScroll.SetMinSize(fyne.NewSize(0, 100)) // Set reasonable minimum height
+	
+	// Create a container for input area with progress bar at bottom
+	inputWithProgress := container.NewBorder(
+		nil,
+		processingSpinner, // Place progress bar at bottom
+		nil, nil,
+		transcriptScroll,
+	)
+	
 	// Create the input area with buttons
 	inputArea := container.NewBorder(
 		nil, nil,
 		startStopButton, submitButton,
-		a.transcriptBox,
+		inputWithProgress,
 	)
 	
 	// Main chat interface with BorderLayout to keep input at bottom
