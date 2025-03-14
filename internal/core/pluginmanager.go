@@ -134,23 +134,3 @@ func (pm *PluginManager) RegisterCommands() (map[string]eventsourcing.CommandHan
 	}
 	return commands, pm.eventHandlers
 }
-
-// ProcessEvent processes an event by invoking all registered handlers for its type
-func (pm *PluginManager) ProcessEvent(event eventsourcing.Event, state map[string]interface{}, commands map[string]eventsourcing.CommandHandler) []eventsourcing.Event {
-	var newEvents []eventsourcing.Event
-	eventType := event.Type()
-	handlers, exists := pm.eventHandlers[eventType]
-	if !exists {
-		log.Printf("No handlers registered for event type: %s", eventType)
-		return nil
-	}
-	for _, handler := range handlers {
-		events, err := handler(event, state, commands)
-		if err != nil {
-			log.Printf("Error processing event %s with handler: %v", eventType, err)
-			continue
-		}
-		newEvents = append(newEvents, events...)
-	}
-	return newEvents
-}

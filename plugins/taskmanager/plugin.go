@@ -13,6 +13,9 @@ func (p *TaskPlugin) Commands() map[string]eventsourcing.CommandHandler {
 	}
 }
 
+func (p *TaskPlugin) Name() string {
+	return "TaskPlugin"
+}
 func (p *TaskPlugin) Schemas() map[string]map[string]interface{} {
 	return map[string]map[string]interface{}{}
 }

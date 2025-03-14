@@ -13,6 +13,9 @@ func (p *UserRequestPlugin) Commands() map[string]eventsourcing.CommandHandler {
 		"ReceiveRequest": ReceiveRequestHandler,
 	}
 }
+func (p *UserRequestPlugin) Name() string {
+	return "UserRequestPlugin"
+}
 
 func (p *UserRequestPlugin) Schemas() map[string]map[string]interface{} {
 	return map[string]map[string]interface{}{}

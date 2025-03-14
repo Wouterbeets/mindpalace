@@ -15,6 +15,10 @@ func (p *TranscriptionPlugin) Commands() map[string]eventsourcing.CommandHandler
 	}
 }
 
+func (p *TranscriptionPlugin) Name() string {
+	return "TranscriptionPlugin"
+}
+
 func (p *TranscriptionPlugin) Schemas() map[string]map[string]interface{} {
 	return map[string]map[string]interface{}{}
 }

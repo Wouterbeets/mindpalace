@@ -12,14 +12,18 @@ import (
 	"strings"
 )
 
-// LLMProcessorPlugin defines the plugin structure with fields for event submission and plugin management.
-type LLMProcessorPlugin struct {
+// LLMProcessor defines the plugin structure with fields for event submission and plugin management.
+type LLMProcessor struct {
 	submitEvent   func(eventsourcing.Event)
-	pluginManager *core.PluginManager
+	pluginManager *core.PluginManager // TODO move this to core
+}
+
+func (p *LLMProcessor) Name() string {
+	return "LLMProcessor"
 }
 
 // SetPluginManager sets the plugin manager for the plugin instance.
-func (p *LLMProcessorPlugin) SetPluginManager(pm *core.PluginManager) {
+func (p *LLMProcessor) SetPluginManager(pm *core.PluginManager) {
 	p.pluginManager = pm
 }
 
@@ -38,12 +42,12 @@ type Tool struct {
 }
 
 // SetSubmitEvent sets the event submission function for the plugin.
-func (p *LLMProcessorPlugin) SetSubmitEvent(f func(eventsourcing.Event)) {
+func (p *LLMProcessor) SetSubmitEvent(f func(eventsourcing.Event)) {
 	p.submitEvent = f
 }
 
 // Commands returns a map of command handlers, using a closure to provide access to the plugin instance.
-func (p *LLMProcessorPlugin) Commands() map[string]eventsourcing.CommandHandler {
+func (p *LLMProcessor) Commands() map[string]eventsourcing.CommandHandler {
 	return map[string]eventsourcing.CommandHandler{
 		"ProcessUserRequest": func(data map[string]interface{}, state map[string]interface{}) ([]eventsourcing.Event, error) {
 			return ProcessUserRequest(p, data, state)
@@ -52,7 +56,7 @@ func (p *LLMProcessorPlugin) Commands() map[string]eventsourcing.CommandHandler 
 }
 
 // Schemas defines the schema for the ProcessUserRequest command.
-func (p *LLMProcessorPlugin) Schemas() map[string]map[string]interface{} {
+func (p *LLMProcessor) Schemas() map[string]map[string]interface{} {
 	return map[string]map[string]interface{}{
 		"ProcessUserRequest": {
 			"RequestText": "string",
@@ -61,12 +65,12 @@ func (p *LLMProcessorPlugin) Schemas() map[string]map[string]interface{} {
 }
 
 // Type returns the plugin type as a system plugin.
-func (p *LLMProcessorPlugin) Type() eventsourcing.PluginType {
+func (p *LLMProcessor) Type() eventsourcing.PluginType {
 	return eventsourcing.SystemPlugin
 }
 
 // EventHandlers defines event handlers for the plugin.
-func (p *LLMProcessorPlugin) EventHandlers() map[string]eventsourcing.EventHandler {
+func (p *LLMProcessor) EventHandlers() map[string]eventsourcing.EventHandler {
 	return map[string]eventsourcing.EventHandler{
 		"UserRequestReceived": func(event eventsourcing.Event, state map[string]interface{}, commands map[string]eventsourcing.CommandHandler) ([]eventsourcing.Event, error) {
 			log.Println("Handling UserRequestReceived event")
@@ -152,7 +156,7 @@ var systemPrompt = `You are MindPalace, a versatile and friendly AI assistant de
 - Always strive to make the user’s experience seamless and enjoyable.`
 
 // ProcessUserRequest processes a user request, accessing plugin fields via the plugin instance.
-func ProcessUserRequest(p *LLMProcessorPlugin, data map[string]interface{}, state map[string]interface{}) ([]eventsourcing.Event, error) {
+func ProcessUserRequest(p *LLMProcessor, data map[string]interface{}, state map[string]interface{}) ([]eventsourcing.Event, error) {
 	requestText, ok := data["RequestText"].(string)
 	if !ok {
 		return nil, fmt.Errorf("missing RequestText in command data")
@@ -253,35 +257,37 @@ type call struct {
 	Arguments map[string]interface{}
 }
 
-func (p *LLMProcessorPlugin) handleFunctionCalls(calls []call, tools []Tool, requestText string, state map[string]interface{}) {
+func (p *LLMProcessor) handleFunctionCalls(calls []call, tools []Tool, requestText string, state map[string]interface{}) {
 	var pluginResults []string
 	for _, call := range calls {
 		cmdName := call.Name
 		args := call.Arguments
 		var cmdHandler eventsourcing.CommandHandler
-		for _, plugin := range p.pluginManager.GetLLMPlugins() {
-			if handler, exists := plugin.Commands()[cmdName]; exists {
-				cmdHandler = handler
-				break
+		if p.pluginManager != nil {
+			for _, plugin := range p.pluginManager.GetLLMPlugins() {
+				if handler, exists := plugin.Commands()[cmdName]; exists {
+					cmdHandler = handler
+					break
+				}
 			}
-		}
-		if cmdHandler == nil {
-			log.Printf("Command %s not found", cmdName)
-			continue
-		}
-		events, err := cmdHandler(args, state)
-		if err != nil {
-			log.Printf("Failed to execute %s: %v", cmdName, err)
-			continue
-		}
-		for _, event := range events {
-			if eventsourcing.SubmitEvent != nil {
-				eventsourcing.SubmitEvent(event)
+			if cmdHandler == nil {
+				log.Printf("Command %s not found", cmdName)
+				continue
 			}
-		}
-		if len(events) > 0 {
-			eventData, _ := json.Marshal(events[0].(*eventsourcing.GenericEvent).Data)
-			pluginResults = append(pluginResults, string(eventData))
+			events, err := cmdHandler(args, state)
+			if err != nil {
+				log.Printf("Failed to execute %s: %v", cmdName, err)
+				continue
+			}
+			for _, event := range events {
+				if eventsourcing.SubmitEvent != nil {
+					eventsourcing.SubmitEvent(event)
+				}
+			}
+			if len(events) > 0 {
+				eventData, _ := json.Marshal(events[0].(*eventsourcing.GenericEvent).Data)
+				pluginResults = append(pluginResults, string(eventData))
+			}
 		}
 	}
 	if len(pluginResults) > 0 {
@@ -318,5 +324,5 @@ func (p *LLMProcessorPlugin) handleFunctionCalls(calls []call, tools []Tool, req
 
 // NewPlugin creates a new instance of the LLMProcessorPlugin.
 func NewPlugin() eventsourcing.Plugin {
-	return &LLMProcessorPlugin{}
+	return &LLMProcessor{}
 }

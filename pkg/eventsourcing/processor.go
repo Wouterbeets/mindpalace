@@ -4,11 +4,11 @@ import "log"
 
 type EventProcessor struct {
 	store         EventStore
-	aggregate     *GlobalAggregate
+	aggregate     Aggregate
 	eventHandlers map[string][]EventHandler
 }
 
-func NewEventProcessor(store EventStore, aggregate *GlobalAggregate) *EventProcessor {
+func NewEventProcessor(store EventStore, aggregate Aggregate) *EventProcessor {
 	return &EventProcessor{store: store, aggregate: aggregate, eventHandlers: make(map[string][]EventHandler)}
 }
 
@@ -31,7 +31,7 @@ func (ep *EventProcessor) ProcessEvents(events []Event, commands map[string]Comm
 		// Trigger registered handlers
 		if handlers, exists := ep.eventHandlers[event.Type()]; exists {
 			for _, handler := range handlers {
-				newEvents, err := handler(event, ep.aggregate.State, commands)
+				newEvents, err := handler(event, ep.aggregate.GetState(), commands)
 				if err != nil {
 					log.Printf("Error in event handler for %s: %v", event.Type(), err)
 					continue // Log and continue to avoid halting on handler errors

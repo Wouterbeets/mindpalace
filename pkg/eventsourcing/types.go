@@ -2,7 +2,6 @@ package eventsourcing
 
 import (
 	"encoding/json"
-	"fmt"
 )
 
 type PluginType string
@@ -53,37 +52,6 @@ type Aggregate interface {
 	GetState() map[string]interface{}
 }
 
-// GlobalAggregate is a single shared aggregate for all plugins
-type GlobalAggregate struct {
-	State map[string]interface{}
-}
-
-func (a *GlobalAggregate) ID() string {
-	return "global"
-}
-
-func (a *GlobalAggregate) ApplyEvent(event Event) error {
-	genericEvent, ok := event.(*GenericEvent)
-	if !ok {
-		return fmt.Errorf("event is not a GenericEvent")
-	}
-	key := genericEvent.EventType
-	if current, exists := a.State[key]; exists {
-		if list, ok := current.([]interface{}); ok {
-			a.State[key] = append(list, genericEvent.Data)
-		} else {
-			a.State[key] = []interface{}{current, genericEvent.Data}
-		}
-	} else {
-		a.State[key] = []interface{}{genericEvent.Data}
-	}
-	return nil
-}
-
-func (a *GlobalAggregate) GetState() map[string]interface{} {
-	return a.State
-}
-
 // CommandHandler defines the signature for command handling functions, now with access to state
 type CommandHandler func(data map[string]interface{}, state map[string]interface{}) ([]Event, error)
 
@@ -96,6 +64,7 @@ type Plugin interface {
 	Schemas() map[string]map[string]interface{}
 	Type() PluginType
 	EventHandlers() map[string]EventHandler // Add this method
+	Name() string
 }
 
 // DefaultEventHandler is a no-op handler for plugins that don't handle events

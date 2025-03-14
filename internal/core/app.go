@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"image/color"
 	"log"
-	"regexp"
 	"runtime"
 	"strings"
 
@@ -34,7 +33,7 @@ func (t *CustomTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant)
 
 type App struct {
 	eventProcessor *eventsourcing.EventProcessor
-	globalAgg      *eventsourcing.GlobalAggregate
+	globalAgg      *AppAggregate
 	eventChan      chan eventsourcing.Event
 	pluginManager  *PluginManager
 	commands       map[string]eventsourcing.CommandHandler
@@ -42,31 +41,27 @@ type App struct {
 	stateDisplay   *widget.Entry
 	eventLog       *widget.List
 	eventDetail    *widget.Entry
-	eventHandlers  map[string][]eventsourcing.EventHandler
 	events         []eventsourcing.Event
 	transcriber    *VoiceTranscriber
 	transcribing   bool
 	transcriptBox  *widget.Entry
-	chatHistory    *fyne.Container   // VBox for chat messages
-	chatScroll     *container.Scroll // Reference to the scroll container
+	chatHistory    *fyne.Container
+	chatScroll     *container.Scroll
 }
 
-// NewApp initializes the App struct with chatScroll set up
 func NewApp(pm *PluginManager, ep *eventsourcing.EventProcessor) *App {
 	chatHistory := container.NewVBox()
 	a := &App{
 		eventProcessor: ep,
 		pluginManager:  pm,
 		commands:       make(map[string]eventsourcing.CommandHandler),
-		eventHandlers:  make(map[string][]eventsourcing.EventHandler),
 		ui:             app.New(),
-		globalAgg:      &eventsourcing.GlobalAggregate{State: make(map[string]interface{})},
-		events:         []eventsourcing.Event{},
-		transcriber:    NewVoiceTranscriber(),
-		transcribing:   false,
-		transcriptBox:  widget.NewMultiLineEntry(),
-		chatHistory:    chatHistory,
-		chatScroll:     container.NewScroll(chatHistory), // Initialize here
+		globalAgg:      &AppAggregate{State: make(map[string]interface{}), ChatHistory: []ChatMessage{}}, events: []eventsourcing.Event{},
+		transcriber:   NewVoiceTranscriber(),
+		transcribing:  false,
+		transcriptBox: widget.NewMultiLineEntry(),
+		chatHistory:   chatHistory,
+		chatScroll:    container.NewScroll(chatHistory),
 		eventLog: widget.NewList(
 			func() int { return 0 },
 			func() fyne.CanvasObject { return widget.NewLabel("Event") },
@@ -86,25 +81,17 @@ func NewApp(pm *PluginManager, ep *eventsourcing.EventProcessor) *App {
 			}, false)
 		}
 	}()
-	a.chatScroll.Direction = container.ScrollVerticalOnly // Set direction early
-
-	a.chatScroll.SetMinSize(fyne.NewSize(0, 300)) // Set size early
+	a.chatScroll.Direction = container.ScrollVerticalOnly
+	a.chatScroll.SetMinSize(fyne.NewSize(0, 300))
 	a.transcriptBox.SetPlaceHolder("Transcriptions will appear here...")
 	a.eventDetail.Disable()
 	a.eventDetail.SetText("Select an event to view details")
 
-	// Register commands and event handlers
-	commands, eventHandlers := pm.RegisterCommands()
+	// Register commands only
+	commands, _ := pm.RegisterCommands()
 	a.commands = commands
-	a.eventHandlers = eventHandlers
 
-	//// Pass pluginManager to LLMProcessorPlugin
-	//for _, p := range pm.plugins {
-	//if p. {
-	//llmPlugin.SetPluginManager(pm)
-	//}
-	//}
-	// Transcriber callback
+	// Transcriber callback using executeCommand
 	a.transcriber.SetSessionEventCallback(func(eventType string, data map[string]interface{}) {
 		var cmdName string
 		switch eventType {
@@ -116,20 +103,28 @@ func NewApp(pm *PluginManager, ep *eventsourcing.EventProcessor) *App {
 			log.Printf("Unknown event type: %s", eventType)
 			return
 		}
-		handler, exists := a.commands[cmdName]
-		if !exists {
-			log.Printf("Command %s not found", cmdName)
-			return
-		}
-		events, err := handler(data, a.globalAgg.State)
+		err := a.executeCommand(cmdName, data)
 		if err != nil {
 			log.Printf("Failed to execute %s: %v", cmdName, err)
-			return
 		}
-		a.processEvents(events)
 	})
 
 	return a
+}
+
+func (a *App) executeCommand(commandName string, data map[string]interface{}) error {
+	handler, exists := a.commands[commandName]
+	if !exists {
+		return fmt.Errorf("command %s not found", commandName)
+	}
+	events, err := handler(data, a.globalAgg.State)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		eventsourcing.SubmitEvent(event)
+	}
+	return nil
 }
 
 func (a *App) processEvents(events []eventsourcing.Event) {
@@ -233,17 +228,11 @@ func (a *App) Run() {
 		data := map[string]interface{}{
 			"RequestText": transcriptionText,
 		}
-		handler, exists := a.commands["ReceiveRequest"]
-		if !exists {
-			log.Println("ReceiveRequest command not found")
-			return
-		}
-		events, err := handler(data, a.globalAgg.State)
+		err := a.executeCommand("ReceiveRequest", data)
 		if err != nil {
 			log.Printf("Failed to execute ReceiveRequest: %v", err)
 			return
 		}
-		a.processEvents(events)
 		a.transcriptBox.SetText("")
 		log.Printf("Submitted request: '%s'", transcriptionText)
 	})
@@ -305,7 +294,6 @@ func (a *App) buildCommandExecution() fyne.CanvasObject {
 
 	inputArea := widget.NewMultiLineEntry()
 	inputArea.SetPlaceHolder("Enter command parameters in JSON format...")
-
 	executeButton := widget.NewButton("Execute", func() {
 		selectedCmd := commandDropdown.Selected
 		if selectedCmd == "" {
@@ -318,24 +306,11 @@ func (a *App) buildCommandExecution() fyne.CanvasObject {
 			log.Printf("Invalid JSON input: %v", err)
 			return
 		}
-
-		handler, exists := a.commands[selectedCmd]
-		if !exists {
-			log.Printf("Command %s not found", selectedCmd)
-			return
-		}
-		events, err := handler(inputData, a.globalAgg.State)
+		err := a.executeCommand(selectedCmd, inputData)
 		if err != nil {
 			log.Printf("Failed to execute command %s: %v", selectedCmd, err)
-			return
 		}
-		if err := a.eventProcessor.ProcessEvents(events, a.commands); err != nil {
-			log.Printf("Failed to process events: %v", err)
-			return
-		}
-		a.refreshUI()
 	})
-
 	return container.NewVBox(
 		widget.NewLabel("Select Command:"),
 		commandDropdown,
@@ -348,42 +323,10 @@ func (a *App) buildCommandExecution() fyne.CanvasObject {
 func (a *App) refreshUI() {
 	a.chatHistory.Objects = nil
 
-	for _, event := range a.events {
-		genericEvent, ok := event.(*eventsourcing.GenericEvent)
-		if !ok {
-			log.Printf("Skipping non-GenericEvent: %v", event)
-			continue
-		}
-
-		switch genericEvent.EventType {
-		case "UserRequestReceived":
-			reqText, _ := genericEvent.Data["RequestText"].(string)
-			label := widget.NewLabel("You: " + reqText)
-			label.Wrapping = fyne.TextWrapWord
-			a.chatHistory.Add(label)
-
-		case "LLMProcessingStarted":
-			reqText, _ := genericEvent.Data["RequestText"].(string)
-			label := widget.NewLabel("Assistant: Processing '" + reqText + "'...")
-			label.Wrapping = fyne.TextWrapWord
-			a.chatHistory.Add(label)
-
-		case "LLMProcessingCompleted":
-			respText, _ := genericEvent.Data["ResponseText"].(string)
-			thinks, regular := parseResponseText(respText)
-
-			for _, think := range thinks {
-				thinkLabel := widget.NewLabel("Assistant [think]: " + think)
-				thinkLabel.Wrapping = fyne.TextWrapWord
-				a.chatHistory.Add(thinkLabel)
-			}
-
-			if regular != "" {
-				regularLabel := widget.NewLabel("Assistant: " + regular)
-				regularLabel.Wrapping = fyne.TextWrapWord
-				a.chatHistory.Add(regularLabel)
-			}
-		}
+	for _, msg := range a.globalAgg.ChatHistory {
+		label := widget.NewLabel(msg.Role + ": " + msg.Content)
+		label.Wrapping = fyne.TextWrapWord
+		a.chatHistory.Add(label)
 	}
 
 	a.chatHistory.Refresh()
@@ -395,19 +338,9 @@ func (a *App) refreshUI() {
 	a.eventLog.Refresh()
 }
 
-// parseResponseText extracts think content and regular text from LLM response
-func parseResponseText(responseText string) (thinks []string, regular string) {
-	re := regexp.MustCompile(`(?s)<think>(.*?)</think>`)
-	matches := re.FindAllStringSubmatch(responseText, -1)
-	for _, match := range matches {
-		thinks = append(thinks, match[1])
-	}
-	regular = re.ReplaceAllString(responseText, "")
-	return thinks, strings.TrimSpace(regular)
-}
-
 func (a *App) RebuildState() {
 	a.globalAgg.State = make(map[string]interface{})
+	a.globalAgg.ChatHistory = nil // Reset chat history
 	a.events = a.eventProcessor.GetEvents()
 	for _, event := range a.events {
 		if err := a.globalAgg.ApplyEvent(event); err != nil {
