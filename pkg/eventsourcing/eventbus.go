@@ -1,7 +1,7 @@
 package eventsourcing
 
 import (
-	"log"
+	"mindpalace/pkg/logging"
 	"sync"
 )
 
@@ -39,7 +39,7 @@ func (eb *SimpleEventBus) Publish(event Event) {
 	// Apply to aggregate
 	if eb.aggregate != nil {
 		if err := eb.aggregate.ApplyEvent(event); err != nil {
-			log.Printf("Error applying event to aggregate: %v", err)
+			logging.Error("Error applying event %s to aggregate: %v", event.Type(), err)
 		}
 	}
 
@@ -74,7 +74,7 @@ func (eb *SimpleEventBus) Publish(event Event) {
 			}, func() {
 				newEvents, err := handlerCopy(event, state, allCommands)
 				if err != nil {
-					log.Printf("Error in event handler for %s: %v", event.Type(), err)
+					logging.Error("Error in event handler for %s: %v", event.Type(), err)
 					return
 				}
 				// Publish any new events

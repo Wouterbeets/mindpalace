@@ -1,28 +1,84 @@
 package main
 
 import (
-	"log"
+	"flag"
+	"fmt"
 	"mindpalace/internal/core"
 	"mindpalace/internal/orchestration"
 	"mindpalace/internal/ui"
 	"mindpalace/pkg/eventsourcing"
+	"mindpalace/pkg/logging"
+	"os"
 )
 
 func main() {
+	// Define command-line flags
+	var (
+		verboseFlag   bool
+		debugFlag     bool
+		traceFlag     bool
+		helpFlag      bool
+		versionFlag   bool
+		eventFileFlag string
+	)
+
+	// Parse command-line flags
+	flag.BoolVar(&verboseFlag, "v", false, "Enable verbose logging (info level)")
+	flag.BoolVar(&debugFlag, "debug", false, "Enable debug logging")
+	flag.BoolVar(&traceFlag, "trace", false, "Enable trace logging (most detailed)")
+	flag.BoolVar(&helpFlag, "help", false, "Show help information")
+	flag.BoolVar(&versionFlag, "version", false, "Show version information")
+	flag.StringVar(&eventFileFlag, "events", "events.json", "Path to the events storage file")
+	flag.Parse()
+
+	// Show help if requested
+	if helpFlag {
+		fmt.Println("MindPalace - An event-sourced AI assistant")
+		fmt.Println("\nUsage:")
+		fmt.Println("  mindpalace [options]")
+		fmt.Println("\nOptions:")
+		flag.PrintDefaults()
+		os.Exit(0)
+	}
+
+	// Show version if requested
+	if versionFlag {
+		fmt.Println("MindPalace Version 0.2.0")
+		os.Exit(0)
+	}
+
+	// Set up logging level based on flags
+	if traceFlag {
+		logging.SetVerbosity(logging.LogLevelTrace)
+		logging.Info("Trace logging enabled")
+	} else if debugFlag {
+		logging.SetVerbosity(logging.LogLevelDebug)
+		logging.Info("Debug logging enabled")
+	} else if verboseFlag {
+		logging.SetVerbosity(logging.LogLevelInfo)
+		logging.Info("Verbose logging enabled")
+	} else {
+		// Default is minimal logging (info level but with limited output)
+		logging.SetVerbosity(logging.LogLevelInfo)
+		logging.Info("MindPalace starting with minimal logging")
+	}
+
 	// Register a global error handler for goroutine panics
 	eventsourcing.GetGlobalRecoveryManager().RegisterErrorHandler(func(err error, stackTrace string, eventType string, recoveryData map[string]interface{}) {
-		log.Printf("RECOVERED PANIC in event '%s': %v\nContext: %v\nStack trace: %s", 
+		logging.Error("RECOVERED PANIC in event '%s': %v\nContext: %v\nStack trace: %s", 
 			eventType, err, recoveryData, stackTrace)
 	})
 
 	// Initialize plugin manager
 	pluginManager := core.NewPluginManager()
+	logging.Debug("Plugin manager initialized")
 	
 	// Set up event store and aggregate
-	store := eventsourcing.NewFileEventStore("events.json")
+	store := eventsourcing.NewFileEventStore(eventFileFlag)
 	if err := store.Load(); err != nil {
-		log.Printf("Failed to load events: %v", err)
+		logging.Error("Failed to load events: %v", err)
 	}
+	logging.Debug("Event store loaded from %s", eventFileFlag)
 	
 	// Create aggregate
 	agg := &core.AppAggregate{
@@ -32,13 +88,16 @@ func main() {
 		ToolCallResults:  make(map[string]map[string]interface{}),
 		AllCommands:      make(map[string]eventsourcing.CommandHandler),
 	}
+	logging.Debug("Application aggregate created")
 	
 	// Create event processor
 	ep := eventsourcing.NewEventProcessor(store, agg)
+	logging.Debug("Event processor initialized")
 	
 	// Load plugins
 	pluginManager.LoadPlugins("plugins", ep)
 	commands, _ := pluginManager.RegisterCommands()
+	logging.Info("Loaded %d commands from plugins", len(commands))
 	
 	// Store commands in the aggregate so they're available to event handlers
 	agg.AllCommands = commands
@@ -48,10 +107,14 @@ func main() {
 	ep.RegisterEventHandler("LLMProcessingCompleted", orchestration.NewToolCallFunc(ep, agg, pluginManager.GetLLMPlugins()))
 	ep.RegisterEventHandler("ToolCallInitiated", orchestration.NewToolCallExecutor(ep))
 	ep.RegisterEventHandler("ToolCallCompleted", orchestration.NewToolCallCompletionHandler(ep, agg))
+	logging.Debug("Event handlers registered")
 	
 	// Create and run the UI application
+	logging.Info("Starting UI application")
 	app := ui.NewApp(pluginManager, ep, agg)
 	app.InitUI()
+	logging.Debug("UI initialized")
 	app.RebuildState()
+	logging.Debug("Application state rebuilt")
 	app.Run()
 }
