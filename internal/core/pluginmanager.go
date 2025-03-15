@@ -27,7 +27,7 @@ func NewPluginManager() *PluginManager {
 func (pm *PluginManager) GetLLMPlugins() []eventsourcing.Plugin {
 	var llmPlugins []eventsourcing.Plugin
 	for _, plugin := range pm.plugins {
-		fmt.Println(plugin, plugin.Name(), plugin.Schemas())
+		logging.Trace("Checking plugin %s for LLM capability, schemas: %v", plugin.Name(), plugin.Schemas())
 		if plugin.Type() == eventsourcing.LLMPlugin {
 			llmPlugins = append(llmPlugins, plugin)
 		}

@@ -3,7 +3,6 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"runtime"
 	"strings"
 
@@ -16,7 +15,11 @@ import (
 	"mindpalace/internal/audio"
 	"mindpalace/internal/core"
 	"mindpalace/pkg/eventsourcing"
+	"mindpalace/pkg/logging"
 )
+
+// We could create a custom logger, but Fyne v2 doesn't seem to support custom loggers easily
+// Let's keep this for future reference in case we upgrade Fyne
 
 // App represents the UI application
 type App struct {
@@ -42,12 +45,16 @@ type App struct {
 func NewApp(pm *core.PluginManager, ep *eventsourcing.EventProcessor, agg *core.AppAggregate) *App {
 	chatHistory := container.NewVBox()
 	tasksContainer := container.NewVBox()
+	// Create a new Fyne application
+	// TODO: Find a way to silence Fyne errors in the future
+	fyneApp := app.NewWithID("com.mindpalace.app")
+	
 	a := &App{
 		globalAgg:      agg,
 		eventProcessor: ep,
 		pluginManager:  pm,
 		commands:       make(map[string]eventsourcing.CommandHandler),
-		ui:             app.New(),
+		ui:             fyneApp,
 		transcriber:    audio.NewVoiceTranscriber(),
 		transcribing:   false,
 		transcriptBox:  widget.NewMultiLineEntry(),
@@ -99,12 +106,12 @@ func NewApp(pm *core.PluginManager, ep *eventsourcing.EventProcessor, agg *core.
 		case "stop":
 			cmdName = "StopTranscription"
 		default:
-			log.Printf("Unknown event type: %s", eventType)
+			logging.Error("Unknown event type: %s", eventType)
 			return
 		}
 		err := a.eventProcessor.ExecuteCommand(cmdName, data)
 		if err != nil {
-			log.Printf("Failed to execute %s: %v", cmdName, err)
+			logging.Error("Failed to execute %s: %v", cmdName, err)
 		}
 	})
 
@@ -117,7 +124,7 @@ func (a *App) processEvents(events []eventsourcing.Event) {
 		return
 	}
 	if err := a.eventProcessor.ProcessEvents(events, a.commands); err != nil {
-		log.Printf("Failed to process events: %v", err)
+		logging.Error("Failed to process events: %v", err)
 		return
 	}
 	// UI refresh now happens via event bus subscription in the constructor
@@ -179,14 +186,14 @@ func (a *App) Run() {
 	startStopButton := widget.NewButton("Start Audio", nil)
 	startStopButton.Importance = widget.MediumImportance
 	
-	log.Println("Run running on goroutine:", runtime.NumGoroutine())
+	logging.Trace("Run running on goroutine: %d", runtime.NumGoroutine())
 	startStopButton.OnTapped = func() {
-		log.Println("OnTapped running on goroutine:", runtime.NumGoroutine())
+		logging.Trace("Button tapped on goroutine: %d", runtime.NumGoroutine())
 		if !a.transcribing {
 			// Clear the transcript box on the main thread
 			fyne.CurrentApp().Driver().DoFromGoroutine(func() {
 				a.transcriptBox.SetText("")
-				log.Println("Cleared transcript box")
+				logging.Trace("Cleared transcript box")
 			}, false)
 
 			// Start transcription with panic-safe callback
@@ -203,13 +210,13 @@ func (a *App) Run() {
 							} else {
 								a.transcriptBox.SetText(current + " " + text) // Use space instead of newline
 							}
-							log.Printf("Added text to transcript: '%s'", text)
+							logging.Trace("Added text to transcript: %s", text)
 						}, false)
 					})
 				}
 			})
 			if err != nil {
-				log.Printf("Failed to start audio: %v", err)
+				logging.Error("Failed to start audio: %v", err)
 				
 				// Show an error dialog
 				fyne.CurrentApp().Driver().DoFromGoroutine(func() {
@@ -262,10 +269,10 @@ func (a *App) Run() {
 	submitButton = widget.NewButton("Submit", func() {
 		// Wrap submit action in SafeGo for panic recovery
 		eventsourcing.SafeGo("SubmitTranscription", nil, func() {
-			log.Println("Submit button pressed")
+			logging.Trace("Submit button pressed")
 			transcriptionText := a.transcriptBox.Text
 			if transcriptionText == "" {
-				log.Println("No transcription text to submit")
+				logging.Trace("No transcription text to submit")
 				return
 			}
 			
@@ -282,7 +289,7 @@ func (a *App) Run() {
 			}
 			err := a.eventProcessor.ExecuteCommand("ReceiveRequest", data)
 			if err != nil {
-				log.Printf("Failed to execute ReceiveRequest: %v", err)
+				logging.Error("Failed to execute ReceiveRequest: %v", err)
 				// Re-enable UI elements if there's an error
 				fyne.CurrentApp().Driver().DoFromGoroutine(func() {
 					a.transcriptBox.SetText(transcriptionText) // Restore original text
@@ -395,7 +402,7 @@ func (a *App) buildCommandExecution() fyne.CanvasObject {
 		commandOptions = append(commandOptions, cmd)
 	}
 	commandDropdown := widget.NewSelect(commandOptions, func(s string) {
-		log.Printf("Selected command: %s", s)
+		logging.Trace("Selected command: %s", s)
 	})
 
 	inputArea := widget.NewMultiLineEntry()
@@ -403,18 +410,18 @@ func (a *App) buildCommandExecution() fyne.CanvasObject {
 	executeButton := widget.NewButton("Execute", func() {
 		selectedCmd := commandDropdown.Selected
 		if selectedCmd == "" {
-			log.Println("No command selected")
+			logging.Trace("No command selected")
 			return
 		}
 		inputText := inputArea.Text
 		var inputData map[string]interface{}
 		if err := json.Unmarshal([]byte(inputText), &inputData); err != nil {
-			log.Printf("Invalid JSON input: %v", err)
+			logging.Error("Invalid JSON input: %v", err)
 			return
 		}
 		err := a.eventProcessor.ExecuteCommand(selectedCmd, inputData)
 		if err != nil {
-			log.Printf("Failed to execute command %s: %v", selectedCmd, err)
+			logging.Error("Failed to execute command %s: %v", selectedCmd, err)
 		}
 	})
 	return container.NewVBox(
@@ -428,7 +435,8 @@ func (a *App) buildCommandExecution() fyne.CanvasObject {
 
 // refreshUI updates the UI based on the current state
 func (a *App) refreshUI() {
-	log.Println("Refreshing UI in real-time")
+	// Only log this at trace level to avoid spamming logs
+	logging.Trace("Refreshing UI in real-time")
 	a.chatHistory.Objects = nil
 	a.tasksContainer.Objects = nil
 
@@ -775,7 +783,7 @@ func (a *App) RebuildState() {
 	a.events = a.eventProcessor.GetEvents()
 	for _, event := range a.events {
 		if err := a.globalAgg.ApplyEvent(event); err != nil {
-			log.Printf("Failed to apply event during rebuild: %v", err)
+			logging.Error("Failed to apply event during rebuild: %v", err)
 		}
 	}
 	a.refreshUI()
