@@ -3,6 +3,7 @@ package llmmodels
 // Message defines the structure for Ollama API chat messages
 type Message struct {
 	Role    string `json:"role"`
+	Name    string `json:"name"`
 	Content string `json:"content"`
 }
 
@@ -42,4 +43,15 @@ type OllamaMessage struct {
 type OllamaResponse struct {
 	Message OllamaMessage `json:"message"`
 	Done    bool          `json:"done"`
+}
+
+// StreamHandler defines a callback function for handling streaming responses
+type StreamHandler func(chunk *OllamaResponse)
+
+// OllamaStreamingEvent represents the streaming event for UI updates
+type OllamaStreamingEvent struct {
+	RequestID      string `json:"request_id"`
+	PartialContent string `json:"partial_content"`
+	IsFinal        bool   `json:"is_final"`
+	HasToolCalls   bool   `json:"has_tool_calls"`
 }

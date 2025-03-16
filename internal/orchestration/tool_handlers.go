@@ -60,7 +60,7 @@ func NewToolCallFunc(ep *eventsourcing.EventProcessor, agg eventsourcing.Aggrega
 		if len(toolCalls) == 0 {
 			return nil, nil
 		}
-		
+
 		// Create events for each tool call
 		var events []eventsourcing.Event
 		for i, call := range toolCalls {
@@ -107,7 +107,6 @@ func NewToolCallExecutor(ep *eventsourcing.EventProcessor) eventsourcing.EventHa
 	}
 }
 
-// NewToolCallCompletionHandler creates an event handler that processes completed tool calls
 func NewToolCallCompletionHandler(ep *eventsourcing.EventProcessor, agg eventsourcing.Aggregate) eventsourcing.EventHandler {
 	return func(event eventsourcing.Event, state map[string]interface{}, commands map[string]eventsourcing.CommandHandler) ([]eventsourcing.Event, error) {
 		genericEvent, ok := event.(*eventsourcing.GenericEvent)
@@ -116,20 +115,24 @@ func NewToolCallCompletionHandler(ep *eventsourcing.EventProcessor, agg eventsou
 		}
 		requestID, _ := genericEvent.Data["RequestID"].(string)
 
-		// Get pending tool calls from the aggregate
-		// This cast is needed since we need to access specific fields
 		coreAgg, ok := agg.(*core.AppAggregate)
 		if !ok {
 			return nil, fmt.Errorf("aggregate is not a core.AppAggregate")
 		}
 
 		if len(coreAgg.PendingToolCalls[requestID]) == 0 {
-			// All tool calls completed
 			results := coreAgg.ToolCallResults[requestID]
 			toolCallResults := make([]map[string]interface{}, 0, len(results))
-			for toolCallID, result := range results {
+			for toolCallID, res := range results {
+				resMap, ok := res.(map[string]interface{})
+				if !ok {
+					continue // Skip malformed entries
+				}
+				function, _ := resMap["function"].(string)
+				result, _ := resMap["result"].(map[string]interface{})
 				toolCallResults = append(toolCallResults, map[string]interface{}{
 					"tool_call_id": toolCallID,
+					"toolName":     function, // Include tool name
 					"result":       result,
 				})
 			}
@@ -145,11 +148,4 @@ func NewToolCallCompletionHandler(ep *eventsourcing.EventProcessor, agg eventsou
 		}
 		return nil, nil
 	}
-}
-
-// AppAggregate is a temporary interface to maintain compatibility with existing code
-// In a future refactoring, we should define a proper interface in this package
-type AppAggregate struct {
-	PendingToolCalls map[string][]string               // requestID -> list of tool call IDs
-	ToolCallResults  map[string]map[string]interface{} // requestID -> toolCallID -> result
 }

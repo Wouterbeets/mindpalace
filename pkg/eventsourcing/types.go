@@ -18,6 +18,9 @@ var SubmitEvent = func(event Event) {
 	}
 }
 
+// SubmitStreamingEvent is a function for sending streaming events that won't be persisted
+var SubmitStreamingEvent func(eventType string, data map[string]interface{})
+
 // SetGlobalEventBus sets the global event bus instance
 func SetGlobalEventBus(eb EventBus) {
 	globalEventBus = eb

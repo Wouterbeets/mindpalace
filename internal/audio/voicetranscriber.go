@@ -24,6 +24,7 @@ func absVal(x float32) float32 {
 
 // VoiceTranscriber handles audio recording and real-time transcription
 type VoiceTranscriber struct {
+	wg                    sync.WaitGroup
 	stream                *portaudio.Stream
 	audioFile             *os.File
 	sampleCount           int
@@ -133,10 +134,10 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 				paInitError = fmt.Errorf("panic in portaudio initialization: %v", r)
 			}
 		}()
-		
+
 		paInitError = portaudio.Initialize()
 	}()
-	
+
 	if paInitError != nil {
 		log.Printf("PortAudio initialization error: %v", paInitError)
 		vt.audioFile.Close()
@@ -146,11 +147,11 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 
 	// Open audio stream with simplified approach
 	log.Println("Opening audio stream...")
-	
+
 	// Create buffer for audio capture
 	bufferSize := 1024
 	buffer := make([]float32, bufferSize)
-	
+
 	// Try to open a default stream for input
 	var streamError error
 	func() {
@@ -160,7 +161,7 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 				streamError = fmt.Errorf("panic in stream opening: %v", r)
 			}
 		}()
-		
+
 		// Simple default input stream
 		vt.stream, streamError = portaudio.OpenDefaultStream(1, 0, 16000, bufferSize, &buffer)
 	}()
@@ -182,10 +183,10 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 				startError = fmt.Errorf("panic in stream.Start: %v", r)
 			}
 		}()
-		
+
 		startError = vt.stream.Start()
 	}()
-	
+
 	if startError != nil {
 		log.Printf("Error starting audio stream: %v", startError)
 		vt.stream.Close()
@@ -195,25 +196,27 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 		return fmt.Errorf("failed to start audio stream: %w", startError)
 	}
 
+	// In Start method, replace the reading goroutine with:
 	vt.running = true
 	log.Println("Audio transcription started successfully")
 
-	// Start transcription goroutine to process text from Python
+	// Start transcription goroutine
 	go vt.processTranscriptions()
-	
-	// Start a separate goroutine to read audio in a blocking fashion
+
+	// Start reading goroutine with WaitGroup
+	vt.wg.Add(1)
 	go func() {
+		defer vt.wg.Done() // Decrement when goroutine exits
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("RECOVERED PANIC in audio processing loop: %v", r)
 			}
 		}()
-		
+
 		log.Println("Starting audio reading loop...")
 		readCount := 0
-		
+
 		for {
-			// Check if we should continue running
 			vt.mu.Lock()
 			if !vt.running || vt.stream == nil {
 				vt.mu.Unlock()
@@ -221,45 +224,24 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 				return
 			}
 			vt.mu.Unlock()
-			
-			// Read from the stream (blocking call)
+
 			log.Printf("Reading audio data from stream... (read count: %d)", readCount)
 			err := vt.stream.Read()
 			readCount++
-			
+
 			if err != nil {
 				log.Printf("Error reading from audio stream: %v", err)
-				time.Sleep(100 * time.Millisecond) // Avoid tight loop on error
+				time.Sleep(100 * time.Millisecond)
 				continue
 			}
-			
-			// Check if we have valid audio data
-			hasAudio := false
-			maxVal := float32(0.0)
-			for _, sample := range buffer {
-				if sample != 0 {
-					hasAudio = true
-					if absVal(sample) > maxVal {
-						maxVal = absVal(sample)
-					}
-				}
-			}
-			
-			if hasAudio {
-				log.Printf("Got valid audio data - max amplitude: %.6f (read count: %d)", maxVal, readCount)
-			} else {
-				log.Printf("WARNING: Read from stream returned success but buffer contains only zeros (read count: %d)", readCount)
-			}
-			
-			// Process the audio data we just read
+
 			vt.mu.Lock()
 			if vt.running {
 				log.Println("Processing audio data...")
 				vt.processAudio(buffer)
 			}
 			vt.mu.Unlock()
-			
-			// Small delay to avoid excessive CPU usage
+
 			time.Sleep(10 * time.Millisecond)
 		}
 	}()
@@ -267,46 +249,36 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 	return nil
 }
 
-// Stop ends the audio recording and transcription
 func (vt *VoiceTranscriber) Stop() {
-	log.Println("Stop function called")
-	if vt.stream == nil {
-		log.Println("No active stream to stop")
-		return
-	}
-
-	log.Println("Stopping stream...")
 	vt.mu.Lock()
 	vt.running = false
 	vt.mu.Unlock()
 
-	// Stop the stream with panic protection
-	log.Println("Closing audio stream...")
 	if vt.stream != nil {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("RECOVERED PANIC in stream.Stop: %v", r)
+					log.Printf("Recovered panic in stream.Abort: %v", r)
 				}
 			}()
-			
-			if err := vt.stream.Stop(); err != nil {
-				log.Printf("Error stopping stream: %v", err)
+			if err := vt.stream.Abort(); err != nil {
+				log.Printf("Error aborting stream: %v", err)
 			}
 		}()
-		
+
+		// Wait for the reading goroutine to finish
+		vt.wg.Wait()
+
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("RECOVERED PANIC in stream.Close: %v", r)
+					log.Printf("Recovered panic in stream.Close: %v", r)
 				}
 			}()
-			
 			if err := vt.stream.Close(); err != nil {
 				log.Printf("Error closing stream: %v", err)
 			}
 		}()
-		
 		vt.stream = nil
 	}
 	log.Println("Audio stream closed")
@@ -341,7 +313,7 @@ func (vt *VoiceTranscriber) Stop() {
 				log.Printf("RECOVERED PANIC in portaudio.Terminate: %v", r)
 			}
 		}()
-		
+
 		if err := portaudio.Terminate(); err != nil {
 			log.Printf("Error terminating PortAudio: %v", err)
 		}
@@ -354,18 +326,18 @@ func (vt *VoiceTranscriber) Stop() {
 	// Trigger "stop" event
 	if vt.sessionCallback != nil {
 		log.Println("Dispatching session end callback...")
-		
+
 		// Use eventsourcing's recovery pattern directly
 		sessionCallback := vt.sessionCallback
 		sessionID := vt.sessionID
-		
+
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
 					log.Printf("RECOVERED PANIC in transcriber session callback: %v", r)
 				}
 			}()
-			
+
 			sessionCallback("stop", map[string]interface{}{
 				"SessionID":    sessionID,
 				"DurationSecs": duration,
@@ -382,89 +354,48 @@ func (vt *VoiceTranscriber) Stop() {
 	log.Printf("Audio transcription stopped, processed %d samples", vt.sampleCount)
 }
 
-// processAudio processes incoming audio data
 func (vt *VoiceTranscriber) processAudio(in []float32) {
-	vt.mu.Lock()
-	defer vt.mu.Unlock()
-
+	// No lock here; caller already holds vt.mu
 	if !vt.running || vt.writer == nil {
 		log.Println("processAudio: Not running or writer is nil - skipping processing")
 		return
 	}
 
-	// Check if we have any non-zero samples
-	hasAudio := false
-	maxVal := float32(0.0)
-	for _, sample := range in {
-		if sample != 0 {
-			hasAudio = true
-			if absVal(sample) > maxVal {
-				maxVal = absVal(sample)
-			}
-		}
-	}
-	
-	if !hasAudio {
-		log.Println("processAudio: Buffer contains only zeros - skipping")
-		return
-	}
-	
-	log.Printf("processAudio: Adding %d samples to buffer (max amplitude: %.6f)", len(in), maxVal)
+	// Append incoming audio to buffer
+	log.Printf("processAudio: Current audioBuffer size: %d", len(vt.audioBuffer))
 	vt.audioBuffer = append(vt.audioBuffer, in...)
+	log.Printf("processAudio: After append, audioBuffer size: %d", len(vt.audioBuffer))
 
-	// Process chunks of 32000 samples (2 seconds at 16kHz)
+	// Process chunks of 32,000 samples
 	chunkCount := 0
 	for len(vt.audioBuffer) >= 32000 {
 		chunk := vt.audioBuffer[:32000]
 		vt.audioBuffer = vt.audioBuffer[32000:]
 		chunkCount++
 
-		// Check if this chunk has non-zero data
-		chunkHasAudio := false
-		chunkMaxVal := float32(0.0)
-		for _, sample := range chunk {
-			if sample != 0 {
-				chunkHasAudio = true
-				if absVal(sample) > chunkMaxVal {
-					chunkMaxVal = absVal(sample)
-				}
-			}
-		}
-		
-		if !chunkHasAudio {
-			log.Println("Chunk contains only zeros - skipping")
-			continue
-		}
-		
-		log.Printf("Processing chunk %d of 32000 samples (max amplitude: %.6f)", chunkCount, chunkMaxVal)
+		log.Printf("Processing chunk %d of 32000 samples", chunkCount)
 
-		// Write to WAV file
-		for _, sample := range chunk {
-			sampleInt16 := int16(sample * 32767)
-			if err := binary.Write(vt.audioFile, binary.LittleEndian, sampleInt16); err != nil {
-				log.Printf("WAV write error: %v", err)
-			}
-		}
-		vt.sampleCount += len(chunk)
-
-		// Convert chunk to binary PCM16 for transmission to Python
+		// Convert float32 samples to int16 PCM
 		var pcmData []byte
 		for _, sample := range chunk {
 			sample16 := int16(sample * 32767)
 			pcmData = append(pcmData, byte(sample16&0xFF), byte(sample16>>8))
 		}
 
-		// Send the chunk to Python
 		log.Printf("Sending %d bytes of PCM data to Python process", len(pcmData))
+
+		// Write length as string followed by newline
 		fmt.Fprintf(vt.writer, "%d\n", len(pcmData))
+		// Write PCM data
 		bytesWritten, err := vt.writer.Write(pcmData)
 		if err != nil {
 			log.Printf("Error writing PCM data: %v", err)
 		} else {
 			log.Printf("Wrote %d bytes of PCM data", bytesWritten)
 		}
-		
+		// Write trailing newline
 		vt.writer.WriteByte('\n')
+		// Flush to ensure data is sent
 		err = vt.writer.Flush()
 		if err != nil {
 			log.Printf("Error flushing writer: %v", err)
@@ -472,13 +403,14 @@ func (vt *VoiceTranscriber) processAudio(in []float32) {
 			log.Println("Flushed PCM data to Python process")
 		}
 	}
+	log.Printf("processAudio: After processing, audioBuffer size: %d", len(vt.audioBuffer))
 }
 
 // processTranscriptions handles incoming transcriptions from the Python process
 func (vt *VoiceTranscriber) processTranscriptions() {
 	log.Println("Starting transcription processing goroutine...")
 	transcriptionCount := 0
-	
+
 	for {
 		vt.mu.Lock()
 		if !vt.running || vt.reader == nil {
@@ -534,13 +466,13 @@ func (vt *VoiceTranscriber) writeWAVHeader() {
 	vt.audioFile.WriteString("WAVE") // Format
 	vt.audioFile.WriteString("fmt ") // Subchunk1ID
 	binary.Write(vt.audioFile, binary.LittleEndian, uint32(16))
-	binary.Write(vt.audioFile, binary.LittleEndian, uint16(1))                 // PCM
-	binary.Write(vt.audioFile, binary.LittleEndian, uint16(1))                 // Mono
-	binary.Write(vt.audioFile, binary.LittleEndian, uint32(16000))             // Sample rate
-	binary.Write(vt.audioFile, binary.LittleEndian, uint32(16000*2))           // Byte rate
-	binary.Write(vt.audioFile, binary.LittleEndian, uint16(2))                 // Block align
-	binary.Write(vt.audioFile, binary.LittleEndian, uint16(16))                // Bits per sample
-	vt.audioFile.WriteString("data") // Subchunk2ID
+	binary.Write(vt.audioFile, binary.LittleEndian, uint16(1))       // PCM
+	binary.Write(vt.audioFile, binary.LittleEndian, uint16(1))       // Mono
+	binary.Write(vt.audioFile, binary.LittleEndian, uint32(16000))   // Sample rate
+	binary.Write(vt.audioFile, binary.LittleEndian, uint32(16000*2)) // Byte rate
+	binary.Write(vt.audioFile, binary.LittleEndian, uint16(2))       // Block align
+	binary.Write(vt.audioFile, binary.LittleEndian, uint16(16))      // Bits per sample
+	vt.audioFile.WriteString("data")                                 // Subchunk2ID
 	binary.Write(vt.audioFile, binary.LittleEndian, uint32(0))
 }
 

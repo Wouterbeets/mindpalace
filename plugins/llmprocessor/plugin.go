@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -8,7 +9,10 @@ import (
 	"log"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/llmmodels"
+	"mindpalace/pkg/logging"
 	"net/http"
+	"reflect"
+	"strings"
 )
 
 // Constants for Ollama configuration
@@ -136,50 +140,60 @@ func handleAllToolCallsCompleted(event eventsourcing.Event, state map[string]int
 	if !ok {
 		return nil, fmt.Errorf("missing RequestID in event data")
 	}
-	results, ok := genericEvent.Data["Results"].([]map[string]interface{})
+	toolResults, ok := genericEvent.Data["Results"].([]map[string]interface{})
 	if !ok {
 		return nil, fmt.Errorf("missing Results in event data")
 	}
-	messages, err := buildMessagesForToolCompletion(state, requestID, results)
+	messages, err := buildMessagesForToolCompletion(state, requestID, toolResults)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Log the conversation for debugging
 	log.Printf("Tool completion with %d messages in conversation", len(messages))
-	
+
 	// Use SafeGo instead of a raw goroutine
 	eventsourcing.SafeGo("AllToolCallsCompleted", map[string]interface{}{
-		"requestID": requestID,
-		"results": results,
+		"requestID":   requestID,
+		"toolResults": toolResults,
 	}, func() {
+		logging.Info("AllToolCallsCompleted from goroutine")
 		ollamaReq := llmmodels.OllamaRequest{
 			Model:    ollamaModel,
 			Messages: messages,
-			Stream:   false,
+			Stream:   true, // Enable streaming
 		}
-		ollamaResp, err := callOllamaAPI(ollamaReq)
+
+		// Call the Ollama API with streaming
+		ollamaResp, err := callOllamaAPIWithStreaming(ollamaReq, requestID)
 		if err != nil {
 			log.Printf("Failed to call Ollama API for RequestID %s: %v", requestID, err)
 			return
 		}
-		if eventsourcing.SubmitEvent != nil {
-			eventsourcing.SubmitEvent(&eventsourcing.GenericEvent{
-				EventType: "LLMProcessingCompleted",
-				Data: map[string]interface{}{
-					"RequestID":    requestID,
-					"ResponseText": ollamaResp.Message.Content,
-					"ToolCalls":    ollamaResp.Message.ToolCalls,
-					"Timestamp":    eventsourcing.ISOTimestamp(),
-				},
-			})
+
+		// Only submit completion event if we have valid content (either text or tool calls)
+		if ollamaResp != nil && (ollamaResp.Message.Content != "" || len(ollamaResp.Message.ToolCalls) > 0) {
+			// Submit final event for persistence
+			if eventsourcing.SubmitEvent != nil {
+				eventsourcing.SubmitEvent(&eventsourcing.GenericEvent{
+					EventType: "LLMProcessingCompleted",
+					Data: map[string]interface{}{
+						"RequestID":    requestID,
+						"ResponseText": ollamaResp.Message.Content,
+						"ToolCalls":    ollamaResp.Message.ToolCalls,
+						"Timestamp":    eventsourcing.ISOTimestamp(),
+					},
+				})
+			}
+		} else {
+			log.Printf("Warning: Empty response with no tool calls from Ollama API for tool call completion with RequestID %s", requestID)
 		}
 	})
-	
+
 	return nil, nil
 }
 
-// buildMessagesForToolCompletion reconstructs the chat history for a given requestID.
+// buildMessagesForToolCompletion reconstructs the chat history for a given requestID, including tool results with tool names.
 func buildMessagesForToolCompletion(state map[string]interface{}, requestID string, toolResults []map[string]interface{}) ([]llmmodels.Message, error) {
 	// Create a new state that includes the latest tool calls for more accurate task list
 	// Make a shallow copy of the state
@@ -187,20 +201,20 @@ func buildMessagesForToolCompletion(state map[string]interface{}, requestID stri
 	for k, v := range state {
 		enhancedState[k] = v
 	}
-	
+
 	// Get the conversation history with enhanced state (includes the system prompt)
 	// Limited to last 10 turns to avoid context overflow
 	messages := buildChatHistory(enhancedState, 10)
-	
+
 	// Find the specific request and make sure it's included
 	var currentRequestText string
 	var currentRequestFound bool
-	
+
 	userRequests, ok := state["UserRequestReceived"].([]interface{})
 	if !ok {
 		return nil, fmt.Errorf("invalid state: UserRequestReceived not found or not a slice")
 	}
-	
+
 	for _, req := range userRequests {
 		reqMap, ok := req.(map[string]interface{})
 		if !ok {
@@ -212,18 +226,18 @@ func buildMessagesForToolCompletion(state map[string]interface{}, requestID stri
 			break
 		}
 	}
-	
+
 	if !currentRequestFound || currentRequestText == "" {
 		return nil, fmt.Errorf("could not find request text for RequestID: %s", requestID)
 	}
-	
+
 	// Ensure the current user request is the last one in the conversation
 	// This guarantees tool calls are considered in the right context
-	
+
 	// First remove any existing message that matches our current request
 	// (it might be in the history but we want it at the end)
 	filteredMessages := []llmmodels.Message{messages[0]} // Keep system prompt
-	
+
 	for i := 1; i < len(messages); i++ {
 		// Skip this message if it's the current user request
 		if messages[i].Role == "user" && messages[i].Content == currentRequestText {
@@ -231,15 +245,20 @@ func buildMessagesForToolCompletion(state map[string]interface{}, requestID stri
 		}
 		filteredMessages = append(filteredMessages, messages[i])
 	}
-	
+
 	// Now add the current request and any tool results
 	filteredMessages = append(filteredMessages, llmmodels.Message{
 		Role:    "user",
 		Content: currentRequestText,
 	})
-	
-	// Add tool results
+
+	// Add tool results with tool names
 	for _, result := range toolResults {
+		toolName, ok := result["toolName"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing toolName in tool result")
+		}
+
 		// Convert tool content to a more readable format
 		var toolContent string
 		resultData, ok := result["result"].(map[string]interface{})
@@ -294,44 +313,171 @@ func buildMessagesForToolCompletion(state map[string]interface{}, requestID stri
 			// Simple string conversion for non-map results
 			toolContent = fmt.Sprintf("%v", result["result"])
 		}
-		
-		// Add the formatted tool call result
+
+		// Add the formatted tool call result with tool name
 		filteredMessages = append(filteredMessages, llmmodels.Message{
 			Role:    "tool",
+			Name:    toolName, // Include the tool name
 			Content: toolContent,
 		})
 	}
-	
+
 	return filteredMessages, nil
 }
 
 // callOllamaAPI sends a request to the Ollama API and returns the response.
 func callOllamaAPI(request llmmodels.OllamaRequest) (*llmmodels.OllamaResponse, error) {
+	if !request.Stream {
+		// Non-streaming request
+		reqBody, err := json.Marshal(request)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal Ollama request: %v", err)
+		}
+		resp, err := http.Post(ollamaAPIEndpoint, "application/json", bytes.NewBuffer(reqBody))
+		if err != nil {
+			return nil, fmt.Errorf("failed to call Ollama API: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return nil, fmt.Errorf("Ollama API error: %d, %s", resp.StatusCode, body)
+		}
+		var ollamaResp llmmodels.OllamaResponse
+		if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
+			return nil, fmt.Errorf("failed to decode Ollama response: %v", err)
+		}
+		return &ollamaResp, nil
+	}
+
+	// This point is only reached for streaming requests
+	return nil, fmt.Errorf("streaming requests should use callOllamaAPIWithStreaming instead")
+}
+
+// callOllamaAPIWithStreaming sends a streaming request to the Ollama API.
+func callOllamaAPIWithStreaming(request llmmodels.OllamaRequest, requestID string) (*llmmodels.OllamaResponse, error) {
+	request.Stream = true
+
 	reqBody, err := json.Marshal(request)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal Ollama request: %v", err)
 	}
+
+	logging.Info("request going out to ollama: %s", string(reqBody))
 	resp, err := http.Post(ollamaAPIEndpoint, "application/json", bytes.NewBuffer(reqBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to call Ollama API: %v", err)
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("Ollama API error: %d, %s", resp.StatusCode, body)
 	}
-	var ollamaResp llmmodels.OllamaResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
-		return nil, fmt.Errorf("failed to decode Ollama response: %v", err)
+
+	scanner := bufio.NewScanner(resp.Body)
+	var fullContent strings.Builder
+	var allToolCalls []llmmodels.OllamaToolCall // Accumulate tool calls across chunks
+	var finalResponse *llmmodels.OllamaResponse
+
+	scanBuf := make([]byte, 64*1024)
+	scanner.Buffer(scanBuf, 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		var chunk llmmodels.OllamaResponse
+		if err := json.Unmarshal([]byte(line), &chunk); err != nil {
+			log.Printf("Error parsing stream chunk for RequestID %s: %v", requestID, err)
+			continue
+		}
+
+		// Accumulate content
+		if chunk.Message.Content != "" {
+			fullContent.WriteString(chunk.Message.Content)
+		}
+
+		// Accumulate tool calls (append unique ones)
+		if len(chunk.Message.ToolCalls) > 0 {
+			for _, tc := range chunk.Message.ToolCalls {
+				// Avoid duplicates by checking existing tool calls (optional, based on your needs)
+				duplicate := false
+				for _, existing := range allToolCalls {
+					if existing.Function.Name == tc.Function.Name && reflect.DeepEqual(existing.Function.Arguments, tc.Function.Arguments) {
+						duplicate = true
+						break
+					}
+				}
+				if !duplicate {
+					allToolCalls = append(allToolCalls, tc)
+				}
+			}
+		}
+
+		// Send streaming event with current state
+		if eventsourcing.SubmitStreamingEvent != nil {
+			eventsourcing.SubmitStreamingEvent("LLMResponseStream", map[string]interface{}{
+				"RequestID":      requestID,
+				"PartialContent": fullContent.String(),
+				"IsFinal":        chunk.Done,
+				"HasToolCalls":   len(allToolCalls) > 0,
+			})
+		}
+
+		// If done, set final response
+		if chunk.Done {
+			finalResponse = &llmmodels.OllamaResponse{
+				Message: llmmodels.OllamaMessage{
+					Role:      "assistant",
+					Content:   fullContent.String(),
+					ToolCalls: allToolCalls, // Use accumulated tool calls
+				},
+				Done: true,
+			}
+			break
+		}
 	}
-	return &ollamaResp, nil
+
+	if err := scanner.Err(); err != nil {
+		log.Printf("Stream reading error for RequestID %s: %v", requestID, err)
+		return nil, fmt.Errorf("error reading stream: %v", err)
+	}
+
+	// If no done=true but chunks received, construct final response
+	if finalResponse == nil && (fullContent.Len() > 0 || len(allToolCalls) > 0) {
+		finalResponse = &llmmodels.OllamaResponse{
+			Message: llmmodels.OllamaMessage{
+				Role:      "assistant",
+				Content:   fullContent.String(),
+				ToolCalls: allToolCalls,
+			},
+			Done: true,
+		}
+		log.Printf("No done=true chunk for RequestID %s, constructed response with content: %s, tool calls: %d", requestID, fullContent.String(), len(allToolCalls))
+	}
+
+	// If no response at all, return error
+	if finalResponse == nil {
+		log.Printf("No valid chunks received for RequestID %s", requestID)
+		return nil, fmt.Errorf("no response received from stream")
+	}
+
+	// Handle empty response case
+	if finalResponse.Message.Content == "" && len(finalResponse.Message.ToolCalls) == 0 {
+		log.Printf("Warning: Empty content and no tool calls for RequestID %s", requestID)
+		finalResponse.Message.Content = "I apologize, but I wasn't able to generate a proper response."
+	}
+
+	return finalResponse, nil
 }
 
 // appendTaskInfo adds information about existing tasks to the system prompt
 // getActiveTasks returns a list of active tasks with their IDs, titles, and status
 func getActiveTasks(state map[string]interface{}) []map[string]interface{} {
 	var activeTasks []map[string]interface{}
-	
+
 	// First, get all task IDs that have been deleted
 	deletedTaskIDs := make(map[string]bool)
 	if deletionEvents, ok := state["TaskDeleted"].([]interface{}); ok {
@@ -343,10 +489,10 @@ func getActiveTasks(state map[string]interface{}) []map[string]interface{} {
 			}
 		}
 	}
-	
+
 	// Map of task IDs to latest task data (including updates)
 	taskData := make(map[string]map[string]interface{})
-	
+
 	// First get all created tasks
 	if tasksEvents, ok := state["TaskCreated"].([]interface{}); ok {
 		for _, taskEvent := range tasksEvents {
@@ -363,7 +509,7 @@ func getActiveTasks(state map[string]interface{}) []map[string]interface{} {
 			}
 		}
 	}
-	
+
 	// Apply updates
 	if updateEvents, ok := state["TaskUpdated"].([]interface{}); ok {
 		for _, updateEvent := range updateEvents {
@@ -382,7 +528,7 @@ func getActiveTasks(state map[string]interface{}) []map[string]interface{} {
 			}
 		}
 	}
-	
+
 	// Apply completion status
 	if completionEvents, ok := state["TaskCompleted"].([]interface{}); ok {
 		for _, completionEvent := range completionEvents {
@@ -402,7 +548,7 @@ func getActiveTasks(state map[string]interface{}) []map[string]interface{} {
 			}
 		}
 	}
-	
+
 	// Convert map to slice
 	for taskID, task := range taskData {
 		// Double-check that task hasn't been deleted
@@ -410,33 +556,33 @@ func getActiveTasks(state map[string]interface{}) []map[string]interface{} {
 			activeTasks = append(activeTasks, task)
 		}
 	}
-	
+
 	return activeTasks
 }
 
 func appendTaskInfo(basePrompt string, state map[string]interface{}) string {
 	// Get all active tasks
 	activeTasks := getActiveTasks(state)
-	
+
 	// No tasks? Return the base prompt
 	if len(activeTasks) == 0 {
 		return basePrompt
 	}
-	
+
 	// Create task info strings
 	var taskInfo []string
 	for _, task := range activeTasks {
 		taskID, _ := task["TaskID"].(string)
 		title, _ := task["Title"].(string)
 		status, _ := task["Status"].(string)
-		
+
 		if taskID == "" || title == "" {
 			continue
 		}
-		
+
 		taskInfo = append(taskInfo, fmt.Sprintf("- %s: \"%s\" (Status: %s)", taskID, title, status))
 	}
-	
+
 	// Add task info to prompt if tasks exist
 	if len(taskInfo) > 0 {
 		taskSection := "\n\n### Current Tasks\nThe following tasks already exist in the system. When updating or referencing existing tasks, use EXACTLY these IDs:\n"
@@ -444,24 +590,24 @@ func appendTaskInfo(basePrompt string, state map[string]interface{}) string {
 		taskSection += "\n\nIMPORTANT: Always use these exact task IDs when referencing existing tasks. Do not make up new IDs for existing tasks."
 		return basePrompt + taskSection
 	}
-	
+
 	return basePrompt
 }
 
 // buildChatHistory builds a full conversation history from past events
 func buildChatHistory(state map[string]interface{}, maxMessages int) []llmmodels.Message {
 	// Start with the system prompt, enhanced with task information
-	enhancedPrompt := appendTaskInfo(systemPrompt, state)
+	// enhancedPrompt := appendTaskInfo(systemPrompt, state) // TODO delete?
 	messages := []llmmodels.Message{
-		{Role: "system", Content: enhancedPrompt},
+		{Role: "system", Content: systemPrompt},
 	}
-	
+
 	// Build a chronological history of user requests and LLM responses
 	var conversationTurns []struct {
 		Timestamp string
 		Message   llmmodels.Message
 	}
-	
+
 	// Add user requests
 	if userRequests, ok := state["UserRequestReceived"].([]interface{}); ok {
 		for _, reqInterface := range userRequests {
@@ -481,7 +627,7 @@ func buildChatHistory(state map[string]interface{}, maxMessages int) []llmmodels
 			}
 		}
 	}
-	
+
 	// Add assistant responses
 	if llmResponses, ok := state["LLMProcessingCompleted"].([]interface{}); ok {
 		for _, respInterface := range llmResponses {
@@ -501,7 +647,7 @@ func buildChatHistory(state map[string]interface{}, maxMessages int) []llmmodels
 			}
 		}
 	}
-	
+
 	// Sort conversation turns by timestamp (we'll use a simple implementation)
 	// This is a basic insertion sort - adequate for our typical message count
 	for i := 1; i < len(conversationTurns); i++ {
@@ -511,18 +657,18 @@ func buildChatHistory(state map[string]interface{}, maxMessages int) []llmmodels
 			j--
 		}
 	}
-	
+
 	// Take the most recent messages up to maxMessages
 	start := 0
 	if len(conversationTurns) > maxMessages {
 		start = len(conversationTurns) - maxMessages
 	}
-	
+
 	// Add the messages to our result
 	for _, turn := range conversationTurns[start:] {
 		messages = append(messages, turn.Message)
 	}
-	
+
 	return messages
 }
 
@@ -559,39 +705,45 @@ func ProcessUserRequest(data map[string]interface{}, state map[string]interface{
 		"requestID":   requestID,
 		"requestText": requestText,
 	}, func() {
+		logging.Info("ProcessUserRequest from go routine")
 		// Get conversation history, limited to last 10 turns
 		messages := buildChatHistory(state, 10)
-		
+
 		// Add the current user request
 		messages = append(messages, llmmodels.Message{Role: "user", Content: requestText})
-		
+
 		// Create the Ollama request with the conversation history
 		ollamaReq := llmmodels.OllamaRequest{
 			Model:    ollamaModel,
 			Messages: messages,
 			Tools:    tools,
-			Stream:   false,
+			Stream:   true, // Enable streaming
 		}
-		
-		// Call the Ollama API
-		ollamaResp, err := callOllamaAPI(ollamaReq)
+
+		// Call the Ollama API with streaming
+		ollamaResp, err := callOllamaAPIWithStreaming(ollamaReq, requestID)
 		if err != nil {
 			log.Printf("Failed to call Ollama API for RequestID %s: %v", requestID, err)
 			return
 		}
-		
-		// Submit the completion event
-		if eventsourcing.SubmitEvent != nil {
-			completedEvent := &eventsourcing.GenericEvent{
-				EventType: "LLMProcessingCompleted",
-				Data: map[string]interface{}{
-					"RequestID":    requestID,
-					"ResponseText": ollamaResp.Message.Content,
-					"ToolCalls":    ollamaResp.Message.ToolCalls,
-					"Timestamp":    eventsourcing.ISOTimestamp(),
-				},
+
+		// Only submit completion event if we have valid content (either text or tool calls)
+		if ollamaResp != nil && (ollamaResp.Message.Content != "" || len(ollamaResp.Message.ToolCalls) > 0) {
+			// Submit the completion event - this is still needed to persist the final result
+			if eventsourcing.SubmitEvent != nil {
+				completedEvent := &eventsourcing.GenericEvent{
+					EventType: "LLMProcessingCompleted",
+					Data: map[string]interface{}{
+						"RequestID":    requestID,
+						"ResponseText": ollamaResp.Message.Content,
+						"ToolCalls":    ollamaResp.Message.ToolCalls,
+						"Timestamp":    eventsourcing.ISOTimestamp(),
+					},
+				}
+				eventsourcing.SubmitEvent(completedEvent)
 			}
-			eventsourcing.SubmitEvent(completedEvent)
+		} else {
+			log.Printf("Warning: Empty response with no tool calls from Ollama API for RequestID %s", requestID)
 		}
 	})
 

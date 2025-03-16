@@ -83,6 +83,23 @@ func NewApp(pm *core.PluginManager, ep *eventsourcing.EventProcessor, agg *core.
 		return nil, nil
 	})
 	
+	// Set up streaming event subscription
+	eventsourcing.SubmitStreamingEvent = func(eventType string, data map[string]interface{}) {
+		if eventBus, ok := ep.EventBus.(*eventsourcing.SimpleEventBus); ok {
+			eventBus.PublishStreaming(eventType, data)
+		}
+	}
+	
+	// Subscribe to streaming events
+	if streamingEventBus, ok := eventBus.(*eventsourcing.SimpleEventBus); ok {
+		streamingEventBus.SubscribeStreaming("LLMResponseStream", func(eventType string, data map[string]interface{}) {
+			// Handle streaming updates on the main thread
+			fyne.CurrentApp().Driver().DoFromGoroutine(func() {
+				a.handleStreamingUpdate(data)
+			}, false)
+		})
+	}
+	
 	a.chatScroll.Direction = container.ScrollVerticalOnly
 	// Don't set a minimum height for chat scroll to maximize space usage
 	a.transcriptBox.SetPlaceHolder("Transcriptions will appear here...")
@@ -787,4 +804,52 @@ func (a *App) RebuildState() {
 		}
 	}
 	a.refreshUI()
+}
+
+// handleStreamingUpdate processes streaming updates from the LLM and updates the UI
+func (a *App) handleStreamingUpdate(data map[string]interface{}) {
+	requestID, _ := data["RequestID"].(string)
+	partialContent, _ := data["PartialContent"].(string)
+	isFinal, _ := data["IsFinal"].(bool)
+	// We can use hasToolCalls later for showing tool call indicators
+	// hasToolCalls, _ := data["HasToolCalls"].(bool)
+	
+	// Find the pending assistant message or create a new one
+	var assistantMessageFound bool
+	for i, msg := range a.globalAgg.ChatHistory {
+		// Skip non-assistant messages and those from other requests
+		if msg.RequestID != requestID || msg.Role != "MindPalace" || msg.StreamingComplete {
+			continue
+		}
+		
+		// Found the assistant message for this request
+		assistantMessageFound = true
+		
+		// Update the content
+		a.globalAgg.ChatHistory[i].Content = partialContent
+		
+		// Mark as complete if this is the final chunk
+		if isFinal {
+			a.globalAgg.ChatHistory[i].StreamingComplete = true
+		}
+		
+		break
+	}
+	
+	// If no existing message found, create a new one
+	if !assistantMessageFound && partialContent != "" {
+		newMessage := core.ChatMessage{
+			Role:              "MindPalace",
+			Content:           partialContent,
+			RequestID:         requestID,
+			StreamingComplete: isFinal,
+		}
+		a.globalAgg.ChatHistory = append(a.globalAgg.ChatHistory, newMessage)
+	}
+	
+	// Update UI
+	a.refreshUI()
+	
+	// Scroll to bottom to follow new content
+	a.chatScroll.ScrollToBottom()
 }

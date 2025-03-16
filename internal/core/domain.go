@@ -7,8 +7,10 @@ import (
 
 // ChatMessage represents a single entry in the chat history
 type ChatMessage struct {
-	Role    string
-	Content string
+	Role              string
+	Content           string
+	RequestID         string // To associate messages with requests
+	StreamingComplete bool   // Indicates if streaming for this message is complete
 }
 
 // parseResponseText extracts think tags and regular text from LLM responses

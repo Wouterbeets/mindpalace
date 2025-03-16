@@ -12,8 +12,8 @@ import (
 type AppAggregate struct {
 	State            map[string]interface{}
 	ChatHistory      []ChatMessage
-	PendingToolCalls map[string][]string               // requestID -> list of tool call IDs
-	ToolCallResults  map[string]map[string]interface{} // requestID -> toolCallID -> result
+	PendingToolCalls map[string][]string                     // requestID -> list of tool call IDs
+	ToolCallResults  map[string]map[string]interface{}       // requestID -> toolCallID -> result
 	AllCommands      map[string]eventsourcing.CommandHandler // Store all registered commands
 }
 
@@ -48,7 +48,12 @@ func (a *AppAggregate) ApplyEvent(event eventsourcing.Event) error {
 	case "UserRequestReceived":
 		reqText, _ := genericEvent.Data["RequestText"].(string)
 		requestID, _ := genericEvent.Data["RequestID"].(string)
-		a.ChatHistory = append(a.ChatHistory, ChatMessage{Role: "You", Content: reqText})
+		a.ChatHistory = append(a.ChatHistory, ChatMessage{
+			Role:              "You",
+			Content:           reqText,
+			RequestID:         requestID,
+			StreamingComplete: true, // User messages are complete on arrival
+		})
 		if a.PendingToolCalls == nil {
 			a.PendingToolCalls = make(map[string][]string)
 		}
@@ -61,12 +66,44 @@ func (a *AppAggregate) ApplyEvent(event eventsourcing.Event) error {
 		requestID, _ := genericEvent.Data["RequestID"].(string)
 		toolCalls, _ := genericEvent.Data["ToolCalls"].([]llmmodels.OllamaToolCall)
 		thinks, regular := parseResponseText(respText)
-		for _, think := range thinks {
-			a.ChatHistory = append(a.ChatHistory, ChatMessage{Role: "Assistant [think]", Content: think})
+
+		// Check if we already have a streaming message for this request
+		messageUpdated := false
+		for i, msg := range a.ChatHistory {
+			// If we find an existing streaming message for this request, update it
+			if msg.RequestID == requestID && msg.Role == "MindPalace" && !msg.StreamingComplete {
+				// Update with final content
+				a.ChatHistory[i].Content = regular
+				a.ChatHistory[i].StreamingComplete = true
+				messageUpdated = true
+				break
+			}
 		}
-		if regular != "" {
-			a.ChatHistory = append(a.ChatHistory, ChatMessage{Role: "Assistant", Content: regular})
+
+		// If no streaming message was found or updated, add the completed message
+		if !messageUpdated {
+			// Add thinks first if any
+			for _, think := range thinks {
+				a.ChatHistory = append(a.ChatHistory, ChatMessage{
+					Role:              "Assistant [think]",
+					Content:           think,
+					RequestID:         requestID,
+					StreamingComplete: true,
+				})
+			}
+
+			// Then add the regular content
+			if regular != "" {
+				a.ChatHistory = append(a.ChatHistory, ChatMessage{
+					Role:              "MindPalace",
+					Content:           regular,
+					RequestID:         requestID,
+					StreamingComplete: true,
+				})
+			}
 		}
+
+		// Handle tool calls
 		if len(toolCalls) > 0 {
 			callIDs := make([]string, len(toolCalls))
 			for i := range toolCalls {
@@ -76,17 +113,29 @@ func (a *AppAggregate) ApplyEvent(event eventsourcing.Event) error {
 			a.ToolCallResults[requestID] = make(map[string]interface{})
 		}
 	case "ToolCallCompleted":
+		genericEvent, ok := event.(*eventsourcing.GenericEvent)
+		if !ok {
+			return fmt.Errorf("event is not a GenericEvent")
+		}
 		requestID, _ := genericEvent.Data["RequestID"].(string)
 		toolCallID, _ := genericEvent.Data["ToolCallID"].(string)
-		result, _ := genericEvent.Data["Result"]
-		if pending, exists := a.PendingToolCalls[requestID]; exists {
+		function, _ := genericEvent.Data["Function"].(string)
+		result, _ := genericEvent.Data["Result"].(map[string]interface{})
+		if a.ToolCallResults[requestID] == nil {
+			a.ToolCallResults[requestID] = make(map[string]interface{})
+		}
+		a.ToolCallResults[requestID][toolCallID] = map[string]interface{}{
+			"function": function,
+			"result":   result,
+		}
+		// Remove from pending tool calls
+		if pending, ok := a.PendingToolCalls[requestID]; ok {
 			for i, id := range pending {
 				if id == toolCallID {
 					a.PendingToolCalls[requestID] = append(pending[:i], pending[i+1:]...)
 					break
 				}
 			}
-			a.ToolCallResults[requestID][toolCallID] = result
 		}
 	}
 	return nil
@@ -94,44 +143,6 @@ func (a *AppAggregate) ApplyEvent(event eventsourcing.Event) error {
 func (a *AppAggregate) ID() string {
 	return "global"
 }
-
-//func (a *AppAggregate) ApplyEvent(event eventsourcing.Event) error {
-//	genericEvent, ok := event.(*eventsourcing.GenericEvent)
-//	if !ok {
-//		return fmt.Errorf("event is not a GenericEvent")
-//	}
-//	// Update the generic state map
-//	key := genericEvent.EventType
-//	if current, exists := a.State[key]; exists {
-//		if list, ok := current.([]interface{}); ok {
-//			a.State[key] = append(list, genericEvent.Data)
-//		} else {
-//			a.State[key] = []interface{}{current, genericEvent.Data}
-//		}
-//	} else {
-//		a.State[key] = []interface{}{genericEvent.Data}
-//	}
-//
-//	// Update ChatHistory based on event type
-//	switch genericEvent.EventType {
-//	case "UserRequestReceived":
-//		reqText, _ := genericEvent.Data["RequestText"].(string)
-//		a.ChatHistory = append(a.ChatHistory, ChatMessage{Role: "You", Content: reqText})
-//	case "LLMProcessingStarted":
-//		reqText, _ := genericEvent.Data["RequestText"].(string)
-//		a.ChatHistory = append(a.ChatHistory, ChatMessage{Role: "Assistant", Content: "Processing '" + reqText + "'..."})
-//	case "LLMProcessingCompleted":
-//		respText, _ := genericEvent.Data["ResponseText"].(string)
-//		thinks, regular := parseResponseText(respText)
-//		for _, think := range thinks {
-//			a.ChatHistory = append(a.ChatHistory, ChatMessage{Role: "Assistant [think]", Content: think})
-//		}
-//		if regular != "" {
-//			a.ChatHistory = append(a.ChatHistory, ChatMessage{Role: "Assistant", Content: regular})
-//		}
-//	}
-//	return nil
-//}
 
 func (a *AppAggregate) GetState() map[string]interface{} {
 	return a.State
