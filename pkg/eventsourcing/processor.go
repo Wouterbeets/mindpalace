@@ -49,8 +49,20 @@ func (ep *EventProcessor) RegisterEventHandler(eventType string, handler EventHa
 }
 
 func (ep *EventProcessor) RegisterCommands(commands map[string]CommandHandler) {
-	ep.commands = commands
+	for name, cmd := range commands {
+		ep.commands[name] = cmd
+	}
 	logging.Debug("Registered %d commands", len(commands))
+}
+
+func (ep *EventProcessor) RegisterCommand(name string, handler CommandHandler) {
+	ep.commands[name] = handler
+	logging.Debug("Registered command: %s", name)
+}
+
+// Commands returns all registered commands
+func (ep *EventProcessor) Commands() map[string]CommandHandler {
+	return ep.commands
 }
 
 func (ep *EventProcessor) ProcessEvents(events []Event, commands map[string]CommandHandler) error {

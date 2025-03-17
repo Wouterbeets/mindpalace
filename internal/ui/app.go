@@ -3,6 +3,7 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"runtime"
 	"strings"
 
@@ -806,6 +807,17 @@ func (a *App) RebuildState() {
 	a.refreshUI()
 }
 
+// parseStreamingContent extracts think tags and regular text from streaming content
+func parseStreamingContent(content string) (thinks []string, regular string) {
+	re := regexp.MustCompile(`(?s)<think>(.*?)</think>`)
+	matches := re.FindAllStringSubmatch(content, -1)
+	for _, match := range matches {
+		thinks = append(thinks, match[1])
+	}
+	regular = re.ReplaceAllString(content, "")
+	return thinks, strings.TrimSpace(regular)
+}
+
 // handleStreamingUpdate processes streaming updates from the LLM and updates the UI
 func (a *App) handleStreamingUpdate(data map[string]interface{}) {
 	requestID, _ := data["RequestID"].(string)
@@ -814,19 +826,50 @@ func (a *App) handleStreamingUpdate(data map[string]interface{}) {
 	// We can use hasToolCalls later for showing tool call indicators
 	// hasToolCalls, _ := data["HasToolCalls"].(bool)
 	
-	// Find the pending assistant message or create a new one
+	// Parse think tags from the partialContent
+	thinks, regularContent := parseStreamingContent(partialContent)
+	
+	// Find and update thinking message if we have new think content
+	if len(thinks) > 0 {
+		thinkContent := strings.Join(thinks, "\n\n")
+		
+		// Check if we already have a thinking message for this request
+		thinkMessageFound := false
+		for i, msg := range a.globalAgg.ChatHistory {
+			if msg.RequestID == requestID && msg.Role == "Assistant [think]" {
+				// Update existing thinking message
+				a.globalAgg.ChatHistory[i].Content = thinkContent
+				thinkMessageFound = true
+				break
+			}
+		}
+		
+		// If no thinking message found, create a new one
+		if !thinkMessageFound {
+			thinkMessage := core.ChatMessage{
+				Role:              "Assistant [think]",
+				Content:           thinkContent,
+				RequestID:         requestID,
+				StreamingComplete: true, // Thinking is always considered complete
+			}
+			a.globalAgg.ChatHistory = append(a.globalAgg.ChatHistory, thinkMessage)
+		}
+	}
+	
+	// Find the existing assistant message or create a new one for regular content
 	var assistantMessageFound bool
 	for i, msg := range a.globalAgg.ChatHistory {
 		// Skip non-assistant messages and those from other requests
-		if msg.RequestID != requestID || msg.Role != "MindPalace" || msg.StreamingComplete {
+		// Removed StreamingComplete check to ensure we update existing messages
+		if msg.RequestID != requestID || msg.Role != "MindPalace" {
 			continue
 		}
 		
 		// Found the assistant message for this request
 		assistantMessageFound = true
 		
-		// Update the content
-		a.globalAgg.ChatHistory[i].Content = partialContent
+		// Update the content with regular content (without think tags)
+		a.globalAgg.ChatHistory[i].Content = regularContent
 		
 		// Mark as complete if this is the final chunk
 		if isFinal {
@@ -837,10 +880,10 @@ func (a *App) handleStreamingUpdate(data map[string]interface{}) {
 	}
 	
 	// If no existing message found, create a new one
-	if !assistantMessageFound && partialContent != "" {
+	if !assistantMessageFound && regularContent != "" {
 		newMessage := core.ChatMessage{
 			Role:              "MindPalace",
-			Content:           partialContent,
+			Content:           regularContent,
 			RequestID:         requestID,
 			StreamingComplete: isFinal,
 		}

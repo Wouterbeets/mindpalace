@@ -27,12 +27,17 @@ func ReceiveRequestHandler(data map[string]interface{}, state map[string]interfa
 		return nil, fmt.Errorf("missing RequestText in command data")
 	}
 
-	event := &eventsourcing.GenericEvent{
-		EventType: "UserRequestReceived",
-		Data: map[string]interface{}{
-			"RequestText": requestText,
-			"Timestamp":   time.Now().Format(time.RFC3339),
-		},
+	// Generate a request ID if not provided
+	requestID, _ := data["RequestID"].(string)
+	if requestID == "" {
+		requestID = fmt.Sprintf("req-%d", time.Now().UnixNano())
+	}
+	
+	// Create a typed event instead of a generic one
+	event := &eventsourcing.UserRequestReceivedEvent{
+		RequestID:   requestID,
+		RequestText: requestText,
+		Timestamp:   time.Now().Format(time.RFC3339),
 	}
 	return []eventsourcing.Event{event}, nil
 }

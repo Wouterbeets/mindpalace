@@ -451,8 +451,10 @@ func CompleteTaskHandler(data map[string]interface{}, state map[string]interface
 
 func ListTasksHandler(data map[string]interface{}, state map[string]interface{}) ([]eventsourcing.Event, error) {
 	// Get current tasks from state
+	fmt.Println("checking state", state["TaskCreated"])
 	tasksEvents, exists := state["TaskCreated"].([]interface{})
 	if !exists {
+		fmt.Println("no tasks found")
 		// No tasks exist yet
 		return createListTasksResponse([]map[string]interface{}{}, data, "ListTasks")
 	}

@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"mindpalace/internal/core"
+	"mindpalace/internal/llmprocessor"
 	"mindpalace/internal/orchestration"
 	"mindpalace/internal/ui"
 	"mindpalace/pkg/eventsourcing"
@@ -65,21 +66,21 @@ func main() {
 
 	// Register a global error handler for goroutine panics
 	eventsourcing.GetGlobalRecoveryManager().RegisterErrorHandler(func(err error, stackTrace string, eventType string, recoveryData map[string]interface{}) {
-		logging.Error("RECOVERED PANIC in event '%s': %v\nContext: %v\nStack trace: %s", 
+		logging.Error("RECOVERED PANIC in event '%s': %v\nContext: %v\nStack trace: %s",
 			eventType, err, recoveryData, stackTrace)
 	})
 
 	// Initialize plugin manager
 	pluginManager := core.NewPluginManager()
 	logging.Debug("Plugin manager initialized")
-	
+
 	// Set up event store and aggregate
 	store := eventsourcing.NewFileEventStore(eventFileFlag)
 	if err := store.Load(); err != nil {
 		logging.Error("Failed to load events: %v", err)
 	}
 	logging.Debug("Event store loaded from %s", eventFileFlag)
-	
+
 	// Create aggregate
 	agg := &core.AppAggregate{
 		State:            make(map[string]interface{}),
@@ -89,26 +90,50 @@ func main() {
 		AllCommands:      make(map[string]eventsourcing.CommandHandler),
 	}
 	logging.Debug("Application aggregate created")
-	
+
 	// Create event processor
 	ep := eventsourcing.NewEventProcessor(store, agg)
 	logging.Debug("Event processor initialized")
+
+	// Initialize the LLM processor as an internal component
+	llmProc := llmprocessor.New()
+	llmProc.RegisterHandlers(ep)
+	logging.Info("LLM processor initialized")
 	
-	// Load plugins
+	// Load plugins (excluding LLMProcessor which is now internal)
 	pluginManager.LoadPlugins("plugins", ep)
 	commands, _ := pluginManager.RegisterCommands()
-	logging.Info("Loaded %d commands from plugins", len(commands))
 	
+	// For debugging, log the LLM processor commands
+	for name := range llmProc.GetSchemas() {
+		logging.Debug("Available LLM command: %s", name)
+	}
+	
+	// Collect all commands into the aggregate
+	allCommands := make(map[string]eventsourcing.CommandHandler)
+	
+	// Add plugin commands
+	for name, handler := range commands {
+		allCommands[name] = handler
+	}
+	
+	// Add commands from the processor
+	for name, handler := range ep.Commands() {
+		allCommands[name] = handler
+	}
+	
+	logging.Info("Total commands available: %d", len(allCommands))
+
 	// Store commands in the aggregate so they're available to event handlers
-	agg.AllCommands = commands
-	
+	agg.AllCommands = allCommands
+
 	// Register event handlers for orchestration
-	ep.RegisterEventHandler("UserRequestReceived", orchestration.NewToolCallConfigFunc(commands, agg, pluginManager.GetLLMPlugins()))
+	ep.RegisterEventHandler("UserRequestReceived", orchestration.NewToolCallConfigFunc(allCommands, agg, pluginManager.GetLLMPlugins()))
 	ep.RegisterEventHandler("LLMProcessingCompleted", orchestration.NewToolCallFunc(ep, agg, pluginManager.GetLLMPlugins()))
 	ep.RegisterEventHandler("ToolCallInitiated", orchestration.NewToolCallExecutor(ep))
 	ep.RegisterEventHandler("ToolCallCompleted", orchestration.NewToolCallCompletionHandler(ep, agg))
 	logging.Debug("Event handlers registered")
-	
+
 	// Create and run the UI application
 	logging.Info("Starting UI application")
 	app := ui.NewApp(pluginManager, ep, agg)
