@@ -1,6 +1,4 @@
----
-title: Codebase Overview - MindPalace
----
+# Codebase Overview - MindPalace
 
 ## Files and Structure
 
@@ -15,7 +13,7 @@ graph LR
             app((app.go))
         end
         subgraph llmprocessor
-            llmprocessor((llmprocessor.go))
+            llmprocessor_file((llmprocessor.go))  %% Renamed to avoid subgraph/file name clash
         end
         subgraph orchestration
             tool_handlers((tool_handlers.go))
@@ -82,8 +80,7 @@ graph LR
     app --> theme
     userrequest_plugin --> eventsourcing
     transcriptionmanager_plugin --> eventsourcing
-    taskmanager_plugin --> eventsourcing
-```
+    taskmanager_plugin --> eventsourcing```
 
 ## Types and Hierarchy
 
