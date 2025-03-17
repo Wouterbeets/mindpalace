@@ -81,7 +81,8 @@ graph LR
     app --> theme
     userrequest_plugin --> eventsourcing
     transcriptionmanager_plugin --> eventsourcing
-    taskmanager_plugin --> eventsourcing```
+    taskmanager_plugin --> eventsourcing
+```
 
 ## Types and Hierarchy
 
