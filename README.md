@@ -13,7 +13,8 @@ graph LR
             app((app.go))
         end
         subgraph llmprocessor
-            llmprocessor_file((llmprocessor.go))  %% Renamed to avoid subgraph/file name clash
+            llmprocessor_file((llmprocessor.go))
+            %% Renamed to avoid subgraph/file name clash
         end
         subgraph orchestration
             tool_handlers((tool_handlers.go))
