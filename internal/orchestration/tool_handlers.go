@@ -3,7 +3,7 @@ package orchestration
 import (
 	"encoding/json"
 	"fmt"
-	"mindpalace/internal/core"
+	"mindpalace/pkg/aggregate"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/llmmodels"
 	"time"
@@ -14,28 +14,28 @@ func NewToolCallConfigFunc(commands map[string]eventsourcing.CommandHandler, agg
 	return func(event eventsourcing.Event, state map[string]interface{}, commands map[string]eventsourcing.CommandHandler) ([]eventsourcing.Event, error) {
 		var requestText string
 		var requestID string
-		
+
 		// Handle different event types with a type switch
 		switch e := event.(type) {
 		case *eventsourcing.UserRequestReceivedEvent:
 			// Extract data from the concrete event type
 			requestText = e.RequestText
 			requestID = e.RequestID
-			
+
 		case *eventsourcing.GenericEvent:
 			// Fallback for backward compatibility
 			requestText, _ = e.Data["RequestText"].(string)
 			requestID, _ = e.Data["RequestID"].(string)
-			
+
 		default:
 			return nil, fmt.Errorf("unexpected event type: %s", event.Type())
 		}
-		
+
 		// Generate a request ID if none exists
 		if requestID == "" {
 			requestID = fmt.Sprintf("req-%d", time.Now().UnixNano())
 		}
-		
+
 		// Collect available tools from plugins
 		var availableTools []llmmodels.Tool
 		for _, plugin := range plugins {
@@ -50,7 +50,7 @@ func NewToolCallConfigFunc(commands map[string]eventsourcing.CommandHandler, agg
 				})
 			}
 		}
-		
+
 		// Return strongly typed event
 		return []eventsourcing.Event{
 			&eventsourcing.ToolCallsConfiguredEvent{
@@ -67,7 +67,7 @@ func NewToolCallFunc(ep *eventsourcing.EventProcessor, agg eventsourcing.Aggrega
 	return func(event eventsourcing.Event, state map[string]interface{}, commands map[string]eventsourcing.CommandHandler) ([]eventsourcing.Event, error) {
 		var toolCalls []llmmodels.OllamaToolCall
 		var requestID string
-		
+
 		// Extract data from different event types
 		switch e := event.(type) {
 		case *eventsourcing.GenericEvent:
@@ -77,10 +77,10 @@ func NewToolCallFunc(ep *eventsourcing.EventProcessor, agg eventsourcing.Aggrega
 		default:
 			// Try to extract from the event data directly
 			type EventData struct {
-				RequestID string                    `json:"request_id"`
+				RequestID string                     `json:"request_id"`
 				ToolCalls []llmmodels.OllamaToolCall `json:"tool_calls"`
 			}
-			
+
 			var data EventData
 			marshaledData, err := event.Marshal()
 			if err == nil {
@@ -90,7 +90,7 @@ func NewToolCallFunc(ep *eventsourcing.EventProcessor, agg eventsourcing.Aggrega
 				}
 			}
 		}
-		
+
 		if len(toolCalls) == 0 {
 			return nil, nil
 		}
@@ -115,7 +115,7 @@ func NewToolCallExecutor(ep *eventsourcing.EventProcessor) eventsourcing.EventHa
 	return func(event eventsourcing.Event, state map[string]interface{}, commands map[string]eventsourcing.CommandHandler) ([]eventsourcing.Event, error) {
 		var toolCallID, function, requestID string
 		var args map[string]interface{}
-		
+
 		// Extract data from different event types
 		switch e := event.(type) {
 		case *eventsourcing.ToolCallInitiatedEvent:
@@ -124,14 +124,14 @@ func NewToolCallExecutor(ep *eventsourcing.EventProcessor) eventsourcing.EventHa
 			function = e.Function
 			requestID = e.RequestID
 			args = e.Arguments
-			
+
 		case *eventsourcing.GenericEvent:
 			// Backward compatibility with GenericEvent
 			toolCallID, _ = e.Data["ToolCallID"].(string)
 			function, _ = e.Data["Function"].(string)
 			requestID, _ = e.Data["RequestID"].(string)
 			args, _ = e.Data["Arguments"].(map[string]interface{})
-			
+
 		default:
 			return nil, fmt.Errorf("unsupported event type for tool execution: %s", event.Type())
 		}
@@ -162,7 +162,7 @@ func NewToolCallExecutor(ep *eventsourcing.EventProcessor) eventsourcing.EventHa
 func NewToolCallCompletionHandler(ep *eventsourcing.EventProcessor, agg eventsourcing.Aggregate) eventsourcing.EventHandler {
 	return func(event eventsourcing.Event, state map[string]interface{}, commands map[string]eventsourcing.CommandHandler) ([]eventsourcing.Event, error) {
 		var requestID string
-		
+
 		// Extract requestID from different event types
 		switch e := event.(type) {
 		case *eventsourcing.ToolCallsConfiguredEvent:
@@ -181,14 +181,14 @@ func NewToolCallCompletionHandler(ep *eventsourcing.EventProcessor, agg eventsou
 					requestID = data.RequestID
 				}
 			}
-			
+
 			// If we still couldn't get a requestID, return an error
 			if requestID == "" {
 				return nil, fmt.Errorf("could not extract RequestID from event: %s", event.Type())
 			}
 		}
 
-		coreAgg, ok := agg.(*core.AppAggregate)
+		coreAgg, ok := agg.(*aggregate.AppAggregate)
 		if !ok {
 			return nil, fmt.Errorf("aggregate is not a core.AppAggregate")
 		}
@@ -209,7 +209,7 @@ func NewToolCallCompletionHandler(ep *eventsourcing.EventProcessor, agg eventsou
 					"result":       result,
 				})
 			}
-			
+
 			// Return strongly typed event
 			return []eventsourcing.Event{
 				&eventsourcing.AllToolCallsCompletedEvent{

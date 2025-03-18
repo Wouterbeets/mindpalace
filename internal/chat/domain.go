@@ -1,4 +1,4 @@
-package core
+package chat
 
 import (
 	"regexp"
@@ -13,7 +13,7 @@ type ChatMessage struct {
 	StreamingComplete bool   // Indicates if streaming for this message is complete
 }
 
-// parseResponseText extracts think tags and regular text from LLM responses
+// ParseResponseText extracts think tags and regular text from LLM responses
 func ParseResponseText(responseText string) (thinks []string, regular string) {
 	re := regexp.MustCompile(`(?s)<think>(.*?)</think>`)
 	matches := re.FindAllStringSubmatch(responseText, -1)

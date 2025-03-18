@@ -14,7 +14,9 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"mindpalace/internal/audio"
-	"mindpalace/internal/core"
+	"mindpalace/internal/chat"
+	"mindpalace/internal/plugins"
+	"mindpalace/pkg/aggregate"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
 )
@@ -25,9 +27,9 @@ import (
 // App represents the UI application
 type App struct {
 	eventProcessor *eventsourcing.EventProcessor
-	globalAgg      *core.AppAggregate
+	globalAgg      *aggregate.AppAggregate
 	eventChan      chan eventsourcing.Event
-	pluginManager  *core.PluginManager
+	pluginManager  *plugins.PluginManager
 	commands       map[string]eventsourcing.CommandHandler
 	ui             fyne.App
 	stateDisplay   *widget.Entry
@@ -43,13 +45,13 @@ type App struct {
 }
 
 // NewApp creates a new UI application
-func NewApp(pm *core.PluginManager, ep *eventsourcing.EventProcessor, agg *core.AppAggregate) *App {
+func NewApp(pm *plugins.PluginManager, ep *eventsourcing.EventProcessor, agg *aggregate.AppAggregate) *App {
 	chatHistory := container.NewVBox()
 	tasksContainer := container.NewVBox()
 	// Create a new Fyne application
 	// TODO: Find a way to silence Fyne errors in the future
 	fyneApp := app.NewWithID("com.mindpalace.app")
-	
+
 	a := &App{
 		globalAgg:      agg,
 		eventProcessor: ep,
@@ -71,10 +73,10 @@ func NewApp(pm *core.PluginManager, ep *eventsourcing.EventProcessor, agg *core.
 		eventChan:   make(chan eventsourcing.Event, 10),
 	}
 	a.ui.Settings().SetTheme(NewCustomTheme())
-	
+
 	// Get the event bus from the event processor
 	eventBus := ep.EventBus
-	
+
 	// Subscribe to all events for UI updates using wildcard subscription
 	eventBus.Subscribe("*", func(event eventsourcing.Event, state map[string]interface{}, commands map[string]eventsourcing.CommandHandler) ([]eventsourcing.Event, error) {
 		// Update UI on the main thread
@@ -83,14 +85,14 @@ func NewApp(pm *core.PluginManager, ep *eventsourcing.EventProcessor, agg *core.
 		}, false)
 		return nil, nil
 	})
-	
+
 	// Set up streaming event subscription
 	eventsourcing.SubmitStreamingEvent = func(eventType string, data map[string]interface{}) {
 		if eventBus, ok := ep.EventBus.(*eventsourcing.SimpleEventBus); ok {
 			eventBus.PublishStreaming(eventType, data)
 		}
 	}
-	
+
 	// Subscribe to streaming events
 	if streamingEventBus, ok := eventBus.(*eventsourcing.SimpleEventBus); ok {
 		streamingEventBus.SubscribeStreaming("LLMResponseStream", func(eventType string, data map[string]interface{}) {
@@ -100,7 +102,7 @@ func NewApp(pm *core.PluginManager, ep *eventsourcing.EventProcessor, agg *core.
 			}, false)
 		})
 	}
-	
+
 	a.chatScroll.Direction = container.ScrollVerticalOnly
 	// Don't set a minimum height for chat scroll to maximize space usage
 	a.transcriptBox.SetPlaceHolder("Transcriptions will appear here...")
@@ -111,7 +113,7 @@ func NewApp(pm *core.PluginManager, ep *eventsourcing.EventProcessor, agg *core.
 	commands, _ := pm.RegisterCommands()
 	a.commands = commands
 	a.eventProcessor.RegisterCommands(commands)
-	
+
 	// Store commands in the aggregate so they're available to event handlers
 	a.globalAgg.AllCommands = commands
 
@@ -190,10 +192,10 @@ func (a *App) Run() {
 	// Create a container for tasks with a title
 	tasksScroll := container.NewScroll(a.tasksContainer)
 	// Don't set a min size for tasks - let it expand to fill available space
-	
+
 	tasksSectionHeader := widget.NewLabel("📋 Tasks")
 	tasksSectionHeader.TextStyle = fyne.TextStyle{Bold: true}
-	
+
 	tasksSection := container.NewBorder(
 		tasksSectionHeader,
 		nil, nil, nil,
@@ -203,7 +205,7 @@ func (a *App) Run() {
 	// Create a more stylish audio control section
 	startStopButton := widget.NewButton("Start Audio", nil)
 	startStopButton.Importance = widget.MediumImportance
-	
+
 	logging.Trace("Run running on goroutine: %d", runtime.NumGoroutine())
 	startStopButton.OnTapped = func() {
 		logging.Trace("Button tapped on goroutine: %d", runtime.NumGoroutine())
@@ -235,20 +237,20 @@ func (a *App) Run() {
 			})
 			if err != nil {
 				logging.Error("Failed to start audio: %v", err)
-				
+
 				// Show an error dialog
 				fyne.CurrentApp().Driver().DoFromGoroutine(func() {
 					// Create a simple info dialog
 					message := fmt.Sprintf("Audio error: %v\n\nPlease type your request instead.", err)
 					errorDialog := dialog.NewInformation("Audio Unavailable", message, fyne.CurrentApp().Driver().AllWindows()[0])
 					errorDialog.Show()
-					
+
 					// Update button appearance to indicate disabled state
 					startStopButton.Importance = widget.WarningImportance
 					startStopButton.SetText("Audio Unavailable")
 					startStopButton.Disable()
 				}, false)
-				
+
 				return
 			}
 
@@ -274,16 +276,16 @@ func (a *App) Run() {
 	}
 	a.transcriptBox.SetPlaceHolder("Type your request or speak using the 'Start Audio' button...")
 	// Set transcript box to have more visible rows for better text editing
-	a.transcriptBox.SetMinRowsVisible(5) // Increased from 3 to give more space for editing
+	a.transcriptBox.SetMinRowsVisible(5)         // Increased from 3 to give more space for editing
 	a.transcriptBox.Wrapping = fyne.TextWrapWord // Enable word wrapping for better readability
 
 	// Create a spinner for indicating processing state
 	processingSpinner := widget.NewProgressBarInfinite()
 	processingSpinner.Hide()
-	
+
 	// Define submitButton in advance so we can reference it inside the closure
 	var submitButton *widget.Button
-	
+
 	submitButton = widget.NewButton("Submit", func() {
 		// Wrap submit action in SafeGo for panic recovery
 		eventsourcing.SafeGo("SubmitTranscription", nil, func() {
@@ -293,7 +295,7 @@ func (a *App) Run() {
 				logging.Trace("No transcription text to submit")
 				return
 			}
-			
+
 			// Show processing spinner in transcript box
 			fyne.CurrentApp().Driver().DoFromGoroutine(func() {
 				a.transcriptBox.SetText("Processing request...")
@@ -301,7 +303,7 @@ func (a *App) Run() {
 				submitButton.Disable()    // Disable submit button while processing
 				processingSpinner.Show()
 			}, false)
-			
+
 			data := map[string]interface{}{
 				"RequestText": transcriptionText,
 			}
@@ -317,7 +319,7 @@ func (a *App) Run() {
 				}, false)
 				return
 			}
-			
+
 			// Clear the input and reset UI state after command is executed
 			fyne.CurrentApp().Driver().DoFromGoroutine(func() {
 				a.transcriptBox.SetText("")
@@ -328,11 +330,11 @@ func (a *App) Run() {
 		})
 	})
 	submitButton.Importance = widget.HighImportance
-	
+
 	// Wrap transcript box in scroll container to allow scrolling for long inputs
 	transcriptScroll := container.NewScroll(a.transcriptBox)
 	transcriptScroll.SetMinSize(fyne.NewSize(0, 100)) // Set reasonable minimum height
-	
+
 	// Create a container for input area with progress bar at bottom
 	inputWithProgress := container.NewBorder(
 		nil,
@@ -340,21 +342,21 @@ func (a *App) Run() {
 		nil, nil,
 		transcriptScroll,
 	)
-	
+
 	// Create the input area with buttons
 	inputArea := container.NewBorder(
 		nil, nil,
 		startStopButton, submitButton,
 		inputWithProgress,
 	)
-	
+
 	// Main chat interface with BorderLayout to keep input at bottom
 	chatScrollAndTasksSplit := container.NewHSplit(
 		a.chatScroll,
 		tasksSection,
 	)
 	chatScrollAndTasksSplit.Offset = 0.7 // 70% for chat, 30% for tasks
-	
+
 	// Use a BorderLayout to fix the input area at the bottom
 	chatInterface := container.NewBorder(
 		// Top
@@ -374,7 +376,7 @@ func (a *App) Run() {
 		// Center (takes all remaining space)
 		chatScrollAndTasksSplit,
 	)
-	
+
 	// Debug panels
 	stateScrollable := container.NewScroll(a.stateDisplay)
 	split := container.NewHSplit(a.eventLog, a.eventDetail)
@@ -461,22 +463,22 @@ func (a *App) refreshUI() {
 	// Update chat history
 	for _, msg := range a.globalAgg.ChatHistory {
 		var content fyne.CanvasObject
-		
+
 		if strings.Contains(msg.Role, "[think]") {
 			// Create collapsible container for think content
 			detailsContent := widget.NewLabel(msg.Content)
 			detailsContent.Wrapping = fyne.TextWrapWord
-			
+
 			// Initially collapsed
 			detailsItem := widget.NewAccordionItem("Thinking details...", detailsContent)
 			details := widget.NewAccordion(detailsItem)
 			details.MultiOpen = false
 			// Accordion items start collapsed by default
-			
+
 			// Create a container with a header that indicates it's a thinking section
 			header := widget.NewLabel("🧠 Assistant thinking process...")
 			header.TextStyle = fyne.TextStyle{Italic: true}
-			
+
 			content = container.NewVBox(
 				header,
 				details,
@@ -484,7 +486,7 @@ func (a *App) refreshUI() {
 		} else {
 			// Regular message
 			messageContainer := container.NewVBox()
-			
+
 			// Header with role (You/Assistant)
 			var roleLabel *widget.Label
 			if msg.Role == "You" {
@@ -494,30 +496,30 @@ func (a *App) refreshUI() {
 				roleLabel = widget.NewLabel("MindPalace")
 				roleLabel.TextStyle = fyne.TextStyle{Bold: true}
 			}
-			
+
 			// Message content with proper styling
 			messageLabel := widget.NewLabel(msg.Content)
 			messageLabel.Wrapping = fyne.TextWrapWord
-			
+
 			messageContainer.Add(roleLabel)
 			messageContainer.Add(messageLabel)
-			
+
 			content = container.NewPadded(messageContainer)
 		}
-		
+
 		// Add a separator between messages
 		if len(a.chatHistory.Objects) > 0 {
 			a.chatHistory.Add(widget.NewSeparator())
 		}
-		
+
 		a.chatHistory.Add(content)
 	}
-	
+
 	// Display pending tool calls if any
 	pendingCalls := a.globalAgg.GetPendingToolCalls()
 	// We'll use toolResults in future implementation
 	// toolResults := a.globalAgg.GetToolCallResults()
-	
+
 	// If there are any pending tool calls, show them
 	if len(pendingCalls) > 0 {
 		hasPending := false
@@ -528,27 +530,27 @@ func (a *App) refreshUI() {
 				break
 			}
 		}
-		
+
 		if hasPending {
 			toolCallContainer := container.NewVBox()
 			toolCallHeader := widget.NewLabel("⚙️ Processing Tool Calls...")
 			toolCallHeader.TextStyle = fyne.TextStyle{Italic: true}
 			toolCallContainer.Add(toolCallHeader)
-		
+
 			if len(a.chatHistory.Objects) > 0 {
 				a.chatHistory.Add(widget.NewSeparator())
 			}
 			a.chatHistory.Add(toolCallContainer)
 		}
 	}
-	
+
 	// Update task list with comprehensive task information
 	if tasks, ok := a.globalAgg.GetState()["TaskCreated"]; ok {
 		// Process task data from events
 		if taskList, ok := tasks.([]interface{}); ok {
 			// Get task updates to overlay on top of created tasks
 			var taskUpdates, taskCompletions, taskDeletions []map[string]interface{}
-			
+
 			if updateEvents, ok := a.globalAgg.GetState()["TaskUpdated"].([]interface{}); ok {
 				for _, event := range updateEvents {
 					if updateMap, ok := event.(map[string]interface{}); ok {
@@ -556,7 +558,7 @@ func (a *App) refreshUI() {
 					}
 				}
 			}
-			
+
 			if completionEvents, ok := a.globalAgg.GetState()["TaskCompleted"].([]interface{}); ok {
 				for _, event := range completionEvents {
 					if completionMap, ok := event.(map[string]interface{}); ok {
@@ -564,7 +566,7 @@ func (a *App) refreshUI() {
 					}
 				}
 			}
-			
+
 			if deletionEvents, ok := a.globalAgg.GetState()["TaskDeleted"].([]interface{}); ok {
 				for _, event := range deletionEvents {
 					if deletionMap, ok := event.(map[string]interface{}); ok {
@@ -572,7 +574,7 @@ func (a *App) refreshUI() {
 					}
 				}
 			}
-			
+
 			// Process tasks
 			for _, task := range taskList {
 				if taskData, ok := task.(map[string]interface{}); ok {
@@ -580,7 +582,7 @@ func (a *App) refreshUI() {
 					if taskID == "" {
 						continue // Skip tasks without ID
 					}
-					
+
 					// Skip deleted tasks
 					deleted := false
 					for _, deletion := range taskDeletions {
@@ -592,7 +594,7 @@ func (a *App) refreshUI() {
 					if deleted {
 						continue
 					}
-					
+
 					// Apply updates to task data
 					for _, update := range taskUpdates {
 						if updatedID, ok := update["TaskID"].(string); ok && updatedID == taskID {
@@ -603,7 +605,7 @@ func (a *App) refreshUI() {
 							}
 						}
 					}
-					
+
 					// Apply completions
 					for _, completion := range taskCompletions {
 						if completedID, ok := completion["TaskID"].(string); ok && completedID == taskID {
@@ -616,7 +618,7 @@ func (a *App) refreshUI() {
 							}
 						}
 					}
-					
+
 					// Extract task fields
 					taskTitle, _ := taskData["Title"].(string)
 					taskDescription, _ := taskData["Description"].(string)
@@ -625,7 +627,7 @@ func (a *App) refreshUI() {
 					taskDeadline, _ := taskData["Deadline"].(string)
 					taskCompletedAt, _ := taskData["CompletedAt"].(string)
 					taskCompletionNotes, _ := taskData["CompletionNotes"].(string)
-					
+
 					// Set defaults for missing fields
 					if taskStatus == "" {
 						taskStatus = "Pending"
@@ -633,10 +635,10 @@ func (a *App) refreshUI() {
 					if taskPriority == "" {
 						taskPriority = "Medium"
 					}
-					
+
 					// Create task card
 					taskCard := container.NewVBox()
-					
+
 					// Status indicator
 					var statusEmoji string
 					switch taskStatus {
@@ -649,7 +651,7 @@ func (a *App) refreshUI() {
 					default:
 						statusEmoji = "⏳"
 					}
-					
+
 					// Priority indicator
 					var priorityIndicator string
 					switch taskPriority {
@@ -664,15 +666,15 @@ func (a *App) refreshUI() {
 					default:
 						priorityIndicator = ""
 					}
-					
+
 					// Task header with ID, title, status and priority
 					headerText := fmt.Sprintf("%s %s %s", statusEmoji, priorityIndicator, taskTitle)
 					titleLabel := widget.NewLabel(headerText)
 					titleLabel.TextStyle = fyne.TextStyle{Bold: true}
-					
+
 					// Create task details accordion
 					var detailsContent *fyne.Container = container.NewVBox()
-					
+
 					// Description section (if available)
 					if taskDescription != "" {
 						descLabel := widget.NewLabel(taskDescription)
@@ -680,24 +682,24 @@ func (a *App) refreshUI() {
 						detailsContent.Add(descLabel)
 						detailsContent.Add(widget.NewSeparator())
 					}
-					
+
 					// Metadata section
 					metadataContent := container.NewVBox()
-					
+
 					// Status row
 					statusRow := container.NewHBox(
 						widget.NewLabel("Status:"),
 						widget.NewLabel(taskStatus),
 					)
 					metadataContent.Add(statusRow)
-					
+
 					// Priority row
 					priorityRow := container.NewHBox(
 						widget.NewLabel("Priority:"),
 						widget.NewLabel(taskPriority),
 					)
 					metadataContent.Add(priorityRow)
-					
+
 					// Deadline row (if available)
 					if taskDeadline != "" {
 						deadlineRow := container.NewHBox(
@@ -706,7 +708,7 @@ func (a *App) refreshUI() {
 						)
 						metadataContent.Add(deadlineRow)
 					}
-					
+
 					// Completion info (if applicable)
 					if taskStatus == "Completed" && taskCompletedAt != "" {
 						completedRow := container.NewHBox(
@@ -714,7 +716,7 @@ func (a *App) refreshUI() {
 							widget.NewLabel(taskCompletedAt),
 						)
 						metadataContent.Add(completedRow)
-						
+
 						if taskCompletionNotes != "" {
 							notesRow := container.NewVBox(
 								widget.NewLabel("Notes:"),
@@ -723,13 +725,13 @@ func (a *App) refreshUI() {
 							metadataContent.Add(notesRow)
 						}
 					}
-					
+
 					detailsContent.Add(metadataContent)
-					
+
 					// Tags section (if available)
 					if tags, ok := taskData["Tags"].([]interface{}); ok && len(tags) > 0 {
 						tagsContent := container.NewHBox(widget.NewLabel("Tags:"))
-						
+
 						for _, tag := range tags {
 							if tagStr, ok := tag.(string); ok {
 								tagLabel := widget.NewLabel(fmt.Sprintf("#%s", tagStr))
@@ -737,32 +739,32 @@ func (a *App) refreshUI() {
 								tagsContent.Add(tagLabel)
 							}
 						}
-						
+
 						detailsContent.Add(tagsContent)
 					}
-					
+
 					// Dependencies section (if available)
 					if deps, ok := taskData["Dependencies"].([]interface{}); ok && len(deps) > 0 {
 						depsContent := container.NewVBox(widget.NewLabel("Dependencies:"))
-						
+
 						for _, dep := range deps {
 							if depStr, ok := dep.(string); ok {
 								depLabel := widget.NewLabel(fmt.Sprintf("• Depends on: %s", depStr))
 								depsContent.Add(depLabel)
 							}
 						}
-						
+
 						detailsContent.Add(depsContent)
 					}
-					
+
 					// Create the accordion
 					details := widget.NewAccordion(
 						widget.NewAccordionItem("Details", detailsContent),
 					)
-					
+
 					taskCard.Add(titleLabel)
 					taskCard.Add(details)
-					
+
 					// Add to tasks container with separator
 					if len(a.tasksContainer.Objects) > 0 {
 						a.tasksContainer.Add(widget.NewSeparator())
@@ -776,7 +778,7 @@ func (a *App) refreshUI() {
 	// Refresh UI elements
 	a.chatHistory.Refresh()
 	a.tasksContainer.Refresh()
-	
+
 	// Scroll to bottom
 	if len(a.chatHistory.Objects) > 0 {
 		a.chatScroll.ScrollToBottom()
@@ -825,14 +827,14 @@ func (a *App) handleStreamingUpdate(data map[string]interface{}) {
 	isFinal, _ := data["IsFinal"].(bool)
 	// We can use hasToolCalls later for showing tool call indicators
 	// hasToolCalls, _ := data["HasToolCalls"].(bool)
-	
+
 	// Parse think tags from the partialContent
 	thinks, regularContent := parseStreamingContent(partialContent)
-	
+
 	// Find and update thinking message if we have new think content
 	if len(thinks) > 0 {
 		thinkContent := strings.Join(thinks, "\n\n")
-		
+
 		// Check if we already have a thinking message for this request
 		thinkMessageFound := false
 		for i, msg := range a.globalAgg.ChatHistory {
@@ -843,10 +845,10 @@ func (a *App) handleStreamingUpdate(data map[string]interface{}) {
 				break
 			}
 		}
-		
+
 		// If no thinking message found, create a new one
 		if !thinkMessageFound {
-			thinkMessage := core.ChatMessage{
+			thinkMessage := chat.ChatMessage{
 				Role:              "Assistant [think]",
 				Content:           thinkContent,
 				RequestID:         requestID,
@@ -855,7 +857,7 @@ func (a *App) handleStreamingUpdate(data map[string]interface{}) {
 			a.globalAgg.ChatHistory = append(a.globalAgg.ChatHistory, thinkMessage)
 		}
 	}
-	
+
 	// Find the existing assistant message or create a new one for regular content
 	var assistantMessageFound bool
 	for i, msg := range a.globalAgg.ChatHistory {
@@ -864,24 +866,24 @@ func (a *App) handleStreamingUpdate(data map[string]interface{}) {
 		if msg.RequestID != requestID || msg.Role != "MindPalace" {
 			continue
 		}
-		
+
 		// Found the assistant message for this request
 		assistantMessageFound = true
-		
+
 		// Update the content with regular content (without think tags)
 		a.globalAgg.ChatHistory[i].Content = regularContent
-		
+
 		// Mark as complete if this is the final chunk
 		if isFinal {
 			a.globalAgg.ChatHistory[i].StreamingComplete = true
 		}
-		
+
 		break
 	}
-	
+
 	// If no existing message found, create a new one
 	if !assistantMessageFound && regularContent != "" {
-		newMessage := core.ChatMessage{
+		newMessage := chat.ChatMessage{
 			Role:              "MindPalace",
 			Content:           regularContent,
 			RequestID:         requestID,
@@ -889,10 +891,10 @@ func (a *App) handleStreamingUpdate(data map[string]interface{}) {
 		}
 		a.globalAgg.ChatHistory = append(a.globalAgg.ChatHistory, newMessage)
 	}
-	
+
 	// Update UI
 	a.refreshUI()
-	
+
 	// Scroll to bottom to follow new content
 	a.chatScroll.ScrollToBottom()
 }

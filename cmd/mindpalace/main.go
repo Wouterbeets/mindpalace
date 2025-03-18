@@ -3,10 +3,12 @@ package main
 import (
 	"flag"
 	"fmt"
-	"mindpalace/internal/core"
+	"mindpalace/internal/chat"
 	"mindpalace/internal/llmprocessor"
 	"mindpalace/internal/orchestration"
+	"mindpalace/internal/plugins"
 	"mindpalace/internal/ui"
+	"mindpalace/pkg/aggregate"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
 	"os"
@@ -71,7 +73,7 @@ func main() {
 	})
 
 	// Initialize plugin manager
-	pluginManager := core.NewPluginManager()
+	pluginManager := plugins.NewPluginManager()
 	logging.Debug("Plugin manager initialized")
 
 	// Set up event store and aggregate
@@ -82,9 +84,9 @@ func main() {
 	logging.Debug("Event store loaded from %s", eventFileFlag)
 
 	// Create aggregate
-	agg := &core.AppAggregate{
+	agg := &aggregate.AppAggregate{
 		State:            make(map[string]interface{}),
-		ChatHistory:      []core.ChatMessage{},
+		ChatHistory:      []chat.ChatMessage{},
 		PendingToolCalls: make(map[string][]string),
 		ToolCallResults:  make(map[string]map[string]interface{}),
 		AllCommands:      make(map[string]eventsourcing.CommandHandler),
@@ -99,29 +101,29 @@ func main() {
 	llmProc := llmprocessor.New()
 	llmProc.RegisterHandlers(ep)
 	logging.Info("LLM processor initialized")
-	
+
 	// Load plugins (excluding LLMProcessor which is now internal)
 	pluginManager.LoadPlugins("plugins", ep)
 	commands, _ := pluginManager.RegisterCommands()
-	
+
 	// For debugging, log the LLM processor commands
 	for name := range llmProc.GetSchemas() {
 		logging.Debug("Available LLM command: %s", name)
 	}
-	
+
 	// Collect all commands into the aggregate
 	allCommands := make(map[string]eventsourcing.CommandHandler)
-	
+
 	// Add plugin commands
 	for name, handler := range commands {
 		allCommands[name] = handler
 	}
-	
+
 	// Add commands from the processor
 	for name, handler := range ep.Commands() {
 		allCommands[name] = handler
 	}
-	
+
 	logging.Info("Total commands available: %d", len(allCommands))
 
 	// Store commands in the aggregate so they're available to event handlers
