@@ -13,6 +13,7 @@ type OllamaRequest struct {
 	Messages []Message `json:"messages"`
 	Stream   bool      `json:"stream"`
 	Tools    []Tool    `json:"tools,omitempty"`
+	NumCtx   int       `json:"num_ctx,omitempty"` // Added context window size
 }
 
 // Tool represents a function tool available to the LLM.

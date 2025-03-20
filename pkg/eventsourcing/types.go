@@ -75,10 +75,11 @@ func (e *GenericEvent) DecodeData(v interface{}) error {
 }
 
 type ToolCallCompleted struct {
-	RequestID  string
-	ToolCallID string
-	Function   string
-	Result     map[string]interface{}
+	RequestID  string                 `json:"request_id"`
+	ToolCallID string                 `json:"tool_call_id"`
+	Function   string                 `json:"function"`
+	Result     map[string]interface{} `json:"result"`
+	EventType  string                 `json:"event_type"`
 }
 
 func (e *ToolCallCompleted) Type() string {
@@ -86,6 +87,7 @@ func (e *ToolCallCompleted) Type() string {
 }
 
 func (e *ToolCallCompleted) Marshal() ([]byte, error) {
+	e.EventType = e.Type()
 	return json.Marshal(e)
 }
 
@@ -98,6 +100,7 @@ type ToolCallsConfiguredEvent struct {
 	RequestID   string           `json:"request_id"`
 	RequestText string           `json:"request_text"`
 	Tools       []llmmodels.Tool `json:"tools"`
+	EventType   string           `json:"event_type"`
 }
 
 func (e *ToolCallsConfiguredEvent) Type() string {
@@ -105,6 +108,7 @@ func (e *ToolCallsConfiguredEvent) Type() string {
 }
 
 func (e *ToolCallsConfiguredEvent) Marshal() ([]byte, error) {
+	e.EventType = e.Type()
 	return json.Marshal(e)
 }
 
@@ -114,6 +118,7 @@ func (e *ToolCallsConfiguredEvent) Unmarshal(data []byte) error {
 
 // UserRequestReceivedEvent is a strongly typed event for when a user request is received
 type UserRequestReceivedEvent struct {
+	EventType   string `json:"event_type"`
 	RequestID   string `json:"request_id"`
 	RequestText string `json:"request_text"`
 	Timestamp   string `json:"timestamp"`
@@ -124,6 +129,7 @@ func (e *UserRequestReceivedEvent) Type() string {
 }
 
 func (e *UserRequestReceivedEvent) Marshal() ([]byte, error) {
+	e.EventType = e.Type()
 	return json.Marshal(e)
 }
 
@@ -133,6 +139,7 @@ func (e *UserRequestReceivedEvent) Unmarshal(data []byte) error {
 
 // AllToolCallsCompletedEvent is a strongly typed event for when all tool calls are completed
 type AllToolCallsCompletedEvent struct {
+	EventType string                   `json:"event_type"`
 	RequestID string                   `json:"request_id"`
 	Results   []map[string]interface{} `json:"results"`
 }
@@ -142,6 +149,7 @@ func (e *AllToolCallsCompletedEvent) Type() string {
 }
 
 func (e *AllToolCallsCompletedEvent) Marshal() ([]byte, error) {
+	e.EventType = e.Type()
 	return json.Marshal(e)
 }
 
@@ -155,6 +163,7 @@ type ToolCallInitiatedEvent struct {
 	ToolCallID string                 `json:"tool_call_id"`
 	Function   string                 `json:"function"`
 	Arguments  map[string]interface{} `json:"arguments"`
+	EventType  string                 `json:"event_type"`
 }
 
 func (e *ToolCallInitiatedEvent) Type() string {
@@ -162,6 +171,7 @@ func (e *ToolCallInitiatedEvent) Type() string {
 }
 
 func (e *ToolCallInitiatedEvent) Marshal() ([]byte, error) {
+	e.EventType = e.Type()
 	return json.Marshal(e)
 }
 

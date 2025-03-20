@@ -15,7 +15,7 @@ import (
 
 	"mindpalace/internal/audio"
 	"mindpalace/internal/chat"
-	"mindpalace/internal/plugins"
+	"mindpalace/internal/orchestration"
 	"mindpalace/pkg/aggregate"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
@@ -29,33 +29,29 @@ type App struct {
 	eventProcessor *eventsourcing.EventProcessor
 	globalAgg      *aggregate.AppAggregate
 	eventChan      chan eventsourcing.Event
-	pluginManager  *plugins.PluginManager
 	commands       map[string]eventsourcing.CommandHandler
 	ui             fyne.App
 	stateDisplay   *widget.Entry
 	eventLog       *widget.List
 	eventDetail    *widget.Entry
-	events         []eventsourcing.Event
 	transcriber    *audio.VoiceTranscriber
 	transcribing   bool
 	transcriptBox  *widget.Entry
 	chatHistory    *fyne.Container
 	chatScroll     *container.Scroll
 	tasksContainer *fyne.Container
+	orchestrator   *orchestration.RequestOrchestrator
 }
 
-// NewApp creates a new UI application
-func NewApp(pm *plugins.PluginManager, ep *eventsourcing.EventProcessor, agg *aggregate.AppAggregate) *App {
+func NewApp(ep *eventsourcing.EventProcessor, agg *aggregate.AppAggregate, orch *orchestration.RequestOrchestrator) *App {
 	chatHistory := container.NewVBox()
 	tasksContainer := container.NewVBox()
-	// Create a new Fyne application
-	// TODO: Find a way to silence Fyne errors in the future
 	fyneApp := app.NewWithID("com.mindpalace.app")
 
 	a := &App{
 		globalAgg:      agg,
+		orchestrator:   orch,
 		eventProcessor: ep,
-		pluginManager:  pm,
 		commands:       make(map[string]eventsourcing.CommandHandler),
 		ui:             fyneApp,
 		transcriber:    audio.NewVoiceTranscriber(),
@@ -65,55 +61,43 @@ func NewApp(pm *plugins.PluginManager, ep *eventsourcing.EventProcessor, agg *ag
 		chatScroll:     container.NewScroll(chatHistory),
 		tasksContainer: tasksContainer,
 		eventLog: widget.NewList(
-			func() int { return 0 },
+			func() int { return len(ep.GetEvents()) }, // Use GetEvents directly
 			func() fyne.CanvasObject { return widget.NewLabel("Event") },
-			func(id widget.ListItemID, obj fyne.CanvasObject) {},
+			func(id widget.ListItemID, obj fyne.CanvasObject) {
+				events := ep.GetEvents()
+				if id >= 0 && id < len(events) {
+					obj.(*widget.Label).SetText(events[id].Type())
+				}
+			},
 		),
 		eventDetail: widget.NewMultiLineEntry(),
 		eventChan:   make(chan eventsourcing.Event, 10),
 	}
 	a.ui.Settings().SetTheme(NewCustomTheme())
 
-	// Get the event bus from the event processor
-	eventBus := ep.EventBus
+	// Simplified event handling
+	go func() {
+		for range a.eventChan {
+			fyne.CurrentApp().Driver().DoFromGoroutine(func() {
+				a.refreshUI()
+			}, false)
+		}
+	}()
 
-	// Subscribe to all events for UI updates using wildcard subscription
-	eventBus.Subscribe("*", func(event eventsourcing.Event, state map[string]interface{}, commands map[string]eventsourcing.CommandHandler) ([]eventsourcing.Event, error) {
-		// Update UI on the main thread
-		fyne.CurrentApp().Driver().DoFromGoroutine(func() {
-			a.refreshUI()
-		}, false)
+	ep.EventBus.Subscribe("RequestCompleted", func(event eventsourcing.Event, state map[string]interface{}, commands map[string]eventsourcing.CommandHandler) ([]eventsourcing.Event, error) {
+		a.eventChan <- event
+		return nil, nil
+	})
+	ep.EventBus.Subscribe("UserRequestReceived", func(event eventsourcing.Event, state map[string]interface{}, commands map[string]eventsourcing.CommandHandler) ([]eventsourcing.Event, error) {
+		a.eventChan <- event
 		return nil, nil
 	})
 
-	// Set up streaming event subscription
-	eventsourcing.SubmitStreamingEvent = func(eventType string, data map[string]interface{}) {
-		eventBus.PublishStreaming(eventType, data)
-	}
-
-	// Subscribe to streaming events
-	eventBus.SubscribeStreaming("LLMResponseStream", func(eventType string, data map[string]interface{}) {
-		// Handle streaming updates on the main thread
-		fyne.CurrentApp().Driver().DoFromGoroutine(func() {
-			a.handleStreamingUpdate(data)
-		}, false)
-	})
-
 	a.chatScroll.Direction = container.ScrollVerticalOnly
-	// Don't set a minimum height for chat scroll to maximize space usage
 	a.transcriptBox.SetPlaceHolder("Transcriptions will appear here...")
 	a.eventDetail.Disable()
 	a.eventDetail.SetText("Select an event to view details")
 
-	// Register commands
-	commands, _ := pm.RegisterCommands()
-	a.commands = commands
-	a.eventProcessor.RegisterCommands(commands)
-
-	// Store commands in the aggregate so they're available to event handlers
-	a.globalAgg.AllCommands = commands
-
-	// Transcriber callback using executeCommand
 	a.transcriber.SetSessionEventCallback(func(eventType string, data map[string]interface{}) {
 		var cmdName string
 		switch eventType {
@@ -132,24 +116,23 @@ func NewApp(pm *plugins.PluginManager, ep *eventsourcing.EventProcessor, agg *ag
 	})
 
 	return a
-}
-
-// InitUI initializes the UI components
+} // InitUI initializes the UI components
 func (a *App) InitUI() {
+	events := a.eventProcessor.GetEvents()
 	a.eventLog.Length = func() int {
-		return len(a.events)
+		return len(events)
 	}
 	a.eventLog.UpdateItem = func(id widget.ListItemID, obj fyne.CanvasObject) {
-		obj.(*widget.Label).SetText(a.events[id].Type())
+		obj.(*widget.Label).SetText(events[id].Type())
 	}
 	a.eventLog.OnSelected = func(id widget.ListItemID) {
-		if id < 0 || id >= len(a.events) {
+		if id < 0 || id >= len(events) {
 			return
 		}
-		for _, e := range a.events {
+		for _, e := range events {
 			logging.Trace("onselect: all events: %s, %T ", e.Type(), e)
 		}
-		event := a.events[id]
+		event := events[id]
 		dataJSON, err := event.Marshal()
 		if err != nil {
 			a.eventDetail.SetText(fmt.Sprintf("Error marshaling event data: %v", err))
@@ -165,6 +148,7 @@ func (a *App) InitUI() {
 	stateText.SetText(fmt.Sprintf("%v", a.globalAgg.GetState()))
 	stateText.Disable()
 	a.stateDisplay = stateText
+	a.RebuildState()
 }
 
 // Run starts the UI application
@@ -291,22 +275,10 @@ func (a *App) Run() {
 				processingSpinner.Show()
 			}, false)
 
-			data := map[string]interface{}{
-				"RequestText": transcriptionText,
-			}
-			err := a.eventProcessor.ExecuteCommand("ReceiveRequest", data)
+			err := a.orchestrator.ProcessRequest(transcriptionText, "")
 			if err != nil {
-				logging.Error("Failed to execute ReceiveRequest: %v", err)
-				// Re-enable UI elements if there's an error
-				fyne.CurrentApp().Driver().DoFromGoroutine(func() {
-					a.transcriptBox.SetText(transcriptionText) // Restore original text
-					a.transcriptBox.Enable()
-					submitButton.Enable()
-					processingSpinner.Hide()
-				}, false)
-				return
+				logging.Error(err.Error())
 			}
-
 			// Clear the input and reset UI state after command is executed
 			fyne.CurrentApp().Driver().DoFromGoroutine(func() {
 				a.transcriptBox.SetText("")
@@ -441,13 +413,14 @@ func (a *App) buildCommandExecution() fyne.CanvasObject {
 }
 
 // refreshUI updates the UI based on the current state
+// refreshUI updates the UI based on the current state
 func (a *App) refreshUI() {
 	// Only log this at trace level to avoid spamming logs
 	logging.Trace("Refreshing UI in real-time")
 	a.chatHistory.Objects = nil
 	a.tasksContainer.Objects = nil
 
-	// Update chat history
+	// Update chat history (unchanged)
 	for _, msg := range a.globalAgg.ChatHistory {
 		var content fyne.CanvasObject
 
@@ -456,13 +429,10 @@ func (a *App) refreshUI() {
 			detailsContent := widget.NewLabel(msg.Content)
 			detailsContent.Wrapping = fyne.TextWrapWord
 
-			// Initially collapsed
 			detailsItem := widget.NewAccordionItem("Thinking details...", detailsContent)
 			details := widget.NewAccordion(detailsItem)
 			details.MultiOpen = false
-			// Accordion items start collapsed by default
 
-			// Create a container with a header that indicates it's a thinking section
 			header := widget.NewLabel("🧠 Assistant thinking process...")
 			header.TextStyle = fyne.TextStyle{Italic: true}
 
@@ -474,7 +444,6 @@ func (a *App) refreshUI() {
 			// Regular message
 			messageContainer := container.NewVBox()
 
-			// Header with role (You/Assistant)
 			var roleLabel *widget.Label
 			if msg.Role == "You" {
 				roleLabel = widget.NewLabel("You")
@@ -484,7 +453,6 @@ func (a *App) refreshUI() {
 				roleLabel.TextStyle = fyne.TextStyle{Bold: true}
 			}
 
-			// Message content with proper styling
 			messageLabel := widget.NewLabel(msg.Content)
 			messageLabel.Wrapping = fyne.TextWrapWord
 
@@ -494,271 +462,162 @@ func (a *App) refreshUI() {
 			content = container.NewPadded(messageContainer)
 		}
 
-		// Add a separator between messages
 		if len(a.chatHistory.Objects) > 0 {
 			a.chatHistory.Add(widget.NewSeparator())
 		}
-
 		a.chatHistory.Add(content)
 	}
 
-	// Display pending tool calls if any
-	pendingCalls := a.globalAgg.GetPendingToolCalls()
-	// We'll use toolResults in future implementation
-	// toolResults := a.globalAgg.GetToolCallResults()
+	// Update task list using aggregate state
+	if tasks, ok := a.globalAgg.State["tasks"].(map[string]map[string]interface{}); ok {
+		for _, taskData := range tasks {
+			// Extract task fields
+			taskTitle, _ := taskData["Title"].(string)
+			taskDescription, _ := taskData["Description"].(string)
+			taskStatus, _ := taskData["Status"].(string)
+			taskPriority, _ := taskData["Priority"].(string)
+			taskDeadline, _ := taskData["Deadline"].(string)
+			taskCompletedAt, _ := taskData["CompletedAt"].(string)
+			taskCompletionNotes, _ := taskData["CompletionNotes"].(string)
 
-	// If there are any pending tool calls, show them
-	if len(pendingCalls) > 0 {
-		hasPending := false
-		// Check if any request has pending calls
-		for _, callIDs := range pendingCalls {
-			if len(callIDs) > 0 {
-				hasPending = true
-				break
+			// Set defaults for missing fields
+			if taskStatus == "" {
+				taskStatus = "Pending"
 			}
-		}
-
-		if hasPending {
-			toolCallContainer := container.NewVBox()
-			toolCallHeader := widget.NewLabel("⚙️ Processing Tool Calls...")
-			toolCallHeader.TextStyle = fyne.TextStyle{Italic: true}
-			toolCallContainer.Add(toolCallHeader)
-
-			if len(a.chatHistory.Objects) > 0 {
-				a.chatHistory.Add(widget.NewSeparator())
-			}
-			a.chatHistory.Add(toolCallContainer)
-		}
-	}
-
-	// Update task list with comprehensive task information
-	if tasks, ok := a.globalAgg.GetState()["TaskCreated"]; ok {
-		// Process task data from events
-		if taskList, ok := tasks.([]interface{}); ok {
-			// Get task updates to overlay on top of created tasks
-			var taskUpdates, taskCompletions, taskDeletions []map[string]interface{}
-
-			if updateEvents, ok := a.globalAgg.GetState()["TaskUpdated"].([]interface{}); ok {
-				for _, event := range updateEvents {
-					if updateMap, ok := event.(map[string]interface{}); ok {
-						taskUpdates = append(taskUpdates, updateMap)
-					}
-				}
+			if taskPriority == "" {
+				taskPriority = "Medium"
 			}
 
-			if completionEvents, ok := a.globalAgg.GetState()["TaskCompleted"].([]interface{}); ok {
-				for _, event := range completionEvents {
-					if completionMap, ok := event.(map[string]interface{}); ok {
-						taskCompletions = append(taskCompletions, completionMap)
-					}
-				}
+			// Create task card
+			taskCard := container.NewVBox()
+
+			// Status indicator
+			var statusEmoji string
+			switch taskStatus {
+			case "Completed":
+				statusEmoji = "✅"
+			case "In Progress":
+				statusEmoji = "🔄"
+			case "Blocked":
+				statusEmoji = "🚫"
+			default:
+				statusEmoji = "⏳"
 			}
 
-			if deletionEvents, ok := a.globalAgg.GetState()["TaskDeleted"].([]interface{}); ok {
-				for _, event := range deletionEvents {
-					if deletionMap, ok := event.(map[string]interface{}); ok {
-						taskDeletions = append(taskDeletions, deletionMap)
-					}
-				}
+			// Priority indicator
+			var priorityIndicator string
+			switch taskPriority {
+			case "Critical":
+				priorityIndicator = "‼️"
+			case "High":
+				priorityIndicator = "❗"
+			case "Medium":
+				priorityIndicator = "📌"
+			case "Low":
+				priorityIndicator = "📎"
+			default:
+				priorityIndicator = ""
 			}
 
-			// Process tasks
-			for _, task := range taskList {
-				if taskData, ok := task.(map[string]interface{}); ok {
-					taskID, _ := taskData["TaskID"].(string)
-					if taskID == "" {
-						continue // Skip tasks without ID
-					}
+			// Task header with title, status, and priority
+			headerText := fmt.Sprintf("%s %s %s", statusEmoji, priorityIndicator, taskTitle)
+			titleLabel := widget.NewLabel(headerText)
+			titleLabel.TextStyle = fyne.TextStyle{Bold: true}
 
-					// Skip deleted tasks
-					deleted := false
-					for _, deletion := range taskDeletions {
-						if deletedID, ok := deletion["TaskID"].(string); ok && deletedID == taskID {
-							deleted = true
-							break
-						}
-					}
-					if deleted {
-						continue
-					}
+			// Create task details accordion
+			detailsContent := container.NewVBox()
 
-					// Apply updates to task data
-					for _, update := range taskUpdates {
-						if updatedID, ok := update["TaskID"].(string); ok && updatedID == taskID {
-							for k, v := range update {
-								if k != "TaskID" { // Don't overwrite the ID
-									taskData[k] = v
-								}
-							}
-						}
-					}
+			// Description section (if available)
+			if taskDescription != "" {
+				descLabel := widget.NewLabel(taskDescription)
+				descLabel.Wrapping = fyne.TextWrapWord
+				detailsContent.Add(descLabel)
+				detailsContent.Add(widget.NewSeparator())
+			}
 
-					// Apply completions
-					for _, completion := range taskCompletions {
-						if completedID, ok := completion["TaskID"].(string); ok && completedID == taskID {
-							taskData["Status"] = "Completed"
-							if completedAt, ok := completion["CompletedAt"].(string); ok {
-								taskData["CompletedAt"] = completedAt
-							}
-							if notes, ok := completion["CompletionNotes"].(string); ok {
-								taskData["CompletionNotes"] = notes
-							}
-						}
-					}
+			// Metadata section
+			metadataContent := container.NewVBox()
 
-					// Extract task fields
-					taskTitle, _ := taskData["Title"].(string)
-					taskDescription, _ := taskData["Description"].(string)
-					taskStatus, _ := taskData["Status"].(string)
-					taskPriority, _ := taskData["Priority"].(string)
-					taskDeadline, _ := taskData["Deadline"].(string)
-					taskCompletedAt, _ := taskData["CompletedAt"].(string)
-					taskCompletionNotes, _ := taskData["CompletionNotes"].(string)
+			// Status row
+			statusRow := container.NewHBox(
+				widget.NewLabel("Status:"),
+				widget.NewLabel(taskStatus),
+			)
+			metadataContent.Add(statusRow)
 
-					// Set defaults for missing fields
-					if taskStatus == "" {
-						taskStatus = "Pending"
-					}
-					if taskPriority == "" {
-						taskPriority = "Medium"
-					}
+			// Priority row
+			priorityRow := container.NewHBox(
+				widget.NewLabel("Priority:"),
+				widget.NewLabel(taskPriority),
+			)
+			metadataContent.Add(priorityRow)
 
-					// Create task card
-					taskCard := container.NewVBox()
+			// Deadline row (if available)
+			if taskDeadline != "" {
+				deadlineRow := container.NewHBox(
+					widget.NewLabel("Deadline:"),
+					widget.NewLabel(taskDeadline),
+				)
+				metadataContent.Add(deadlineRow)
+			}
 
-					// Status indicator
-					var statusEmoji string
-					switch taskStatus {
-					case "Completed":
-						statusEmoji = "✅"
-					case "In Progress":
-						statusEmoji = "🔄"
-					case "Blocked":
-						statusEmoji = "🚫"
-					default:
-						statusEmoji = "⏳"
-					}
+			// Completion info (if applicable)
+			if taskStatus == "Completed" && taskCompletedAt != "" {
+				completedRow := container.NewHBox(
+					widget.NewLabel("Completed:"),
+					widget.NewLabel(taskCompletedAt),
+				)
+				metadataContent.Add(completedRow)
 
-					// Priority indicator
-					var priorityIndicator string
-					switch taskPriority {
-					case "Critical":
-						priorityIndicator = "‼️"
-					case "High":
-						priorityIndicator = "❗"
-					case "Medium":
-						priorityIndicator = "📌"
-					case "Low":
-						priorityIndicator = "📎"
-					default:
-						priorityIndicator = ""
-					}
-
-					// Task header with ID, title, status and priority
-					headerText := fmt.Sprintf("%s %s %s", statusEmoji, priorityIndicator, taskTitle)
-					titleLabel := widget.NewLabel(headerText)
-					titleLabel.TextStyle = fyne.TextStyle{Bold: true}
-
-					// Create task details accordion
-					var detailsContent *fyne.Container = container.NewVBox()
-
-					// Description section (if available)
-					if taskDescription != "" {
-						descLabel := widget.NewLabel(taskDescription)
-						descLabel.Wrapping = fyne.TextWrapWord
-						detailsContent.Add(descLabel)
-						detailsContent.Add(widget.NewSeparator())
-					}
-
-					// Metadata section
-					metadataContent := container.NewVBox()
-
-					// Status row
-					statusRow := container.NewHBox(
-						widget.NewLabel("Status:"),
-						widget.NewLabel(taskStatus),
+				if taskCompletionNotes != "" {
+					notesRow := container.NewVBox(
+						widget.NewLabel("Notes:"),
+						widget.NewLabel(taskCompletionNotes),
 					)
-					metadataContent.Add(statusRow)
-
-					// Priority row
-					priorityRow := container.NewHBox(
-						widget.NewLabel("Priority:"),
-						widget.NewLabel(taskPriority),
-					)
-					metadataContent.Add(priorityRow)
-
-					// Deadline row (if available)
-					if taskDeadline != "" {
-						deadlineRow := container.NewHBox(
-							widget.NewLabel("Deadline:"),
-							widget.NewLabel(taskDeadline),
-						)
-						metadataContent.Add(deadlineRow)
-					}
-
-					// Completion info (if applicable)
-					if taskStatus == "Completed" && taskCompletedAt != "" {
-						completedRow := container.NewHBox(
-							widget.NewLabel("Completed:"),
-							widget.NewLabel(taskCompletedAt),
-						)
-						metadataContent.Add(completedRow)
-
-						if taskCompletionNotes != "" {
-							notesRow := container.NewVBox(
-								widget.NewLabel("Notes:"),
-								widget.NewLabel(taskCompletionNotes),
-							)
-							metadataContent.Add(notesRow)
-						}
-					}
-
-					detailsContent.Add(metadataContent)
-
-					// Tags section (if available)
-					if tags, ok := taskData["Tags"].([]interface{}); ok && len(tags) > 0 {
-						tagsContent := container.NewHBox(widget.NewLabel("Tags:"))
-
-						for _, tag := range tags {
-							if tagStr, ok := tag.(string); ok {
-								tagLabel := widget.NewLabel(fmt.Sprintf("#%s", tagStr))
-								tagLabel.TextStyle = fyne.TextStyle{Italic: true}
-								tagsContent.Add(tagLabel)
-							}
-						}
-
-						detailsContent.Add(tagsContent)
-					}
-
-					// Dependencies section (if available)
-					if deps, ok := taskData["Dependencies"].([]interface{}); ok && len(deps) > 0 {
-						depsContent := container.NewVBox(widget.NewLabel("Dependencies:"))
-
-						for _, dep := range deps {
-							if depStr, ok := dep.(string); ok {
-								depLabel := widget.NewLabel(fmt.Sprintf("• Depends on: %s", depStr))
-								depsContent.Add(depLabel)
-							}
-						}
-
-						detailsContent.Add(depsContent)
-					}
-
-					// Create the accordion
-					details := widget.NewAccordion(
-						widget.NewAccordionItem("Details", detailsContent),
-					)
-
-					taskCard.Add(titleLabel)
-					taskCard.Add(details)
-
-					// Add to tasks container with separator
-					if len(a.tasksContainer.Objects) > 0 {
-						a.tasksContainer.Add(widget.NewSeparator())
-					}
-					a.tasksContainer.Add(taskCard)
+					metadataContent.Add(notesRow)
 				}
 			}
+
+			detailsContent.Add(metadataContent)
+
+			// Tags section (if available)
+			if tags, ok := taskData["Tags"].([]interface{}); ok && len(tags) > 0 {
+				tagsContent := container.NewHBox(widget.NewLabel("Tags:"))
+				for _, tag := range tags {
+					if tagStr, ok := tag.(string); ok {
+						tagLabel := widget.NewLabel(fmt.Sprintf("#%s", tagStr))
+						tagLabel.TextStyle = fyne.TextStyle{Italic: true}
+						tagsContent.Add(tagLabel)
+					}
+				}
+				detailsContent.Add(tagsContent)
+			}
+
+			// Dependencies section (if available)
+			if deps, ok := taskData["Dependencies"].([]interface{}); ok && len(deps) > 0 {
+				depsContent := container.NewVBox(widget.NewLabel("Dependencies:"))
+				for _, dep := range deps {
+					if depStr, ok := dep.(string); ok {
+						depLabel := widget.NewLabel(fmt.Sprintf("• Depends on: %s", depStr))
+						depsContent.Add(depLabel)
+					}
+				}
+				detailsContent.Add(depsContent)
+			}
+
+			// Create the accordion
+			details := widget.NewAccordion(
+				widget.NewAccordionItem("Details", detailsContent),
+			)
+
+			taskCard.Add(titleLabel)
+			taskCard.Add(details)
+
+			// Add to tasks container with separator
+			if len(a.tasksContainer.Objects) > 0 {
+				a.tasksContainer.Add(widget.NewSeparator())
+			}
+			a.tasksContainer.Add(taskCard)
 		}
 	}
 
@@ -775,10 +634,12 @@ func (a *App) refreshUI() {
 	a.stateDisplay.SetText(fmt.Sprintf("%v", a.globalAgg.GetState()))
 
 	// Update event log with latest events
-	a.events = a.eventProcessor.GetEvents()
-	a.eventLog.Length = func() int { return len(a.events) }
+	events := a.eventProcessor.GetEvents()
+	a.eventLog.Length = func() int {
+		return len(events)
+	}
 	a.eventLog.UpdateItem = func(id widget.ListItemID, obj fyne.CanvasObject) {
-		obj.(*widget.Label).SetText(a.events[id].Type())
+		obj.(*widget.Label).SetText(events[id].Type())
 	}
 	a.eventLog.Refresh()
 }
@@ -786,9 +647,12 @@ func (a *App) refreshUI() {
 // RebuildState rebuilds the state from events
 func (a *App) RebuildState() {
 	a.globalAgg.State = make(map[string]interface{})
-	a.globalAgg.ChatHistory = nil // Reset chat history
-	a.events = a.eventProcessor.GetEvents()
-	for _, event := range a.events {
+	a.globalAgg.ChatHistory = nil
+	events := a.eventProcessor.GetEvents() // Re-fetch all events to ensure consistency
+	eventsCopy := make([]eventsourcing.Event, len(events))
+	copy(eventsCopy, events)
+
+	for _, event := range eventsCopy {
 		if err := a.globalAgg.ApplyEvent(event); err != nil {
 			logging.Error("Failed to apply event during rebuild: %v", err)
 		}

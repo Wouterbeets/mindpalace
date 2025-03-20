@@ -6,11 +6,10 @@ import (
 )
 
 type EventProcessor struct {
-	store         EventStore
-	aggregate     Aggregate
-	eventHandlers map[string][]EventHandler
-	commands      map[string]CommandHandler
-	EventBus      EventBus // Changed from unexported to exported
+	store     EventStore
+	aggregate Aggregate
+	commands  map[string]CommandHandler
+	EventBus  EventBus // Changed from unexported to exported
 }
 
 func NewEventProcessor(store EventStore, aggregate Aggregate) *EventProcessor {
@@ -18,11 +17,10 @@ func NewEventProcessor(store EventStore, aggregate Aggregate) *EventProcessor {
 	eventBus := NewSimpleEventBus(store, aggregate)
 
 	ep := &EventProcessor{
-		store:         store,
-		aggregate:     aggregate,
-		eventHandlers: make(map[string][]EventHandler),
-		commands:      make(map[string]CommandHandler),
-		EventBus:      eventBus,
+		store:     store,
+		aggregate: aggregate,
+		commands:  make(map[string]CommandHandler),
+		EventBus:  eventBus,
 	}
 
 	// Set the global event bus
@@ -39,9 +37,6 @@ func (ep *EventProcessor) GetEvents() []Event {
 }
 
 func (ep *EventProcessor) RegisterEventHandler(eventType string, handler EventHandler) {
-	// Store in local map for backward compatibility
-	ep.eventHandlers[eventType] = append(ep.eventHandlers[eventType], handler)
-
 	// Also register with the event bus
 	ep.EventBus.Subscribe(eventType, handler)
 

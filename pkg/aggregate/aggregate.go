@@ -12,24 +12,10 @@ import (
 
 // AppAggregate is the main aggregate for managing the application state.
 type AppAggregate struct {
-	State            map[string]interface{}                  // General state storage
-	ChatHistory      []chat.ChatMessage                      // Conversation history
-	PendingToolCalls map[string][]string                     // requestID -> list of tool call IDs
-	ToolCallResults  map[string]map[string]interface{}       // requestID -> toolCallID -> result
-	AllCommands      map[string]eventsourcing.CommandHandler // Registered command handlers
-	ActiveSessions   map[string]bool                         // sessionID -> active status (optional)
-}
-
-// ### Public Methods
-
-// GetPendingToolCalls returns the map of pending tool calls.
-func (a *AppAggregate) GetPendingToolCalls() map[string][]string {
-	return a.PendingToolCalls
-}
-
-// GetToolCallResults returns the map of tool call results.
-func (a *AppAggregate) GetToolCallResults() map[string]map[string]interface{} {
-	return a.ToolCallResults
+	State          map[string]interface{}                  // General state storage
+	ChatHistory    []chat.ChatMessage                      // Conversation history
+	AllCommands    map[string]eventsourcing.CommandHandler // Registered command handlers
+	ActiveSessions map[string]bool                         // sessionID -> active status (optional)
 }
 
 // ID returns the aggregate's identifier.
@@ -68,21 +54,6 @@ func (a *AppAggregate) ApplyEvent(event eventsourcing.Event) error {
 		return fmt.Errorf("unknown event type: %s", eventType)
 	}
 	handler(a, event)
-
-	// Store event data in state (optional, depending on requirements)
-	eventData := extractEventData(event)
-	if eventData != nil {
-		if current, exists := a.State[eventType]; exists {
-			if list, ok := current.([]interface{}); ok {
-				a.State[eventType] = append(list, eventData)
-			} else {
-				a.State[eventType] = []interface{}{current, eventData}
-			}
-		} else {
-			a.State[eventType] = []interface{}{eventData}
-		}
-	}
-
 	return nil
 }
 
@@ -92,18 +63,30 @@ func (a *AppAggregate) ApplyEvent(event eventsourcing.Event) error {
 type eventHandler func(*AppAggregate, eventsourcing.Event)
 
 var eventHandlers = map[string]eventHandler{
-	"TaskCreated":            handleTaskCreated,
-	"TaskUpdated":            handleTaskUpdated,
-	"TaskCompleted":          handleTaskCompleted,
-	"TaskDeleted":            handleTaskDeleted,
-	"UserRequestReceived":    handleUserRequestReceived,
-	"ToolCallsConfigured":    handleToolCallsConfigured,
-	"AllToolCallsCompleted":  handleAllToolCallsCompleted,
-	"ToolCallCompleted":      handleToolCallCompleted,
-	"TranscriptionStarted":   handleTranscriptionStarted,
-	"TranscriptionStopped":   handleTranscriptionStopped,
-	"ToolCallInitiated":      handleToolCallInitiated,
-	"LLMProcessingCompleted": handleLLMProcessingCompleted,
+	"UserRequestReceived":  handleUserRequestReceived,
+	"RequestCompleted":     handleRequestCompleted,
+	"TaskCreated":          handleTaskCreated,
+	"TaskUpdated":          handleTaskUpdated,
+	"TaskCompleted":        handleTaskCompleted,
+	"TaskDeleted":          handleTaskDeleted,
+	"TranscriptionStarted": handleTranscriptionStarted,
+	"TranscriptionStopped": handleTranscriptionStopped,
+}
+
+func handleRequestCompleted(a *AppAggregate, event eventsourcing.Event) {
+	e, ok := event.(*eventsourcing.GenericEvent)
+	if !ok || e.EventType != "RequestCompleted" {
+		return
+	}
+	respText, _ := e.Data["ResponseText"].(string)
+	requestID, _ := e.Data["RequestID"].(string)
+	thinks, regular := parseResponseText(respText)
+	for _, think := range thinks {
+		a.ChatHistory = append(a.ChatHistory, chat.ChatMessage{Role: "Assistant [think]", Content: think, RequestID: requestID, StreamingComplete: true})
+	}
+	if regular != "" {
+		a.ChatHistory = append(a.ChatHistory, chat.ChatMessage{Role: "MindPalace", Content: regular, RequestID: requestID, StreamingComplete: true})
+	}
 }
 
 func handleUserRequestReceived(a *AppAggregate, event eventsourcing.Event) {
@@ -118,13 +101,6 @@ func handleUserRequestReceived(a *AppAggregate, event eventsourcing.Event) {
 		RequestID:         e.RequestID,
 		StreamingComplete: true,
 	})
-	if a.PendingToolCalls == nil {
-		a.PendingToolCalls = make(map[string][]string)
-	}
-	if a.ToolCallResults == nil {
-		a.ToolCallResults = make(map[string]map[string]interface{})
-	}
-	a.PendingToolCalls[e.RequestID] = []string{}
 }
 
 func handleToolCallsConfigured(a *AppAggregate, event eventsourcing.Event) {
@@ -133,35 +109,6 @@ func handleToolCallsConfigured(a *AppAggregate, event eventsourcing.Event) {
 
 func handleAllToolCallsCompleted(a *AppAggregate, event eventsourcing.Event) {
 	// No additional state updates required beyond storing event data
-}
-
-func handleToolCallCompleted(a *AppAggregate, event eventsourcing.Event) {
-	switch e := event.(type) {
-	case *eventsourcing.ToolCallCompleted:
-		if a.ToolCallResults[e.RequestID] == nil {
-			a.ToolCallResults[e.RequestID] = make(map[string]interface{})
-		}
-		a.ToolCallResults[e.RequestID][e.ToolCallID] = map[string]interface{}{
-			"function": e.Function,
-			"result":   e.Result,
-		}
-		removePendingToolCall(a, e.RequestID, e.ToolCallID)
-	case *eventsourcing.GenericEvent:
-		if e.EventType == "ToolCallCompleted" {
-			requestID, _ := e.Data["RequestID"].(string)
-			toolCallID, _ := e.Data["ToolCallID"].(string)
-			function, _ := e.Data["Function"].(string)
-			result, _ := e.Data["Result"].(map[string]interface{})
-			if a.ToolCallResults[requestID] == nil {
-				a.ToolCallResults[requestID] = make(map[string]interface{})
-			}
-			a.ToolCallResults[requestID][toolCallID] = map[string]interface{}{
-				"function": function,
-				"result":   result,
-			}
-			removePendingToolCall(a, requestID, toolCallID)
-		}
-	}
 }
 
 func handleTranscriptionStarted(a *AppAggregate, event eventsourcing.Event) {
@@ -239,8 +186,6 @@ func handleLLMProcessingCompleted(a *AppAggregate, event eventsourcing.Event) {
 		for i := range toolCalls {
 			callIDs[i] = fmt.Sprintf("%s-%d", requestID, i)
 		}
-		a.PendingToolCalls[requestID] = callIDs
-		a.ToolCallResults[requestID] = make(map[string]interface{})
 	}
 }
 
@@ -284,10 +229,14 @@ func handleTaskCompleted(a *AppAggregate, event eventsourcing.Event) {
 	tasks := a.State["tasks"].(map[string]map[string]interface{})
 	taskID, _ := e.Data["TaskID"].(string)
 	if task, exists := tasks[taskID]; exists {
-		task["Status"] = "Completed"
-		if completedAt, ok := e.Data["CompletedAt"]; ok {
-			task["CompletedAt"] = completedAt
+		// Update task with all event data
+		for k, v := range e.Data {
+			if k != "TaskID" {
+				task[k] = v
+			}
 		}
+		// Ensure Status is set to "Completed"
+		task["Status"] = "Completed"
 	}
 }
 
@@ -335,18 +284,6 @@ func extractEventData(event eventsourcing.Event) map[string]interface{} {
 		return e.Data
 	default:
 		return nil
-	}
-}
-
-// removePendingToolCall removes a tool call ID from the pending list.
-func removePendingToolCall(a *AppAggregate, requestID, toolCallID string) {
-	if pending, ok := a.PendingToolCalls[requestID]; ok {
-		for i, id := range pending {
-			if id == toolCallID {
-				a.PendingToolCalls[requestID] = append(pending[:i], pending[i+1:]...)
-				break
-			}
-		}
 	}
 }
 
