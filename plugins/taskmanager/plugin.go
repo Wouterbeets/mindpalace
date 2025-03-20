@@ -146,7 +146,6 @@ func (p *TaskPlugin) Schemas() map[string]map[string]interface{} {
 	}
 }
 
-// Generate a unique ID for tasks
 func generateTaskID() string {
 	return fmt.Sprintf("task_%d", eventsourcing.GenerateUniqueID())
 }
@@ -157,44 +156,34 @@ func CreateTaskHandler(data map[string]interface{}, state map[string]interface{}
 		return nil, fmt.Errorf("missing Title")
 	}
 
-	// Generate a unique task ID
 	taskID := generateTaskID()
-
-	// Create a task object with all possible fields
 	taskData := map[string]interface{}{
 		"TaskID": taskID,
 		"Title":  title,
-		"Status": "Pending", // Default status
+		"Status": "Pending",
 	}
 
-	// Add optional fields if they exist
 	if description, ok := data["Description"].(string); ok {
 		taskData["Description"] = description
 	}
-
 	if status, ok := data["Status"].(string); ok {
 		taskData["Status"] = status
 	}
-
 	if priority, ok := data["Priority"].(string); ok {
 		taskData["Priority"] = priority
 	} else {
-		taskData["Priority"] = "Medium" // Default priority
+		taskData["Priority"] = "Medium"
 	}
-
 	if deadline, ok := data["Deadline"].(string); ok {
 		taskData["Deadline"] = deadline
 	}
-
 	if dependencies, ok := data["Dependencies"].([]interface{}); ok {
 		taskData["Dependencies"] = dependencies
 	}
-
 	if tags, ok := data["Tags"].([]interface{}); ok {
 		taskData["Tags"] = tags
 	}
 
-	// Standard event metadata
 	requestID, _ := data["RequestID"].(string)
 	toolCallID, _ := data["ToolCallID"].(string)
 
@@ -204,16 +193,12 @@ func CreateTaskHandler(data map[string]interface{}, state map[string]interface{}
 			Data:      taskData,
 		},
 	}
-
 	if requestID != "" && toolCallID != "" {
-		events = append(events, &eventsourcing.GenericEvent{
-			EventType: "ToolCallCompleted",
-			Data: map[string]interface{}{
-				"RequestID":  requestID,
-				"ToolCallID": toolCallID,
-				"Function":   "CreateTask", // Added tool name
-				"Result":     map[string]interface{}{"taskID": taskID, "title": title, "status": "created"},
-			},
+		events = append(events, &eventsourcing.ToolCallCompleted{
+			RequestID:  requestID,
+			ToolCallID: toolCallID,
+			Function:   "CreateTask",
+			Result:     map[string]interface{}{"taskID": taskID, "title": title, "status": "created"},
 		})
 	}
 	return events, nil
@@ -225,69 +210,43 @@ func UpdateTaskHandler(data map[string]interface{}, state map[string]interface{}
 		return nil, fmt.Errorf("missing TaskID")
 	}
 
-	// Fix taskID format: convert "task-123" to "task_123" for LLM compatibility
+	// Fix taskID format for LLM compatibility
 	fixedTaskID := taskID
 	if len(taskID) > 5 && taskID[:5] == "task-" {
 		fixedTaskID = "task_" + taskID[5:]
 		data["TaskID"] = fixedTaskID
 	}
 
-	// Get current tasks from state to check if task exists
-	tasksEvents, exists := state["TaskCreated"].([]interface{})
-	if !exists {
-		return nil, fmt.Errorf("no tasks exist")
-	}
-
-	// Check if task exists (using our fixed ID)
-	taskExists := false
-	for _, taskEvent := range tasksEvents {
-		if taskEventMap, ok := taskEvent.(map[string]interface{}); ok {
-			if existingTaskID, ok := taskEventMap["TaskID"].(string); ok && existingTaskID == fixedTaskID {
-				taskExists = true
-				break
-			}
-		}
-	}
-
-	if !taskExists {
+	tasks, exists := state["tasks"].(map[string]map[string]interface{})
+	if !exists || tasks[fixedTaskID] == nil {
 		return nil, fmt.Errorf("task with ID %s not found", fixedTaskID)
 	}
 
-	// Prepare update data
 	updateData := map[string]interface{}{
-		"TaskID": fixedTaskID, // Use the fixed task ID
+		"TaskID": fixedTaskID,
 	}
-
-	// Only include fields that are being updated
 	if title, ok := data["Title"].(string); ok {
 		updateData["Title"] = title
 	}
-
 	if description, ok := data["Description"].(string); ok {
 		updateData["Description"] = description
 	}
-
 	if status, ok := data["Status"].(string); ok {
 		updateData["Status"] = status
 	}
-
 	if priority, ok := data["Priority"].(string); ok {
 		updateData["Priority"] = priority
 	}
-
 	if deadline, ok := data["Deadline"].(string); ok {
 		updateData["Deadline"] = deadline
 	}
-
 	if dependencies, ok := data["Dependencies"].([]interface{}); ok {
 		updateData["Dependencies"] = dependencies
 	}
-
 	if tags, ok := data["Tags"].([]interface{}); ok {
 		updateData["Tags"] = tags
 	}
 
-	// Standard event metadata
 	requestID, _ := data["RequestID"].(string)
 	toolCallID, _ := data["ToolCallID"].(string)
 
@@ -297,16 +256,12 @@ func UpdateTaskHandler(data map[string]interface{}, state map[string]interface{}
 			Data:      updateData,
 		},
 	}
-
 	if requestID != "" && toolCallID != "" {
-		events = append(events, &eventsourcing.GenericEvent{
-			EventType: "ToolCallCompleted",
-			Data: map[string]interface{}{
-				"RequestID":  requestID,
-				"ToolCallID": toolCallID,
-				"Function":   "UpdateTask", // Added tool name
-				"Result":     map[string]interface{}{"taskID": taskID, "status": "updated"},
-			},
+		events = append(events, &eventsourcing.ToolCallCompleted{
+			RequestID:  requestID,
+			ToolCallID: toolCallID,
+			Function:   "UpdateTask",
+			Result:     map[string]interface{}{"taskID": fixedTaskID, "status": "updated"},
 		})
 	}
 	return events, nil
@@ -318,35 +273,17 @@ func DeleteTaskHandler(data map[string]interface{}, state map[string]interface{}
 		return nil, fmt.Errorf("missing TaskID")
 	}
 
-	// Fix taskID format: convert "task-123" to "task_123" for LLM compatibility
 	fixedTaskID := taskID
 	if len(taskID) > 5 && taskID[:5] == "task-" {
 		fixedTaskID = "task_" + taskID[5:]
 		data["TaskID"] = fixedTaskID
 	}
 
-	// Get current tasks from state to check if task exists
-	tasksEvents, exists := state["TaskCreated"].([]interface{})
-	if !exists {
-		return nil, fmt.Errorf("no tasks exist")
-	}
-
-	// Check if task exists (using our fixed ID)
-	taskExists := false
-	for _, taskEvent := range tasksEvents {
-		if taskEventMap, ok := taskEvent.(map[string]interface{}); ok {
-			if existingTaskID, ok := taskEventMap["TaskID"].(string); ok && existingTaskID == fixedTaskID {
-				taskExists = true
-				break
-			}
-		}
-	}
-
-	if !taskExists {
+	tasks, exists := state["tasks"].(map[string]map[string]interface{})
+	if !exists || tasks[fixedTaskID] == nil {
 		return nil, fmt.Errorf("task with ID %s not found", fixedTaskID)
 	}
 
-	// Standard event metadata
 	requestID, _ := data["RequestID"].(string)
 	toolCallID, _ := data["ToolCallID"].(string)
 
@@ -356,16 +293,12 @@ func DeleteTaskHandler(data map[string]interface{}, state map[string]interface{}
 			Data:      map[string]interface{}{"TaskID": fixedTaskID},
 		},
 	}
-
 	if requestID != "" && toolCallID != "" {
-		events = append(events, &eventsourcing.GenericEvent{
-			EventType: "ToolCallCompleted",
-			Data: map[string]interface{}{
-				"RequestID":  requestID,
-				"ToolCallID": toolCallID,
-				"Function":   "DeleteTask", // Added tool name
-				"Result":     map[string]interface{}{"taskID": fixedTaskID, "status": "deleted"},
-			},
+		events = append(events, &eventsourcing.ToolCallCompleted{
+			RequestID:  requestID,
+			ToolCallID: toolCallID,
+			Function:   "DeleteTask",
+			Result:     map[string]interface{}{"taskID": fixedTaskID, "status": "deleted"},
 		})
 	}
 	return events, nil
@@ -377,50 +310,27 @@ func CompleteTaskHandler(data map[string]interface{}, state map[string]interface
 		return nil, fmt.Errorf("missing TaskID")
 	}
 
-	// Fix taskID format: convert "task-123" to "task_123" for LLM compatibility
 	fixedTaskID := taskID
 	if len(taskID) > 5 && taskID[:5] == "task-" {
 		fixedTaskID = "task_" + taskID[5:]
 		data["TaskID"] = fixedTaskID
 	}
 
-	// Get current tasks from state to check if task exists
-	tasksEvents, exists := state["TaskCreated"].([]interface{})
-	if !exists {
-		return nil, fmt.Errorf("no tasks exist")
-	}
-
-	// Check if task exists (using our fixed ID)
-	taskExists := false
-	var taskTitle string
-	for _, taskEvent := range tasksEvents {
-		if taskEventMap, ok := taskEvent.(map[string]interface{}); ok {
-			if existingTaskID, ok := taskEventMap["TaskID"].(string); ok && existingTaskID == fixedTaskID {
-				taskExists = true
-				if title, ok := taskEventMap["Title"].(string); ok {
-					taskTitle = title
-				}
-				break
-			}
-		}
-	}
-
-	if !taskExists {
+	tasks, exists := state["tasks"].(map[string]map[string]interface{})
+	if !exists || tasks[fixedTaskID] == nil {
 		return nil, fmt.Errorf("task with ID %s not found", fixedTaskID)
 	}
 
+	taskTitle := tasks[fixedTaskID]["Title"].(string)
 	completionData := map[string]interface{}{
-		"TaskID":      fixedTaskID, // Use the fixed task ID
+		"TaskID":      fixedTaskID,
 		"Status":      "Completed",
 		"CompletedAt": eventsourcing.ISOTimestamp(),
 	}
-
-	// Add completion notes if provided
 	if notes, ok := data["CompletionNotes"].(string); ok {
 		completionData["CompletionNotes"] = notes
 	}
 
-	// Standard event metadata
 	requestID, _ := data["RequestID"].(string)
 	toolCallID, _ := data["ToolCallID"].(string)
 
@@ -430,36 +340,30 @@ func CompleteTaskHandler(data map[string]interface{}, state map[string]interface
 			Data:      completionData,
 		},
 	}
-
 	if requestID != "" && toolCallID != "" {
-		events = append(events, &eventsourcing.GenericEvent{
-			EventType: "ToolCallCompleted",
-			Data: map[string]interface{}{
-				"RequestID":  requestID,
-				"ToolCallID": toolCallID,
-				"Function":   "CompleteTask", // Added tool name
-				"Result": map[string]interface{}{
-					"taskID": taskID,
-					"title":  taskTitle,
-					"status": "completed",
-				},
-			},
+		events = append(events, &eventsourcing.ToolCallCompleted{
+			RequestID:  requestID,
+			ToolCallID: toolCallID,
+			Function:   "CompleteTask",
+			Result:     map[string]interface{}{"taskID": fixedTaskID, "title": taskTitle, "status": "completed"},
 		})
 	}
 	return events, nil
 }
 
 func ListTasksHandler(data map[string]interface{}, state map[string]interface{}) ([]eventsourcing.Event, error) {
-	// Get current tasks from state
-	fmt.Println("checking state", state["TaskCreated"])
-	tasksEvents, exists := state["TaskCreated"].([]interface{})
+	tasksMap, exists := state["tasks"].(map[string]map[string]interface{})
 	if !exists {
-		fmt.Println("no tasks found")
-		// No tasks exist yet
 		return createListTasksResponse([]map[string]interface{}{}, data, "ListTasks")
 	}
 
-	// Filter parameters
+	// Convert map to slice for filtering
+	tasks := make([]map[string]interface{}, 0, len(tasksMap))
+	for _, task := range tasksMap {
+		tasks = append(tasks, task)
+	}
+
+	// Apply filters
 	var statusFilter, priorityFilter, tagFilter string
 	if status, ok := data["Status"].(string); ok && status != "All" {
 		statusFilter = status
@@ -471,111 +375,38 @@ func ListTasksHandler(data map[string]interface{}, state map[string]interface{})
 		tagFilter = tag
 	}
 
-	// Get task updates to overlay on top of created tasks
-	var taskUpdates, taskCompletions, taskDeletions []map[string]interface{}
-
-	if updatesEvents, ok := state["TaskUpdated"].([]interface{}); ok {
-		for _, event := range updatesEvents {
-			if updateMap, ok := event.(map[string]interface{}); ok {
-				taskUpdates = append(taskUpdates, updateMap)
-			}
-		}
-	}
-
-	if completionsEvents, ok := state["TaskCompleted"].([]interface{}); ok {
-		for _, event := range completionsEvents {
-			if completionMap, ok := event.(map[string]interface{}); ok {
-				taskCompletions = append(taskCompletions, completionMap)
-			}
-		}
-	}
-
-	if deletionsEvents, ok := state["TaskDeleted"].([]interface{}); ok {
-		for _, event := range deletionsEvents {
-			if deletionMap, ok := event.(map[string]interface{}); ok {
-				taskDeletions = append(taskDeletions, deletionMap)
-			}
-		}
-	}
-
-	// Merge task states and filter
-	tasks := make([]map[string]interface{}, 0)
-
-	for _, taskEvent := range tasksEvents {
-		if taskData, ok := taskEvent.(map[string]interface{}); ok {
-			taskID, _ := taskData["TaskID"].(string)
-
-			// Skip if task was deleted
-			deleted := false
-			for _, deletion := range taskDeletions {
-				if deletedID, ok := deletion["TaskID"].(string); ok && deletedID == taskID {
-					deleted = true
-					break
-				}
-			}
-			if deleted {
+	filteredTasks := []map[string]interface{}{}
+	for _, task := range tasks {
+		if statusFilter != "" {
+			if status, ok := task["Status"].(string); !ok || status != statusFilter {
 				continue
 			}
-
-			// Apply updates
-			for _, update := range taskUpdates {
-				if updatedID, ok := update["TaskID"].(string); ok && updatedID == taskID {
-					for k, v := range update {
-						if k != "TaskID" { // Don't overwrite the ID
-							taskData[k] = v
-						}
-					}
-				}
-			}
-
-			// Apply completions
-			for _, completion := range taskCompletions {
-				if completedID, ok := completion["TaskID"].(string); ok && completedID == taskID {
-					taskData["Status"] = "Completed"
-					if completedAt, ok := completion["CompletedAt"].(string); ok {
-						taskData["CompletedAt"] = completedAt
-					}
-					if notes, ok := completion["CompletionNotes"].(string); ok {
-						taskData["CompletionNotes"] = notes
-					}
-				}
-			}
-
-			// Apply filters
-			if statusFilter != "" && taskData["Status"] != statusFilter {
+		}
+		if priorityFilter != "" {
+			if priority, ok := task["Priority"].(string); !ok || priority != priorityFilter {
 				continue
 			}
-
-			if priorityFilter != "" {
-				priority, ok := taskData["Priority"].(string)
-				if !ok || priority != priorityFilter {
+		}
+		if tagFilter != "" {
+			if tags, ok := task["Tags"].([]interface{}); ok {
+				tagFound := false
+				for _, t := range tags {
+					if tagStr, ok := t.(string); ok && tagStr == tagFilter {
+						tagFound = true
+						break
+					}
+				}
+				if !tagFound {
 					continue
 				}
+			} else {
+				continue
 			}
-
-			if tagFilter != "" {
-				if tags, ok := taskData["Tags"].([]interface{}); ok {
-					tagFound := false
-					for _, t := range tags {
-						if tagStr, ok := t.(string); ok && tagStr == tagFilter {
-							tagFound = true
-							break
-						}
-					}
-					if !tagFound {
-						continue
-					}
-				} else {
-					continue // No tags, so can't match
-				}
-			}
-
-			// Task passed all filters, add to results
-			tasks = append(tasks, taskData)
 		}
+		filteredTasks = append(filteredTasks, task)
 	}
 
-	return createListTasksResponse(tasks, data, "ListTasks")
+	return createListTasksResponse(filteredTasks, data, "ListTasks")
 }
 
 func createListTasksResponse(tasks []map[string]interface{}, data map[string]interface{}, toolName string) ([]eventsourcing.Event, error) {
@@ -583,19 +414,15 @@ func createListTasksResponse(tasks []map[string]interface{}, data map[string]int
 	toolCallID, _ := data["ToolCallID"].(string)
 
 	events := []eventsourcing.Event{}
-
 	if requestID != "" && toolCallID != "" {
-		events = append(events, &eventsourcing.GenericEvent{
-			EventType: "ToolCallCompleted",
-			Data: map[string]interface{}{
-				"RequestID":  requestID,
-				"ToolCallID": toolCallID,
-				"Function":   toolName, // Added tool name as parameter
-				"Result": map[string]interface{}{
-					"tasks":  tasks,
-					"count":  len(tasks),
-					"status": "success",
-				},
+		events = append(events, &eventsourcing.ToolCallCompleted{
+			RequestID:  requestID,
+			ToolCallID: toolCallID,
+			Function:   toolName,
+			Result: map[string]interface{}{
+				"tasks":  tasks,
+				"count":  len(tasks),
+				"status": "success",
 			},
 		})
 	}
@@ -611,5 +438,5 @@ func (p *TaskPlugin) Type() eventsourcing.PluginType {
 }
 
 func (p *TaskPlugin) EventHandlers() map[string]eventsourcing.EventHandler {
-	return nil // No event handlers needed
+	return nil
 }

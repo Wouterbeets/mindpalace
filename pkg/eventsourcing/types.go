@@ -74,6 +74,25 @@ func (e *GenericEvent) DecodeData(v interface{}) error {
 	return json.Unmarshal(jsonData, v)
 }
 
+type ToolCallCompleted struct {
+	RequestID  string
+	ToolCallID string
+	Function   string
+	Result     map[string]interface{}
+}
+
+func (e *ToolCallCompleted) Type() string {
+	return "ToolCallCompleted"
+}
+
+func (e *ToolCallCompleted) Marshal() ([]byte, error) {
+	return json.Marshal(e)
+}
+
+func (e *ToolCallCompleted) Unmarshal(data []byte) error {
+	return json.Unmarshal(data, e)
+}
+
 // ToolCallsConfiguredEvent is a strongly typed event for when tool calls are configured
 type ToolCallsConfiguredEvent struct {
 	RequestID   string           `json:"request_id"`
@@ -155,6 +174,7 @@ type Aggregate interface {
 	ID() string
 	ApplyEvent(event Event) error
 	GetState() map[string]interface{}
+	GetAllCommands() map[string]CommandHandler
 }
 
 // CommandProvider is an interface for objects that can provide access to all registered commands

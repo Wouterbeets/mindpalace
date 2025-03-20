@@ -6,7 +6,7 @@ import time
 
 # Initialize the Whisper model on GPU
 model = WhisperModel(
-    "large",
+    "small",
     device="cuda",
     compute_type="float16",
     device_index=0
@@ -15,7 +15,7 @@ print("Model loaded on GPU", file=sys.stderr)
 sys.stderr.flush()
 
 # Constant threshold for voice activity detection
-MIN_AUDIO_LEVEL = 0.001
+MIN_AUDIO_LEVEL = 0.1
 
 while True:
     try:
@@ -74,7 +74,6 @@ while True:
         # Skip transcription for very quiet audio
         if max_amp < MIN_AUDIO_LEVEL:
             print(f"Audio too quiet (max amplitude: {max_amp:.6f}), skipping transcription", file=sys.stderr)
-            print("SILENCE")  # Send explicit message instead of empty line
             sys.stdout.flush()
             sys.stderr.flush()
             continue
@@ -94,7 +93,6 @@ while True:
         segment_list = list(segments)
         if not segment_list:
             print("No speech detected in audio", file=sys.stderr)
-            print("SILENCE")  # Indicate no transcription
         else:
             # Combine all segments into one line of text
             transcribed_text = " ".join([segment.text.strip() for segment in segment_list])

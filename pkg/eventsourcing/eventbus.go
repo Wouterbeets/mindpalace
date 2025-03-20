@@ -18,10 +18,10 @@ type EventBus interface {
 
 // SimpleEventBus implements the EventBus interface
 type SimpleEventBus struct {
-	mu               sync.RWMutex
-	handlers         map[string][]EventHandler
-	store            EventStore
-	aggregate        Aggregate
+	mu                sync.RWMutex
+	handlers          map[string][]EventHandler
+	store             EventStore
+	aggregate         Aggregate
 	streamingHandlers map[string][]func(eventType string, data map[string]interface{})
 }
 
@@ -37,6 +37,7 @@ func NewSimpleEventBus(store EventStore, aggregate Aggregate) *SimpleEventBus {
 
 // Publish sends an event to all subscribers and stores it
 func (eb *SimpleEventBus) Publish(event Event) {
+	logging.Trace("event published %s, %+v", event.Type(), event)
 	// Store the event first
 	if eb.store != nil {
 		eb.store.Append(event)
@@ -54,23 +55,13 @@ func (eb *SimpleEventBus) Publish(event Event) {
 
 	// Get handlers for this event type
 	handlers := eb.handlers[event.Type()]
-	
-	// Also get wildcard handlers
-	if wildcardHandlers, exists := eb.handlers["*"]; exists {
-		handlers = append(handlers, wildcardHandlers...)
-	}
 
 	if len(handlers) > 0 {
 		state := eb.aggregate.GetState()
-		
+
 		// Get all registered commands from plugins
-		var allCommands map[string]CommandHandler
-		if cmdProvider, ok := eb.aggregate.(CommandProvider); ok {
-			allCommands = cmdProvider.GetAllCommands()
-		} else {
-			allCommands = make(map[string]CommandHandler)
-		}
-		
+		allCommands := eb.aggregate.GetAllCommands()
+
 		for _, handler := range handlers {
 			// Execute handlers in a goroutine with panic recovery
 			handlerCopy := handler // Create a copy to avoid closure issues
@@ -103,7 +94,7 @@ func (eb *SimpleEventBus) Subscribe(eventType string, handler EventHandler) {
 func (eb *SimpleEventBus) Unsubscribe(eventType string, handler EventHandler) {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
-	
+
 	if handlers, exists := eb.handlers[eventType]; exists {
 		for i, h := range handlers {
 			// This comparison won't always work for functions, but it's a start
@@ -125,11 +116,6 @@ func (eb *SimpleEventBus) PublishStreaming(eventType string, data map[string]int
 
 	// Get handlers for this event type
 	handlers := eb.streamingHandlers[eventType]
-	
-	// Also get wildcard handlers
-	if wildcardHandlers, exists := eb.streamingHandlers["*"]; exists {
-		handlers = append(handlers, wildcardHandlers...)
-	}
 
 	// Execute handlers
 	for _, handler := range handlers {
@@ -152,7 +138,7 @@ func (eb *SimpleEventBus) SubscribeStreaming(eventType string, handler func(even
 func (eb *SimpleEventBus) UnsubscribeStreaming(eventType string, handler func(eventType string, data map[string]interface{})) {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
-	
+
 	if handlers, exists := eb.streamingHandlers[eventType]; exists {
 		for i, h := range handlers {
 			// This comparison won't always work for functions, but it's a start

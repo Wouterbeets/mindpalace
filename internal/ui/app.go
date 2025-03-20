@@ -88,20 +88,16 @@ func NewApp(pm *plugins.PluginManager, ep *eventsourcing.EventProcessor, agg *ag
 
 	// Set up streaming event subscription
 	eventsourcing.SubmitStreamingEvent = func(eventType string, data map[string]interface{}) {
-		if eventBus, ok := ep.EventBus.(*eventsourcing.SimpleEventBus); ok {
-			eventBus.PublishStreaming(eventType, data)
-		}
+		eventBus.PublishStreaming(eventType, data)
 	}
 
 	// Subscribe to streaming events
-	if streamingEventBus, ok := eventBus.(*eventsourcing.SimpleEventBus); ok {
-		streamingEventBus.SubscribeStreaming("LLMResponseStream", func(eventType string, data map[string]interface{}) {
-			// Handle streaming updates on the main thread
-			fyne.CurrentApp().Driver().DoFromGoroutine(func() {
-				a.handleStreamingUpdate(data)
-			}, false)
-		})
-	}
+	eventBus.SubscribeStreaming("LLMResponseStream", func(eventType string, data map[string]interface{}) {
+		// Handle streaming updates on the main thread
+		fyne.CurrentApp().Driver().DoFromGoroutine(func() {
+			a.handleStreamingUpdate(data)
+		}, false)
+	})
 
 	a.chatScroll.Direction = container.ScrollVerticalOnly
 	// Don't set a minimum height for chat scroll to maximize space usage
@@ -138,18 +134,6 @@ func NewApp(pm *plugins.PluginManager, ep *eventsourcing.EventProcessor, agg *ag
 	return a
 }
 
-// processEvents processes a list of events
-func (a *App) processEvents(events []eventsourcing.Event) {
-	if len(events) == 0 {
-		return
-	}
-	if err := a.eventProcessor.ProcessEvents(events, a.commands); err != nil {
-		logging.Error("Failed to process events: %v", err)
-		return
-	}
-	// UI refresh now happens via event bus subscription in the constructor
-}
-
 // InitUI initializes the UI components
 func (a *App) InitUI() {
 	a.eventLog.Length = func() int {
@@ -162,13 +146,16 @@ func (a *App) InitUI() {
 		if id < 0 || id >= len(a.events) {
 			return
 		}
-		event := a.events[id].(*eventsourcing.GenericEvent)
-		dataJSON, err := json.MarshalIndent(event.Data, "", "  ")
+		for _, e := range a.events {
+			logging.Trace("onselect: all events: %s, %T ", e.Type(), e)
+		}
+		event := a.events[id]
+		dataJSON, err := event.Marshal()
 		if err != nil {
 			a.eventDetail.SetText(fmt.Sprintf("Error marshaling event data: %v", err))
 			return
 		}
-		a.eventDetail.SetText(fmt.Sprintf("Event Type: %s\nData:\n%s", event.EventType, string(dataJSON)))
+		a.eventDetail.SetText(fmt.Sprintf("Event Type: %s\nData:\n%s", event.Type(), string(dataJSON)))
 	}
 	a.eventLog.OnUnselected = func(id widget.ListItemID) {
 		a.eventDetail.SetText("Select an event to view details")
@@ -825,8 +812,6 @@ func (a *App) handleStreamingUpdate(data map[string]interface{}) {
 	requestID, _ := data["RequestID"].(string)
 	partialContent, _ := data["PartialContent"].(string)
 	isFinal, _ := data["IsFinal"].(bool)
-	// We can use hasToolCalls later for showing tool call indicators
-	// hasToolCalls, _ := data["HasToolCalls"].(bool)
 
 	// Parse think tags from the partialContent
 	thinks, regularContent := parseStreamingContent(partialContent)

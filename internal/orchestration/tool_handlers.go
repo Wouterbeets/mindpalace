@@ -22,11 +22,6 @@ func NewToolCallConfigFunc(commands map[string]eventsourcing.CommandHandler, agg
 			requestText = e.RequestText
 			requestID = e.RequestID
 
-		case *eventsourcing.GenericEvent:
-			// Fallback for backward compatibility
-			requestText, _ = e.Data["RequestText"].(string)
-			requestID, _ = e.Data["RequestID"].(string)
-
 		default:
 			return nil, fmt.Errorf("unexpected event type: %s", event.Type())
 		}
@@ -51,6 +46,7 @@ func NewToolCallConfigFunc(commands map[string]eventsourcing.CommandHandler, agg
 			}
 		}
 
+		fmt.Println("configuring tools and returning event")
 		// Return strongly typed event
 		return []eventsourcing.Event{
 			&eventsourcing.ToolCallsConfiguredEvent{
@@ -165,14 +161,12 @@ func NewToolCallCompletionHandler(ep *eventsourcing.EventProcessor, agg eventsou
 
 		// Extract requestID from different event types
 		switch e := event.(type) {
-		case *eventsourcing.ToolCallsConfiguredEvent:
+		case *eventsourcing.ToolCallCompleted:
 			requestID = e.RequestID
-		case *eventsourcing.GenericEvent:
-			requestID, _ = e.Data["RequestID"].(string)
 		default:
 			// Try to extract RequestID directly from the event using the DecodeData method
 			type EventData struct {
-				RequestID string `json:"request_id"`
+				RequestID string `json:"RequestID"`
 			}
 			var data EventData
 			marshaledData, err := event.Marshal()

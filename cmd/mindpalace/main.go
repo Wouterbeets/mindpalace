@@ -7,7 +7,9 @@ import (
 	"mindpalace/internal/llmprocessor"
 	"mindpalace/internal/orchestration"
 	"mindpalace/internal/plugins"
+	"mindpalace/internal/transcription"
 	"mindpalace/internal/ui"
+	"mindpalace/internal/userrequest"
 	"mindpalace/pkg/aggregate"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
@@ -65,7 +67,6 @@ func main() {
 		logging.SetVerbosity(logging.LogLevelInfo)
 		logging.Info("MindPalace starting with minimal logging")
 	}
-
 	// Register a global error handler for goroutine panics
 	eventsourcing.GetGlobalRecoveryManager().RegisterErrorHandler(func(err error, stackTrace string, eventType string, recoveryData map[string]interface{}) {
 		logging.Error("RECOVERED PANIC in event '%s': %v\nContext: %v\nStack trace: %s",
@@ -102,7 +103,17 @@ func main() {
 	llmProc.RegisterHandlers(ep)
 	logging.Info("LLM processor initialized")
 
-	// Load plugins (excluding LLMProcessor which is now internal)
+	// Initialize the transcription manager as an internal component
+	transMgr := transcription.NewTranscriptionManager()
+	transMgr.RegisterHandlers(ep)
+	logging.Info("Transcription manager initialized")
+
+	// Initialize the user request manager as an internal component
+	userReqMgr := userrequest.NewUserRequestManager()
+	userReqMgr.RegisterHandlers(ep)
+	logging.Info("User request manager initialized")
+
+	// Load plugins (excluding LLMProcessor, TranscriptionManager, and UserRequestManager, now internal)
 	pluginManager.LoadPlugins("plugins", ep)
 	commands, _ := pluginManager.RegisterCommands()
 
