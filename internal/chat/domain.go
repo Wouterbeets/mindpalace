@@ -8,6 +8,7 @@ import (
 // ChatMessage represents a single entry in the chat history
 type ChatMessage struct {
 	Role              string
+	OllamaRole        string
 	Content           string
 	RequestID         string // To associate messages with requests
 	StreamingComplete bool   // Indicates if streaming for this message is complete

@@ -13,13 +13,15 @@ import (
 
 // PluginManager handles loading and managing plugins
 type PluginManager struct {
-	plugins       []eventsourcing.Plugin
-	eventHandlers map[string][]eventsourcing.EventHandler
+	plugins        []eventsourcing.Plugin
+	eventHandlers  map[string][]eventsourcing.EventHandler
+	eventProcessor *eventsourcing.EventProcessor
 }
 
-func NewPluginManager() *PluginManager {
+func NewPluginManager(ep *eventsourcing.EventProcessor) *PluginManager {
 	return &PluginManager{
-		eventHandlers: make(map[string][]eventsourcing.EventHandler),
+		eventHandlers:  make(map[string][]eventsourcing.EventHandler),
+		eventProcessor: ep,
 	}
 }
 
@@ -209,4 +211,22 @@ func (pm *PluginManager) RegisterCommands() (map[string]eventsourcing.CommandHan
 		}
 	}
 	return commands, pm.eventHandlers
+}
+
+func (pm *PluginManager) LoadNewPlugin(pluginPath string) error {
+	plugin, err := pm.loadPlugin(pluginPath)
+	if err != nil {
+		return err
+	}
+	pm.plugins = append(pm.plugins, plugin)
+	commands, handlers := pm.RegisterCommands()
+	for name, handler := range commands {
+		pm.eventProcessor.RegisterCommand(name, handler)
+	}
+	for eventType, handlerList := range handlers {
+		for _, handler := range handlerList {
+			pm.eventProcessor.RegisterEventHandler(eventType, handler)
+		}
+	}
+	return nil
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"mindpalace/internal/chat"
 	"mindpalace/internal/llmprocessor"
 	"mindpalace/internal/orchestration"
 	"mindpalace/internal/plugins"
@@ -70,29 +69,30 @@ func main() {
 		logging.Error("RECOVERED PANIC in event '%s': %v\nContext: %v\nStack trace: %s",
 			eventType, err, recoveryData, stackTrace)
 	})
-	pluginManager := plugins.NewPluginManager()
 	store := eventsourcing.NewFileEventStore(eventFileFlag)
 	if err := store.Load(); err != nil {
 		logging.Error("Failed to load events: %v", err)
 	}
-	agg := &aggregate.AppAggregate{
-		State:       make(map[string]interface{}),
-		ChatHistory: []chat.ChatMessage{},
-		AllCommands: make(map[string]eventsourcing.CommandHandler),
-	}
+	agg := aggregate.NewAggregateManager()
 	ep := eventsourcing.NewEventProcessor(store, agg)
+	pluginManager := plugins.NewPluginManager(ep)
 	llmClient := llmprocessor.NewLLMClient()
-	orchestrator := orchestration.NewRequestOrchestrator(llmClient, pluginManager, agg, ep.EventBus)
 
 	// Load plugins and register commands
 	pluginManager.LoadPlugins("plugins", ep)
+
 	commands, _ := pluginManager.RegisterCommands()
 	for name, handler := range commands {
 		agg.AllCommands[name] = handler
 	}
+	agg.AllCommands["InitiatePluginCreation"] = orchestration.InitiatePluginCreationCommand
+	for _, plug := range pluginManager.GetLLMPlugins() {
+		agg.RegisterPluginAggregate(plug.Name(), plug.Aggregate())
+	}
 
+	orchestrator := orchestration.NewRequestOrchestrator(llmClient, pluginManager, agg, ep.EventBus)
 	// UI setup
-	app := ui.NewApp(ep, agg, orchestrator)
+	app := ui.NewApp(ep, agg, orchestrator, pluginManager.GetLLMPlugins())
 
 	app.InitUI()
 	app.Run()

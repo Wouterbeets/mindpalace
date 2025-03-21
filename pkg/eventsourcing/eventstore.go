@@ -2,6 +2,7 @@ package eventsourcing
 
 import (
 	"bufio"
+	"fmt"
 	"mindpalace/pkg/logging"
 	"os"
 	"sync"
@@ -37,10 +38,11 @@ func (es *FileEventStore) Load() error {
 	for scanner.Scan() {
 		raw := scanner.Bytes()
 		logging.Trace("read from events file %s", string(raw))
-		event := &GenericEvent{}
-		if err := event.Unmarshal(raw); err != nil {
-			return err
+		event, err := UnmarshalEvent(raw)
+		if err != nil {
+			return fmt.Errorf("failed to load event: %v", err)
 		}
+		logging.Trace("loaded event from eventstore %+v", event)
 		es.events = append(es.events, event)
 	}
 	return scanner.Err()

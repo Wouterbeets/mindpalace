@@ -14,14 +14,6 @@ import (
 	"github.com/gordonklaus/portaudio"
 )
 
-// Helper function to get absolute value of float32
-func absVal(x float32) float32 {
-	if x < 0 {
-		return -x
-	}
-	return x
-}
-
 // VoiceTranscriber handles audio recording and real-time transcription
 type VoiceTranscriber struct {
 	wg                    sync.WaitGroup

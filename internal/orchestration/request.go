@@ -11,13 +11,13 @@ import (
 )
 
 type RequestOrchestrator struct {
-	llmClient     *llmprocessor.LLMClient // Simplified LLM processor
-	pluginManager *plugins.PluginManager  // For tool/command access
-	agg           *aggregate.AppAggregate // State management
-	eventBus      eventsourcing.EventBus  // For publishing events
+	llmClient     *llmprocessor.LLMClient     // Simplified LLM processor
+	pluginManager *plugins.PluginManager      // For tool/command access
+	agg           *aggregate.AggregateManager // State management
+	eventBus      eventsourcing.EventBus      // For publishing events
 }
 
-func NewRequestOrchestrator(llmClient *llmprocessor.LLMClient, pm *plugins.PluginManager, agg *aggregate.AppAggregate, eb eventsourcing.EventBus) *RequestOrchestrator {
+func NewRequestOrchestrator(llmClient *llmprocessor.LLMClient, pm *plugins.PluginManager, agg *aggregate.AggregateManager, eb eventsourcing.EventBus) *RequestOrchestrator {
 	return &RequestOrchestrator{
 		llmClient:     llmClient,
 		pluginManager: pm,
@@ -32,16 +32,15 @@ func (ro *RequestOrchestrator) ProcessRequest(requestText string, requestID stri
 		requestID = fmt.Sprintf("req-%d", time.Now().UnixNano())
 	}
 
+	// Build chat history
+	messages := ro.buildChatHistory(10)
+	messages = append(messages, llmmodels.Message{Role: "user", Content: requestText})
 	// Publish initial event
 	ro.eventBus.Publish(&eventsourcing.UserRequestReceivedEvent{
 		RequestID:   requestID,
 		RequestText: requestText,
 		Timestamp:   eventsourcing.ISOTimestamp(),
 	})
-
-	// Build chat history
-	messages := ro.buildChatHistory(10)
-	messages = append(messages, llmmodels.Message{Role: "user", Content: requestText})
 
 	// Gather tools from plugins
 	tools := ro.gatherTools()
@@ -117,7 +116,9 @@ Adapt to diverse user needs. Use tools to enhance, not replace, your intelligenc
 func (ro *RequestOrchestrator) buildChatHistory(maxMessages int) []llmmodels.Message {
 	messages := []llmmodels.Message{{Role: "system", Content: systemPrompt}}
 	for _, msg := range ro.agg.ChatHistory {
-		messages = append(messages, llmmodels.Message{Role: msg.Role, Content: msg.Content})
+		if msg.OllamaRole != "none" {
+			messages = append(messages, llmmodels.Message{Role: msg.OllamaRole, Content: msg.Content})
+		}
 	}
 	if len(messages) > maxMessages+1 { // +1 for system prompt
 		return messages[len(messages)-maxMessages-1:]
@@ -128,6 +129,23 @@ func (ro *RequestOrchestrator) buildChatHistory(maxMessages int) []llmmodels.Mes
 // gatherTools collects available tools from plugins
 func (ro *RequestOrchestrator) gatherTools() []llmmodels.Tool {
 	var tools []llmmodels.Tool
+	tools = append(tools, llmmodels.Tool{
+		Type: "function",
+		Function: map[string]interface{}{
+			"name":        "InitiatePluginCreation",
+			"description": "Start creating a new plugin based on user input",
+			"parameters": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"PluginName":  map[string]interface{}{"type": "string", "description": "Name of the plugin"},
+					"Description": map[string]interface{}{"type": "string", "description": "What the plugin does"},
+					"Goal":        map[string]interface{}{"type": "string", "description": "Purpose of the plugin"},
+					"Result":      map[string]interface{}{"type": "string", "description": "Expected output"},
+				},
+				"required": []string{"PluginName"},
+			},
+		},
+	})
 	for _, plugin := range ro.pluginManager.GetLLMPlugins() {
 		for name, schema := range plugin.Schemas() {
 			tools = append(tools, llmmodels.Tool{

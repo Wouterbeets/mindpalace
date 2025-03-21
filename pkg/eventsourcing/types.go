@@ -2,10 +2,54 @@ package eventsourcing
 
 import (
 	"encoding/json"
-	"mindpalace/pkg/llmmodels"
+	"fmt"
 	"sync/atomic"
 	"time"
+
+	"fyne.io/fyne/v2"
 )
+
+var eventRegistry = make(map[string]func() Event)
+
+// RegisterEvent adds an event type and its creator function to the registry.
+func RegisterEvent(eventType string, creator func() Event) {
+	eventRegistry[eventType] = creator
+}
+
+func init() {
+	RegisterEvent("UserRequestReceived", func() Event { return &UserRequestReceivedEvent{} })
+	RegisterEvent("ToolCallCompleted", func() Event { return &ToolCallCompleted{} })
+	RegisterEvent("InitiatePluginCreation", func() Event { return &InitiatePluginCreationEvent{} })
+}
+
+// UnmarshalEvent unmarshals JSON data into the correct event type.
+func UnmarshalEvent(data []byte) (Event, error) {
+	// First, extract the EventType
+	var raw struct {
+		EventType string `json:"event_type"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("failed to read event type: %v", err)
+	}
+
+	// Look up the creator function in the registry
+	creator, exists := eventRegistry[raw.EventType]
+	if !exists {
+		// Fallback to GenericEvent if type is not registered
+		event := &GenericEvent{}
+		if err := json.Unmarshal(data, event); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal into GenericEvent: %v", err)
+		}
+		return event, nil
+	}
+
+	// Create the concrete event and unmarshal into it
+	event := creator()
+	if err := json.Unmarshal(data, event); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal into %s: %v", raw.EventType, err)
+	}
+	return event, nil
+}
 
 type PluginType string
 
@@ -95,27 +139,6 @@ func (e *ToolCallCompleted) Unmarshal(data []byte) error {
 	return json.Unmarshal(data, e)
 }
 
-// ToolCallsConfiguredEvent is a strongly typed event for when tool calls are configured
-type ToolCallsConfiguredEvent struct {
-	RequestID   string           `json:"request_id"`
-	RequestText string           `json:"request_text"`
-	Tools       []llmmodels.Tool `json:"tools"`
-	EventType   string           `json:"event_type"`
-}
-
-func (e *ToolCallsConfiguredEvent) Type() string {
-	return "ToolCallsConfigured"
-}
-
-func (e *ToolCallsConfiguredEvent) Marshal() ([]byte, error) {
-	e.EventType = e.Type()
-	return json.Marshal(e)
-}
-
-func (e *ToolCallsConfiguredEvent) Unmarshal(data []byte) error {
-	return json.Unmarshal(data, e)
-}
-
 // UserRequestReceivedEvent is a strongly typed event for when a user request is received
 type UserRequestReceivedEvent struct {
 	EventType   string `json:"event_type"`
@@ -134,48 +157,6 @@ func (e *UserRequestReceivedEvent) Marshal() ([]byte, error) {
 }
 
 func (e *UserRequestReceivedEvent) Unmarshal(data []byte) error {
-	return json.Unmarshal(data, e)
-}
-
-// AllToolCallsCompletedEvent is a strongly typed event for when all tool calls are completed
-type AllToolCallsCompletedEvent struct {
-	EventType string                   `json:"event_type"`
-	RequestID string                   `json:"request_id"`
-	Results   []map[string]interface{} `json:"results"`
-}
-
-func (e *AllToolCallsCompletedEvent) Type() string {
-	return "AllToolCallsCompleted"
-}
-
-func (e *AllToolCallsCompletedEvent) Marshal() ([]byte, error) {
-	e.EventType = e.Type()
-	return json.Marshal(e)
-}
-
-func (e *AllToolCallsCompletedEvent) Unmarshal(data []byte) error {
-	return json.Unmarshal(data, e)
-}
-
-// ToolCallInitiatedEvent represents an event when a tool call is initiated
-type ToolCallInitiatedEvent struct {
-	RequestID  string                 `json:"request_id"`
-	ToolCallID string                 `json:"tool_call_id"`
-	Function   string                 `json:"function"`
-	Arguments  map[string]interface{} `json:"arguments"`
-	EventType  string                 `json:"event_type"`
-}
-
-func (e *ToolCallInitiatedEvent) Type() string {
-	return "ToolCallInitiated"
-}
-
-func (e *ToolCallInitiatedEvent) Marshal() ([]byte, error) {
-	e.EventType = e.Type()
-	return json.Marshal(e)
-}
-
-func (e *ToolCallInitiatedEvent) Unmarshal(data []byte) error {
 	return json.Unmarshal(data, e)
 }
 
@@ -205,6 +186,8 @@ type Plugin interface {
 	Type() PluginType
 	EventHandlers() map[string]EventHandler // Add this method
 	Name() string
+	GetCustomUI(agg Aggregate) fyne.CanvasObject
+	Aggregate() Aggregate
 }
 
 // DefaultEventHandler is a no-op handler for plugins that don't handle events
@@ -239,3 +222,19 @@ func GenerateUniqueID() uint64 {
 func ISOTimestamp() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
+
+type InitiatePluginCreationEvent struct {
+	EventType   string `json:"event_type"`
+	RequestID   string `json:"request_id"`
+	PluginName  string `json:"plugin_name"`
+	Description string `json:"description"`
+	Goal        string `json:"goal"`
+	Result      string `json:"result"`
+}
+
+func (e *InitiatePluginCreationEvent) Type() string { return "InitiatePluginCreation" }
+func (e *InitiatePluginCreationEvent) Marshal() ([]byte, error) {
+	e.EventType = e.Type()
+	return json.Marshal(e)
+}
+func (e *InitiatePluginCreationEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"mindpalace/pkg/llmmodels"
+	"mindpalace/pkg/logging"
 	"net/http"
 	"strings"
 )
@@ -23,6 +24,15 @@ func NewLLMClient() *LLMClient {
 }
 
 func (c *LLMClient) CallLLM(messages []llmmodels.Message, tools []llmmodels.Tool, requestID string) (*llmmodels.OllamaResponse, error) {
+	logging.Trace("in call llm, len messages: %i", len(messages))
+	for i, m := range messages {
+		runes := []rune(m.Content)
+		limit := len(runes)
+		if len(runes) > 30 {
+			limit = 30
+		}
+		logging.Trace("message index: %i, Role: %s", i, m.Role, string(runes[:limit]))
+	}
 	req := llmmodels.OllamaRequest{
 		Model:    ollamaModel,
 		Messages: messages,
