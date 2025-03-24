@@ -17,12 +17,6 @@ func RegisterEvent(eventType string, creator func() Event) {
 	eventRegistry[eventType] = creator
 }
 
-func init() {
-	RegisterEvent("UserRequestReceived", func() Event { return &UserRequestReceivedEvent{} })
-	RegisterEvent("ToolCallCompleted", func() Event { return &ToolCallCompleted{} })
-	RegisterEvent("InitiatePluginCreation", func() Event { return &InitiatePluginCreationEvent{} })
-}
-
 // UnmarshalEvent unmarshals JSON data into the correct event type.
 func UnmarshalEvent(data []byte) (Event, error) {
 	logging.Debug("Starting UnmarshalEvent with data length: %d", len(data))
@@ -63,8 +57,6 @@ func UnmarshalEvent(data []byte) (Event, error) {
 	return event, nil
 }
 
-type PluginType string
-
 // Global event bus instance
 var globalEventBus EventBus
 
@@ -82,11 +74,6 @@ var SubmitStreamingEvent func(eventType string, data map[string]interface{})
 func SetGlobalEventBus(eb EventBus) {
 	globalEventBus = eb
 }
-
-const (
-	SystemPlugin PluginType = "system" // Plugins for internal system operations
-	LLMPlugin    PluginType = "llm"    // Plugins usable by the LLM
-)
 
 type EventStore interface {
 	Append(events ...Event) error
@@ -130,54 +117,27 @@ func (e *GenericEvent) DecodeData(v interface{}) error {
 	return json.Unmarshal(jsonData, v)
 }
 
-type ToolCallCompleted struct {
-	RequestID  string                 `json:"request_id"`
-	ToolCallID string                 `json:"tool_call_id"`
-	Function   string                 `json:"function"`
-	Result     map[string]interface{} `json:"result"`
-	EventType  string                 `json:"event_type"`
-}
+const (
+	SystemPlugin PluginType = "system" // Plugins for internal system operations
+	LLMPlugin    PluginType = "llm"    // Plugins usable by the LLM
+)
 
-func (e *ToolCallCompleted) Type() string {
-	return "ToolCallCompleted"
-}
+type PluginType string
 
-func (e *ToolCallCompleted) Marshal() ([]byte, error) {
-	e.EventType = e.Type()
-	return json.Marshal(e)
-}
-
-func (e *ToolCallCompleted) Unmarshal(data []byte) error {
-	return json.Unmarshal(data, e)
-}
-
-// UserRequestReceivedEvent is a strongly typed event for when a user request is received
-type UserRequestReceivedEvent struct {
-	EventType   string `json:"event_type"`
-	RequestID   string `json:"request_id"`
-	RequestText string `json:"request_text"`
-	Timestamp   string `json:"timestamp"`
-}
-
-func (e *UserRequestReceivedEvent) Type() string {
-	return "UserRequestReceived"
-}
-
-func (e *UserRequestReceivedEvent) Marshal() ([]byte, error) {
-	e.EventType = e.Type()
-	return json.Marshal(e)
-}
-
-func (e *UserRequestReceivedEvent) Unmarshal(data []byte) error {
-	return json.Unmarshal(data, e)
+// Plugin defines the interface for plugins in the system
+type Plugin interface {
+	Commands() map[string]CommandHandler
+	Schemas() map[string]map[string]interface{}
+	Type() PluginType
+	Name() string
+	GetCustomUI(agg Aggregate) fyne.CanvasObject
+	Aggregate() Aggregate
 }
 
 // Aggregate defines the interface for aggregates that process events
 type Aggregate interface {
 	ID() string
 	ApplyEvent(event Event) error
-	GetState() map[string]interface{}
-	GetAllCommands() map[string]CommandHandler
 }
 
 // CommandProvider is an interface for objects that can provide access to all registered commands
@@ -187,20 +147,6 @@ type CommandProvider interface {
 
 // CommandHandler defines the signature for command handling functions, now with access to state
 type CommandHandler func(data map[string]interface{}, state map[string]interface{}) ([]Event, error)
-
-// EventHandler defines a function that reacts to an event and optionally produces new events
-type EventHandler func(event Event, state map[string]interface{}, commands map[string]CommandHandler) ([]Event, error)
-
-// Plugin defines the interface for plugins in the system
-type Plugin interface {
-	Commands() map[string]CommandHandler
-	Schemas() map[string]map[string]interface{}
-	Type() PluginType
-	EventHandlers() map[string]EventHandler // Add this method
-	Name() string
-	GetCustomUI(agg Aggregate) fyne.CanvasObject
-	Aggregate() Aggregate
-}
 
 // DefaultEventHandler is a no-op handler for plugins that don't handle events
 func DefaultEventHandler(event Event, state map[string]interface{}, commands map[string]CommandHandler) ([]Event, error) {
@@ -234,6 +180,14 @@ func GenerateUniqueID() uint64 {
 func ISOTimestamp() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
+
+type BaseEvent struct {
+}
+
+func (e *BaseEvent) Marshal() ([]byte, error) {
+	return json.Marshal(e)
+}
+func (e *BaseEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
 
 type InitiatePluginCreationEvent struct {
 	EventType   string `json:"event_type"`

@@ -14,13 +14,11 @@ import (
 // PluginManager handles loading and managing plugins
 type PluginManager struct {
 	plugins        []eventsourcing.Plugin
-	eventHandlers  map[string][]eventsourcing.EventHandler
 	eventProcessor *eventsourcing.EventProcessor
 }
 
 func NewPluginManager(ep *eventsourcing.EventProcessor) *PluginManager {
 	return &PluginManager{
-		eventHandlers:  make(map[string][]eventsourcing.EventHandler),
 		eventProcessor: ep,
 	}
 }
@@ -206,7 +204,7 @@ func (pm *PluginManager) loadPlugin(soFile string) (eventsourcing.Plugin, error)
 	return pluginInstance, nil
 }
 
-func (pm *PluginManager) RegisterCommands() (map[string]eventsourcing.CommandHandler, map[string][]eventsourcing.EventHandler) {
+func (pm *PluginManager) RegisterCommands() map[string]eventsourcing.CommandHandler {
 	commands := make(map[string]eventsourcing.CommandHandler)
 	for _, p := range pm.plugins {
 		for name, handler := range p.Commands() {
@@ -216,11 +214,8 @@ func (pm *PluginManager) RegisterCommands() (map[string]eventsourcing.CommandHan
 			}
 			commands[name] = handler
 		}
-		for eventType, handler := range p.EventHandlers() {
-			pm.eventHandlers[eventType] = append(pm.eventHandlers[eventType], handler)
-		}
 	}
-	return commands, pm.eventHandlers
+	return commands
 }
 
 // LoadNewPlugin loads and registers a new plugin from the given path
@@ -245,14 +240,9 @@ func (pm *PluginManager) LoadNewPlugin(pluginPath string) error {
 	}
 
 	pm.plugins = append(pm.plugins, plugin)
-	commands, handlers := pm.RegisterCommands()
+	commands := pm.RegisterCommands()
 	for name, handler := range commands {
 		pm.eventProcessor.RegisterCommand(name, handler)
-	}
-	for eventType, handlerList := range handlers {
-		for _, handler := range handlerList {
-			pm.eventProcessor.RegisterEventHandler(eventType, handler)
-		}
 	}
 	return nil
 }

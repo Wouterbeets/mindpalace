@@ -36,7 +36,7 @@ func (ro *RequestOrchestrator) ProcessRequest(requestText string, requestID stri
 	messages := ro.buildChatHistory(10)
 	messages = append(messages, llmmodels.Message{Role: "user", Content: requestText})
 	// Publish initial event
-	ro.eventBus.Publish(&eventsourcing.UserRequestReceivedEvent{
+	ro.eventBus.Publish(&UserRequestReceivedEvent{
 		RequestID:   requestID,
 		RequestText: requestText,
 		Timestamp:   eventsourcing.ISOTimestamp(),
@@ -164,7 +164,7 @@ func (ro *RequestOrchestrator) executeToolCalls(requestID string, toolCalls []ll
 		// Process events and extract result
 		for _, event := range events {
 			ro.eventBus.Publish(event)
-			if tce, ok := event.(*eventsourcing.ToolCallCompleted); ok {
+			if tce, ok := event.(*ToolCallCompleted); ok {
 				results = append(results, map[string]interface{}{
 					"toolName": tce.Function,
 					"content":  fmt.Sprintf("%v", tce.Result),

@@ -89,8 +89,9 @@ func main() {
 	}
 	agg.AllCommands["InitiatePluginCreation"] = orchestration.InitiatePluginCreationCommand
 	for _, plug := range pluginManager.GetLLMPlugins() {
-		agg.RegisterPluginAggregate(plug.Name(), plug.Aggregate())
+		agg.RegisterAggregate(plug.Name(), plug.Aggregate())
 	}
+	agg.RegisterAggregate("orchestration", orchestration.NewOrchestrationAggregate())
 
 	orchestrator := orchestration.NewRequestOrchestrator(llmClient, pluginManager, agg, ep.EventBus)
 	// UI setup

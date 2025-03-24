@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	ollamaModel       = "smollm2"
+	ollamaModel       = "qwq"
 	ollamaAPIEndpoint = "http://localhost:11434/api/chat"
 )
 
