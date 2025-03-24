@@ -3,6 +3,7 @@ package eventsourcing
 import (
 	"encoding/json"
 	"fmt"
+	"mindpalace/pkg/logging"
 	"sync/atomic"
 	"time"
 
@@ -24,30 +25,41 @@ func init() {
 
 // UnmarshalEvent unmarshals JSON data into the correct event type.
 func UnmarshalEvent(data []byte) (Event, error) {
+	logging.Debug("Starting UnmarshalEvent with data length: %d", len(data))
+
 	// First, extract the EventType
 	var raw struct {
 		EventType string `json:"event_type"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
+		logging.Debug("Error reading event type: %v", err)
 		return nil, fmt.Errorf("failed to read event type: %v", err)
 	}
+	logging.Debug("Extracted event type: %s", raw.EventType)
 
 	// Look up the creator function in the registry
 	creator, exists := eventRegistry[raw.EventType]
 	if !exists {
+		logging.Debug("Event type %s not found in registry, falling back to GenericEvent", raw.EventType)
 		// Fallback to GenericEvent if type is not registered
 		event := &GenericEvent{}
 		if err := json.Unmarshal(data, event); err != nil {
+			logging.Debug("Failed to unmarshal into GenericEvent: %v", err)
 			return nil, fmt.Errorf("failed to unmarshal into GenericEvent: %v", err)
 		}
+		logging.Debug("Successfully unmarshaled into GenericEvent")
 		return event, nil
 	}
 
+	logging.Debug("Found creator for event type %s in registry", raw.EventType)
 	// Create the concrete event and unmarshal into it
 	event := creator()
 	if err := json.Unmarshal(data, event); err != nil {
+		logging.Debug("Failed to unmarshal into %s: %v", raw.EventType, err)
 		return nil, fmt.Errorf("failed to unmarshal into %s: %v", raw.EventType, err)
 	}
+	logging.Debug("Successfully unmarshaled data into event type: %s", raw.EventType)
+
 	return event, nil
 }
 

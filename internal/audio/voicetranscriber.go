@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
+	"mindpalace/pkg/logging"
 	"os"
 	"os/exec"
 	"strings"
@@ -70,7 +71,7 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 	vt.totalSegments = 0
 
 	// Start the Python transcription process
-	log.Println("Starting transcription process...")
+	logging.Trace("Starting transcription process...")
 	vt.cmd = exec.Command("/home/mindpalace/mindpalace_venv/bin/python3", "transcribe.py")
 	stdin, err := vt.cmd.StdinPipe()
 	if err != nil {
@@ -106,7 +107,7 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 	}()
 
 	// Create the WAV file for recording
-	log.Println("Creating audio file...")
+	logging.Trace("Creating audio file...")
 	vt.audioFile, err = os.Create("test_audio.wav")
 	if err != nil {
 		vt.cmd.Process.Kill()
@@ -116,7 +117,7 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 	vt.writeWAVHeader()
 
 	// Initialize PortAudio with panic protection
-	log.Println("Initializing PortAudio...")
+	logging.Trace("Initializing PortAudio...")
 	var paInitError error
 	func() {
 		// Use a defer/recover to catch panics in portaudio initialization
@@ -138,7 +139,7 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 	}
 
 	// Open audio stream with simplified approach
-	log.Println("Opening audio stream...")
+	logging.Trace("Opening audio stream...")
 
 	// Create buffer for audio capture
 	bufferSize := 1024
@@ -190,7 +191,7 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 
 	// In Start method, replace the reading goroutine with:
 	vt.running = true
-	log.Println("Audio transcription started successfully")
+	logging.Trace("Audio transcription started successfully")
 
 	// Start transcription goroutine
 	go vt.processTranscriptions()
@@ -205,14 +206,14 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 			}
 		}()
 
-		log.Println("Starting audio reading loop...")
+		logging.Trace("Starting audio reading loop...")
 		readCount := 0
 
 		for {
 			vt.mu.Lock()
 			if !vt.running || vt.stream == nil {
 				vt.mu.Unlock()
-				log.Println("Audio reading loop stopping - not running or stream closed")
+				logging.Trace("Audio reading loop stopping - not running or stream closed")
 				return
 			}
 			vt.mu.Unlock()
@@ -229,7 +230,7 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 
 			vt.mu.Lock()
 			if vt.running {
-				log.Println("Processing audio data...")
+				logging.Trace("Processing audio data...")
 				vt.processAudio(buffer)
 			}
 			vt.mu.Unlock()
@@ -273,32 +274,32 @@ func (vt *VoiceTranscriber) Stop() {
 		}()
 		vt.stream = nil
 	}
-	log.Println("Audio stream closed")
+	logging.Trace("Audio stream closed")
 
 	// Close the audio file
 	if vt.audioFile != nil {
-		log.Println("Updating WAV header...")
+		logging.Trace("Updating WAV header...")
 		vt.updateWAVHeader()
-		log.Println("Closing audio file...")
+		logging.Trace("Closing audio file...")
 		if err := vt.audioFile.Close(); err != nil {
 			log.Printf("Error closing file: %v", err)
 		}
 		vt.audioFile = nil
 	}
-	log.Println("Audio file closed")
+	logging.Trace("Audio file closed")
 
 	// Kill the Python transcription process
-	log.Println("Terminating transcription process...")
+	logging.Trace("Terminating transcription process...")
 	if vt.cmd != nil {
 		if err := vt.cmd.Process.Kill(); err != nil {
 			log.Printf("Error killing command: %v", err)
 		}
 		vt.cmd = nil
 	}
-	log.Println("Transcription process terminated")
+	logging.Trace("Transcription process terminated")
 
 	// Clean up PortAudio
-	log.Println("Terminating PortAudio...")
+	logging.Trace("Terminating PortAudio...")
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -310,14 +311,14 @@ func (vt *VoiceTranscriber) Stop() {
 			log.Printf("Error terminating PortAudio: %v", err)
 		}
 	}()
-	log.Println("PortAudio terminated")
+	logging.Trace("PortAudio terminated")
 
 	// Calculate duration
 	duration := time.Since(vt.startTime).Seconds()
 
 	// Trigger "stop" event
 	if vt.sessionCallback != nil {
-		log.Println("Dispatching session end callback...")
+		logging.Trace("Dispatching session end callback...")
 
 		// Use eventsourcing's recovery pattern directly
 		sessionCallback := vt.sessionCallback
@@ -336,7 +337,7 @@ func (vt *VoiceTranscriber) Stop() {
 				"SampleCount":  vt.sampleCount,
 			})
 		}()
-		log.Println("Session end callback dispatched")
+		logging.Trace("Session end callback dispatched")
 	}
 
 	vt.mu.Lock()
@@ -349,7 +350,7 @@ func (vt *VoiceTranscriber) Stop() {
 func (vt *VoiceTranscriber) processAudio(in []float32) {
 	// No lock here; caller already holds vt.mu
 	if !vt.running || vt.writer == nil {
-		log.Println("processAudio: Not running or writer is nil - skipping processing")
+		logging.Trace("processAudio: Not running or writer is nil - skipping processing")
 		return
 	}
 
@@ -392,7 +393,7 @@ func (vt *VoiceTranscriber) processAudio(in []float32) {
 		if err != nil {
 			log.Printf("Error flushing writer: %v", err)
 		} else {
-			log.Println("Flushed PCM data to Python process")
+			logging.Trace("Flushed PCM data to Python process")
 		}
 	}
 	log.Printf("processAudio: After processing, audioBuffer size: %d", len(vt.audioBuffer))
@@ -400,21 +401,21 @@ func (vt *VoiceTranscriber) processAudio(in []float32) {
 
 // processTranscriptions handles incoming transcriptions from the Python process
 func (vt *VoiceTranscriber) processTranscriptions() {
-	log.Println("Starting transcription processing goroutine...")
+	logging.Trace("Starting transcription processing goroutine...")
 	transcriptionCount := 0
 
 	for {
 		vt.mu.Lock()
 		if !vt.running || vt.reader == nil {
 			vt.mu.Unlock()
-			log.Println("Stopping transcription processor - not running or reader closed")
+			logging.Trace("Stopping transcription processor - not running or reader closed")
 			return
 		}
 		reader := vt.reader
 		callback := vt.transcriptionCallback
 		vt.mu.Unlock()
 
-		log.Println("Waiting for transcription from Python process...")
+		logging.Trace("Waiting for transcription from Python process...")
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			log.Printf("Error reading from Python: %v", err)
@@ -424,7 +425,7 @@ func (vt *VoiceTranscriber) processTranscriptions() {
 
 		line = strings.TrimSpace(line)
 		if line == "" {
-			log.Println("Received empty line from Python process - skipping")
+			logging.Trace("Received empty line from Python process - skipping")
 			continue
 		}
 
@@ -434,7 +435,7 @@ func (vt *VoiceTranscriber) processTranscriptions() {
 		vt.mu.Lock()
 		if !vt.running {
 			vt.mu.Unlock()
-			log.Println("Stopping transcription processor - running flag cleared")
+			logging.Trace("Stopping transcription processor - running flag cleared")
 			return
 		}
 
@@ -446,7 +447,7 @@ func (vt *VoiceTranscriber) processTranscriptions() {
 			log.Printf("Calling transcription callback with: %s", line)
 			callback(line)
 		} else {
-			log.Println("WARNING: No transcription callback set")
+			logging.Trace("WARNING: No transcription callback set")
 		}
 	}
 }

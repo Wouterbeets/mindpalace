@@ -62,6 +62,8 @@ func (m *AggregateManager) ApplyEvent(event eventsourcing.Event) error {
 	switch eventType {
 	case "UserRequestReceived":
 		return m.handleUserRequestReceived(event)
+	case "ToolCallCompleted":
+		return m.handleToolCallCompleted(event)
 	case "RequestCompleted":
 		return m.handleRequestCompleted(event)
 	}
@@ -96,6 +98,21 @@ func (m *AggregateManager) handleUserRequestReceived(event eventsourcing.Event) 
 		Role:              "You",
 		OllamaRole:        "user",
 		Content:           e.RequestText,
+		RequestID:         e.RequestID,
+		StreamingComplete: true,
+	})
+	return nil
+}
+
+func (m *AggregateManager) handleToolCallCompleted(event eventsourcing.Event) error {
+	e, ok := event.(*eventsourcing.ToolCallCompleted)
+	if !ok {
+		return fmt.Errorf("expected *eventsourcing.UserRequestReceivedEvent for UserRequestReceived")
+	}
+	m.ChatHistory = append(m.ChatHistory, chat.ChatMessage{
+		Role:              "MindPalace",
+		OllamaRole:        "none",
+		Content:           fmt.Sprintf("%+v", e.Result),
 		RequestID:         e.RequestID,
 		StreamingComplete: true,
 	})

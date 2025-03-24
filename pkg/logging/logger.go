@@ -117,7 +117,7 @@ func (l *Logger) Command(commandName string, data map[string]interface{}) {
 	defer l.mu.Unlock()
 	msg := fmt.Sprintf("[COMMAND] %s", commandName)
 	l.logger.Println(msg)
-	
+
 	// Log command details at debug level
 	if l.level >= LogLevelDebug {
 		if data != nil {
@@ -133,7 +133,7 @@ func (l *Logger) Event(eventType string, data map[string]interface{}) {
 	defer l.mu.Unlock()
 	msg := fmt.Sprintf("[EVENT] %s", eventType)
 	l.logger.Println(msg)
-	
+
 	// Log event details at debug level
 	if l.level >= LogLevelDebug {
 		if data != nil {

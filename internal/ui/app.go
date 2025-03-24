@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"runtime"
 	"strings"
 
 	"fyne.io/fyne/v2"
@@ -24,11 +23,9 @@ import (
 // App represents the UI application
 type App struct {
 	eventProcessor *eventsourcing.EventProcessor
-	aggManager     *aggregate.AggregateManager // Updated to use AggregateManager
+	aggManager     *aggregate.AggregateManager
 	eventChan      chan eventsourcing.Event
-	commands       map[string]eventsourcing.CommandHandler
 	ui             fyne.App
-	stateDisplay   *widget.Entry
 	eventLog       *widget.List
 	eventDetail    *widget.Entry
 	transcriber    *audio.VoiceTranscriber
@@ -36,12 +33,12 @@ type App struct {
 	transcriptBox  *widget.Entry
 	ChatHistory    *fyne.Container
 	chatScroll     *container.Scroll
-	pluginTabs     *container.AppTabs // New field for plugin-specific UIs
+	pluginTabs     *container.AppTabs
 	orchestrator   *orchestration.RequestOrchestrator
-	plugins        []eventsourcing.Plugin // Store plugins for UI access
+	plugins        []eventsourcing.Plugin
 }
 
-// NewApp creates a new UI application with the updated aggregate manager
+// NewApp creates a new UI application
 func NewApp(ep *eventsourcing.EventProcessor, agg *aggregate.AggregateManager, orch *orchestration.RequestOrchestrator, plugins []eventsourcing.Plugin) *App {
 	ChatHistory := container.NewVBox()
 	fyneApp := app.NewWithID("com.mindpalace.app")
@@ -50,7 +47,6 @@ func NewApp(ep *eventsourcing.EventProcessor, agg *aggregate.AggregateManager, o
 		eventProcessor: ep,
 		aggManager:     agg,
 		orchestrator:   orch,
-		commands:       make(map[string]eventsourcing.CommandHandler),
 		ui:             fyneApp,
 		transcriber:    audio.NewVoiceTranscriber(),
 		transcribing:   false,
@@ -69,11 +65,11 @@ func NewApp(ep *eventsourcing.EventProcessor, agg *aggregate.AggregateManager, o
 		),
 		eventDetail: widget.NewMultiLineEntry(),
 		eventChan:   make(chan eventsourcing.Event, 10),
-		plugins:     plugins, // Store plugins for UI generation
+		plugins:     plugins,
 	}
 	a.ui.Settings().SetTheme(NewCustomTheme())
 
-	// Simplified event handling
+	// Event handling
 	go func() {
 		for range a.eventChan {
 			fyne.CurrentApp().Driver().DoFromGoroutine(func() {
@@ -92,8 +88,6 @@ func NewApp(ep *eventsourcing.EventProcessor, agg *aggregate.AggregateManager, o
 	})
 
 	a.chatScroll.Direction = container.ScrollVerticalOnly
-	a.transcriptBox.SetPlaceHolder("Transcriptions will appear here...")
-	a.eventDetail.Disable()
 	a.eventDetail.SetText("Select an event to view details")
 
 	a.transcriber.SetSessionEventCallback(func(eventType string, data map[string]interface{}) {
@@ -130,21 +124,19 @@ func (a *App) InitUI() {
 			return
 		}
 		event := events[id]
-		dataJSON, err := event.Marshal()
+		dataJSON, err := json.MarshalIndent(event, "", "  ") // Pretty-print JSON with 2-space indentation
 		if err != nil {
 			a.eventDetail.SetText(fmt.Sprintf("Error marshaling event data: %v", err))
 			return
 		}
-		a.eventDetail.SetText(fmt.Sprintf("Event Type: %s\nData:\n%s", event.Type(), string(dataJSON)))
+		// Format the text with event type and pretty-printed JSON
+		detailText := fmt.Sprintf("Event Type: %s\nData:\n%s", event.Type(), string(dataJSON))
+		a.eventDetail.SetText(detailText)
+		// No ColorName in TextStyle; rely on theme foreground color
 	}
 	a.eventLog.OnUnselected = func(id widget.ListItemID) {
 		a.eventDetail.SetText("Select an event to view details")
 	}
-
-	stateText := widget.NewMultiLineEntry()
-	stateText.SetText(fmt.Sprintf("%v", a.aggManager.GetState()))
-	stateText.Disable()
-	a.stateDisplay = stateText
 	a.RebuildState()
 }
 
@@ -152,22 +144,30 @@ func (a *App) InitUI() {
 func (a *App) Run() {
 	window := a.ui.NewWindow("MindPalace")
 
-	// Create a stylish header with the app name
+	// Declare all UI components upfront
 	appHeader := widget.NewLabel("MindPalace")
 	appHeader.TextStyle = fyne.TextStyle{Bold: true}
 	appHeader.Alignment = fyne.TextAlignCenter
 
-	// Create a more stylish audio control section
 	startStopButton := widget.NewButton("Start Audio", nil)
 	startStopButton.Importance = widget.MediumImportance
 
-	logging.Trace("Run running on goroutine: %d", runtime.NumGoroutine())
+	processingSpinner := widget.NewProgressBarInfinite()
+	processingSpinner.Hide()
+
+	submitButton := widget.NewButton("Submit", nil)
+	submitButton.Importance = widget.HighImportance
+
+	// Configure transcript box
+	a.transcriptBox.SetPlaceHolder("Type your request or speak using the 'Start Audio' button...")
+	a.transcriptBox.SetMinRowsVisible(5)
+	a.transcriptBox.Wrapping = fyne.TextWrapWord
+
+	// Define button behaviors
 	startStopButton.OnTapped = func() {
-		logging.Trace("Button tapped on goroutine: %d", runtime.NumGoroutine())
 		if !a.transcribing {
 			fyne.CurrentApp().Driver().DoFromGoroutine(func() {
 				a.transcriptBox.SetText("")
-				logging.Trace("Cleared transcript box")
 			}, false)
 
 			err := a.transcriber.Start(func(text string) {
@@ -182,7 +182,6 @@ func (a *App) Run() {
 							} else {
 								a.transcriptBox.SetText(current + " " + text)
 							}
-							logging.Trace("Added text to transcript: %s", text)
 						}, false)
 					})
 				}
@@ -191,11 +190,11 @@ func (a *App) Run() {
 				logging.Error("Failed to start audio: %v", err)
 				fyne.CurrentApp().Driver().DoFromGoroutine(func() {
 					message := fmt.Sprintf("Audio error: %v\n\nPlease type your request instead.", err)
-					errorDialog := dialog.NewInformation("Audio Unavailable", message, fyne.CurrentApp().Driver().AllWindows()[0])
-					errorDialog.Show()
+					dialog.NewInformation("Audio Unavailable", message, fyne.CurrentApp().Driver().AllWindows()[0]).Show()
 					startStopButton.Importance = widget.WarningImportance
 					startStopButton.SetText("Audio Unavailable")
 					startStopButton.Disable()
+					submitButton.Enable() // Ensure submit remains available
 				}, false)
 				return
 			}
@@ -216,20 +215,11 @@ func (a *App) Run() {
 			a.transcribing = false
 		}
 	}
-	a.transcriptBox.SetPlaceHolder("Type your request or speak using the 'Start Audio' button...")
-	a.transcriptBox.SetMinRowsVisible(5)
-	a.transcriptBox.Wrapping = fyne.TextWrapWord
 
-	processingSpinner := widget.NewProgressBarInfinite()
-	processingSpinner.Hide()
-
-	var submitButton *widget.Button
-	submitButton = widget.NewButton("Submit", func() {
+	submitButton.OnTapped = func() {
 		eventsourcing.SafeGo("SubmitTranscription", nil, func() {
-			logging.Trace("Submit button pressed")
 			transcriptionText := a.transcriptBox.Text
 			if transcriptionText == "" {
-				logging.Trace("No transcription text to submit")
 				return
 			}
 
@@ -251,53 +241,37 @@ func (a *App) Run() {
 				processingSpinner.Hide()
 			}, false)
 		})
-	})
-	submitButton.Importance = widget.HighImportance
+	}
 
+	// Assemble layout
 	transcriptScroll := container.NewScroll(a.transcriptBox)
 	transcriptScroll.SetMinSize(fyne.NewSize(0, 100))
 
-	inputWithProgress := container.NewBorder(
-		nil,
-		processingSpinner,
-		nil, nil,
-		transcriptScroll,
-	)
+	inputWithProgress := container.NewBorder(nil, processingSpinner, nil, nil, transcriptScroll)
+	inputArea := container.NewBorder(nil, nil, startStopButton, submitButton, inputWithProgress)
 
-	inputArea := container.NewBorder(
-		nil, nil,
-		startStopButton, submitButton,
-		inputWithProgress,
-	)
-
-	// Main chat interface
 	chatInterface := container.NewBorder(
 		container.NewVBox(appHeader, widget.NewSeparator()),
 		container.NewVBox(widget.NewSeparator(), inputArea),
-		nil,
-		nil,
+		nil, nil,
 		a.chatScroll,
 	)
 
-	logging.Debug("all plugin: %+v", a.aggManager.PluginAggregates)
-	// Plugin tabs (replacing tasksContainer)
+	// Plugin tabs
 	a.pluginTabs = container.NewAppTabs()
 	for _, plugin := range a.plugins {
-		logging.Debug("plugin: %+v", a.aggManager.PluginAggregates[plugin.Name()])
+		logging.Debug("adding plugin tabs: %s", plugin.Name())
 		a.pluginTabs.Append(container.NewTabItem(plugin.Name(), plugin.GetCustomUI(a.aggManager.PluginAggregates[plugin.Name()])))
 	}
 
-	// Debug panels
-	stateScrollable := container.NewScroll(a.stateDisplay)
+	// Event log
 	split := container.NewHSplit(a.eventLog, a.eventDetail)
 	split.SetOffset(0.3)
 
+	// Tabs
 	tabs := container.NewAppTabs(
 		container.NewTabItem("MindPalace", chatInterface),
 		container.NewTabItem("Plugins", a.pluginTabs),
-		container.NewTabItem("Plugin Explorer", a.buildPluginExplorer()),
-		container.NewTabItem("Command Execution", a.buildCommandExecution()),
-		container.NewTabItem("State Display", stateScrollable),
 		container.NewTabItem("Event Log", split),
 	)
 
@@ -306,95 +280,30 @@ func (a *App) Run() {
 	window.ShowAndRun()
 }
 
-// buildPluginExplorer builds a plugin explorer UI
-func (a *App) buildPluginExplorer() fyne.CanvasObject {
-	list := widget.NewList(
-		func() int { return len(a.commands) },
-		func() fyne.CanvasObject { return widget.NewLabel("Command") },
-		func(i widget.ListItemID, o fyne.CanvasObject) {
-			keys := make([]string, 0, len(a.commands))
-			for k := range a.commands {
-				keys = append(keys, k)
-			}
-			o.(*widget.Label).SetText(keys[i])
-		},
-	)
-	return list
-}
-
-// buildCommandExecution builds a command execution UI
-func (a *App) buildCommandExecution() fyne.CanvasObject {
-	commandOptions := make([]string, 0, len(a.commands))
-	for cmd := range a.commands {
-		commandOptions = append(commandOptions, cmd)
-	}
-	commandDropdown := widget.NewSelect(commandOptions, func(s string) {
-		logging.Trace("Selected command: %s", s)
-	})
-
-	inputArea := widget.NewMultiLineEntry()
-	inputArea.SetPlaceHolder("Enter command parameters in JSON format...")
-	executeButton := widget.NewButton("Execute", func() {
-		selectedCmd := commandDropdown.Selected
-		if selectedCmd == "" {
-			logging.Trace("No command selected")
-			return
-		}
-		inputText := inputArea.Text
-		var inputData map[string]interface{}
-		if err := json.Unmarshal([]byte(inputText), &inputData); err != nil {
-			logging.Error("Invalid JSON input: %v", err)
-			return
-		}
-		err := a.eventProcessor.ExecuteCommand(selectedCmd, inputData)
-		if err != nil {
-			logging.Error("Failed to execute command %s: %v", selectedCmd, err)
-		}
-	})
-	return container.NewVBox(
-		widget.NewLabel("Select Command:"),
-		commandDropdown,
-		widget.NewLabel("Input Parameters (JSON):"),
-		inputArea,
-		executeButton,
-	)
-}
-
 // refreshUI updates the UI components
 func (a *App) refreshUI() {
-	// Clear chat history container
 	a.ChatHistory.Objects = nil
 
-	// Update chat history (unchanged)
 	for _, msg := range a.aggManager.ChatHistory {
 		var content fyne.CanvasObject
-
 		if strings.Contains(msg.Role, "[think]") {
 			detailsContent := parseMarkdownToCanvas(msg.Content)
 			detailsItem := widget.NewAccordionItem("Thinking details...", detailsContent)
 			details := widget.NewAccordion(detailsItem)
 			details.MultiOpen = false
-
 			header := widget.NewLabel("🧠 Assistant thinking process...")
 			header.TextStyle = fyne.TextStyle{Italic: true}
-
 			content = container.NewVBox(header, details)
 		} else {
 			messageContainer := container.NewVBox()
-
-			var roleLabel *widget.Label
-			if msg.Role == "You" {
-				roleLabel = widget.NewLabel("You")
-				roleLabel.TextStyle = fyne.TextStyle{Bold: true}
-			} else {
-				roleLabel = widget.NewLabel("MindPalace")
-				roleLabel.TextStyle = fyne.TextStyle{Bold: true}
+			roleLabel := widget.NewLabel("You")
+			if msg.Role != "You" {
+				roleLabel.SetText("MindPalace")
 			}
-
+			roleLabel.TextStyle = fyne.TextStyle{Bold: true}
 			messageContent := parseMarkdownToCanvas(msg.Content)
 			messageContainer.Add(roleLabel)
 			messageContainer.Add(messageContent)
-
 			content = container.NewPadded(messageContainer)
 		}
 
@@ -404,36 +313,48 @@ func (a *App) refreshUI() {
 		a.ChatHistory.Add(content)
 	}
 
-	// Refresh chat history
 	a.ChatHistory.Refresh()
 	if len(a.ChatHistory.Objects) > 0 {
 		a.chatScroll.ScrollToBottom()
 	}
 
-	// Update plugin UIs (e.g., taskmanager)
 	if a.pluginTabs != nil && len(a.pluginTabs.Items) > 0 {
 		for i, tab := range a.pluginTabs.Items {
 			pluginName := tab.Text
 			for _, plugin := range a.plugins {
+				logging.Debug("plugin name %s", plugin.Name())
 				if plugin.Name() == pluginName {
+					logging.Debug("aggs %+v", a.aggManager.PluginAggregates)
 					if agg, exists := a.aggManager.PluginAggregates[pluginName]; exists {
+						logging.Debug("calling getui %+v", agg)
 						a.pluginTabs.Items[i].Content = plugin.GetCustomUI(agg)
 					}
 				}
 			}
 		}
 		a.pluginTabs.Refresh()
-
 	}
 
-	// Update state display and event log
-	a.stateDisplay.SetText(fmt.Sprintf("%v", a.aggManager.GetState()))
 	events := a.eventProcessor.GetEvents()
 	a.eventLog.Length = func() int { return len(events) }
 	a.eventLog.UpdateItem = func(id widget.ListItemID, obj fyne.CanvasObject) {
 		obj.(*widget.Label).SetText(events[id].Type())
 	}
 	a.eventLog.Refresh()
+}
+
+// RebuildState rebuilds the state from events
+func (a *App) RebuildState() {
+	events := a.eventProcessor.GetEvents()
+	eventsCopy := make([]eventsourcing.Event, len(events))
+	copy(eventsCopy, events)
+
+	for _, event := range eventsCopy {
+		if err := a.aggManager.ApplyEvent(event); err != nil {
+			logging.Error("Failed to apply event during rebuild: %v", err)
+		}
+	}
+	a.refreshUI()
 }
 
 // parseMarkdownToCanvas converts Markdown text into a styled Fyne CanvasObject (unchanged)
@@ -540,20 +461,6 @@ func parseInlineMarkdown(text string) []widget.RichTextSegment {
 	}
 
 	return segments
-}
-
-// RebuildState rebuilds the state from events
-func (a *App) RebuildState() {
-	events := a.eventProcessor.GetEvents()
-	eventsCopy := make([]eventsourcing.Event, len(events))
-	copy(eventsCopy, events)
-
-	for _, event := range eventsCopy {
-		if err := a.aggManager.ApplyEvent(event); err != nil {
-			logging.Error("Failed to apply event during rebuild: %v", err)
-		}
-	}
-	a.refreshUI()
 }
 
 // parseStreamingContent extracts think tags and regular text from streaming content (unchanged)

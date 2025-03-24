@@ -70,9 +70,6 @@ func main() {
 			eventType, err, recoveryData, stackTrace)
 	})
 	store := eventsourcing.NewFileEventStore(eventFileFlag)
-	if err := store.Load(); err != nil {
-		logging.Error("Failed to load events: %v", err)
-	}
 	agg := aggregate.NewAggregateManager()
 	ep := eventsourcing.NewEventProcessor(store, agg)
 	pluginManager := plugins.NewPluginManager(ep)
@@ -80,6 +77,11 @@ func main() {
 
 	// Load plugins and register commands
 	pluginManager.LoadPlugins("plugins", ep)
+
+	// Load events after plugins so plugin events are registered
+	if err := store.Load(); err != nil {
+		logging.Error("Failed to load events: %v", err)
+	}
 
 	commands, _ := pluginManager.RegisterCommands()
 	for name, handler := range commands {

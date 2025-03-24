@@ -41,20 +41,17 @@ func (pm *PluginManager) GetLLMPlugins() []eventsourcing.Plugin {
 func (pm *PluginManager) LoadPlugins(pluginDir string, ep *eventsourcing.EventProcessor) {
 	logging.Debug("Starting to load plugins from directory: %s", pluginDir)
 
-	// First, discover all plugin directories (they contain plugin.go files)
 	pluginDirs, err := pm.discoverPluginDirectories(pluginDir)
 	if err != nil {
 		logging.Error("Error discovering plugin directories: %v", err)
 		return
 	}
 
-	// For each plugin directory, ensure the SO file is up to date and load it
 	for _, dir := range pluginDirs {
 		pluginName := filepath.Base(dir)
 		goFile := filepath.Join(dir, "plugin.go")
 		soFile := filepath.Join(dir, pluginName+".so")
 
-		// Check if we need to build/rebuild the plugin
 		shouldBuild, err := pm.shouldBuildPlugin(goFile, soFile)
 		if err != nil {
 			logging.Error("Error checking if plugin needs building: %v", err)
@@ -62,25 +59,33 @@ func (pm *PluginManager) LoadPlugins(pluginDir string, ep *eventsourcing.EventPr
 		}
 
 		if shouldBuild {
-			// Build the plugin
 			if err := pm.buildPlugin(goFile, soFile); err != nil {
 				logging.Error("Failed to build plugin %s: %v", goFile, err)
 				continue
 			}
 		}
 
-		// Always attempt to load the plugin
+		// Attempt to load the plugin
 		plugin, err := pm.loadPlugin(soFile)
 		if err != nil {
 			logging.Error("Failed to load plugin %s: %v", soFile, err)
-			continue
+			// Attempt to rebuild the plugin if loading failed
+			if err := pm.buildPlugin(goFile, soFile); err != nil {
+				logging.Error("Failed to rebuild plugin %s: %v", goFile, err)
+				continue
+			}
+			// Try loading again after rebuilding
+			plugin, err = pm.loadPlugin(soFile)
+			if err != nil {
+				logging.Error("Failed to load plugin after rebuild %s: %v", soFile, err)
+				continue
+			}
 		}
 
 		if plugin != nil {
 			pm.plugins = append(pm.plugins, plugin)
 			logging.Info("Successfully loaded plugin: %s", plugin.Name())
 
-			// Register event handlers
 			for eventType, handler := range plugin.EventHandlers() {
 				ep.RegisterEventHandler(eventType, handler)
 			}
@@ -193,7 +198,12 @@ func (pm *PluginManager) loadPlugin(soFile string) (eventsourcing.Plugin, error)
 		return nil, fmt.Errorf("NewPlugin is not of the correct type")
 	}
 
-	return newPlugin(), nil
+	pluginInstance := newPlugin()
+	if pluginInstance == nil {
+		return nil, fmt.Errorf("NewPlugin returned nil")
+	}
+
+	return pluginInstance, nil
 }
 
 func (pm *PluginManager) RegisterCommands() (map[string]eventsourcing.CommandHandler, map[string][]eventsourcing.EventHandler) {
@@ -213,11 +223,27 @@ func (pm *PluginManager) RegisterCommands() (map[string]eventsourcing.CommandHan
 	return commands, pm.eventHandlers
 }
 
+// LoadNewPlugin loads and registers a new plugin from the given path
 func (pm *PluginManager) LoadNewPlugin(pluginPath string) error {
 	plugin, err := pm.loadPlugin(pluginPath)
 	if err != nil {
-		return err
+		// If loading fails, attempt to rebuild from source if we can find it
+		goFile := filepath.Join(filepath.Dir(pluginPath), "plugin.go")
+		if _, statErr := os.Stat(goFile); statErr == nil {
+			logging.Info("Attempting to rebuild plugin from source: %s", goFile)
+			if buildErr := pm.buildPlugin(goFile, pluginPath); buildErr != nil {
+				return fmt.Errorf("failed to rebuild plugin: %w", buildErr)
+			}
+			// Try loading again after rebuild
+			plugin, err = pm.loadPlugin(pluginPath)
+			if err != nil {
+				return fmt.Errorf("failed to load plugin after rebuild: %w", err)
+			}
+		} else {
+			return fmt.Errorf("failed to load plugin and no source found for rebuild: %w", err)
+		}
 	}
+
 	pm.plugins = append(pm.plugins, plugin)
 	commands, handlers := pm.RegisterCommands()
 	for name, handler := range commands {

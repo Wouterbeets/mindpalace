@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"mindpalace/pkg/eventsourcing"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -60,7 +61,7 @@ func (a *TaskAggregate) GetAllCommands() map[string]eventsourcing.CommandHandler
 // ApplyEvent updates the aggregate state based on task-related events
 func (a *TaskAggregate) ApplyEvent(event eventsourcing.Event) error {
 	switch event.Type() {
-	case "TaskCreated":
+	case "taskmanager_TaskCreated":
 		data, err := event.Marshal()
 		if err != nil {
 			return fmt.Errorf("failed to marshal TaskCreated: %v", err)
@@ -69,6 +70,7 @@ func (a *TaskAggregate) ApplyEvent(event eventsourcing.Event) error {
 		if err := json.Unmarshal(data, &e); err != nil {
 			return fmt.Errorf("failed to unmarshal TaskCreated: %v", err)
 		}
+		fmt.Printf("Applied %s for task %s\n", event.Type(), e.TaskID)
 		a.Tasks[e.TaskID] = &Task{
 			TaskID:       e.TaskID,
 			Title:        e.Title,
@@ -81,7 +83,7 @@ func (a *TaskAggregate) ApplyEvent(event eventsourcing.Event) error {
 			CreatedAt:    time.Now().UTC(),
 		}
 
-	case "TaskUpdated":
+	case "taskmanager_TaskUpdated":
 		data, err := event.Marshal()
 		if err != nil {
 			return fmt.Errorf("failed to marshal TaskUpdated: %v", err)
@@ -114,7 +116,7 @@ func (a *TaskAggregate) ApplyEvent(event eventsourcing.Event) error {
 			}
 		}
 
-	case "TaskCompleted":
+	case "taskmanager_TaskCompleted":
 		data, err := event.Marshal()
 		if err != nil {
 			return fmt.Errorf("failed to marshal TaskCompleted: %v", err)
@@ -131,7 +133,7 @@ func (a *TaskAggregate) ApplyEvent(event eventsourcing.Event) error {
 			}
 		}
 
-	case "TaskDeleted":
+	case "taskmanager_TaskDeleted":
 		data, err := event.Marshal()
 		if err != nil {
 			return fmt.Errorf("failed to marshal TaskDeleted: %v", err)
@@ -605,15 +607,91 @@ func (p *TaskPlugin) GetCustomUI(agg eventsourcing.Aggregate) fyne.CanvasObject 
 		tasks = append(tasks, task)
 	}
 
-	list := widget.NewList(
-		func() int { return len(tasks) },
-		func() fyne.CanvasObject { return widget.NewLabel("") },
-		func(i widget.ListItemID, o fyne.CanvasObject) {
-			label := fmt.Sprintf("%s (%s)", tasks[i].Title, tasks[i].Status)
-			o.(*widget.Label).SetText(label)
-		},
-	)
-	return container.NewScroll(list)
+	if len(tasks) == 0 {
+		return container.NewCenter(widget.NewLabel("No tasks available."))
+	}
+
+	// Create an accordion to display tasks
+	accordion := widget.NewAccordion()
+
+	for _, task := range tasks {
+		// Task details content
+		details := container.NewVBox()
+
+		// Status and Priority
+		statusLabel := widget.NewLabel(fmt.Sprintf("Status: %s", task.Status))
+		priorityLabel := widget.NewLabel(fmt.Sprintf("Priority: %s", task.Priority))
+		details.Add(container.NewHBox(statusLabel, widget.NewLabel(" | "), priorityLabel))
+
+		// Description
+		if task.Description != "" {
+			descLabel := widget.NewLabel(task.Description)
+			descLabel.Wrapping = fyne.TextWrapWord
+			details.Add(widget.NewLabel("Description:"))
+			details.Add(descLabel)
+		}
+
+		// Deadline
+		if task.Deadline != "" {
+			details.Add(widget.NewLabel(fmt.Sprintf("Deadline: %s", task.Deadline)))
+		}
+
+		// Dependencies
+		if len(task.Dependencies) > 0 {
+			depsLabel := widget.NewLabel("Dependencies:")
+			depsList := widget.NewList(
+				func() int { return len(task.Dependencies) },
+				func() fyne.CanvasObject { return widget.NewLabel("") },
+				func(i widget.ListItemID, o fyne.CanvasObject) {
+					depID := task.Dependencies[i]
+					depTask, exists := taskAgg.Tasks[depID]
+					text := depID
+					if exists {
+						text = fmt.Sprintf("%s (%s)", depTask.Title, depTask.Status)
+					}
+					o.(*widget.Label).SetText(text)
+				},
+			)
+			depsListBox := container.NewMax(depsList)
+			details.Add(depsLabel)
+			details.Add(depsListBox)
+		}
+
+		// Tags
+		if len(task.Tags) > 0 {
+			tagsText := fmt.Sprintf("Tags: %s", strings.Join(task.Tags, ", "))
+			details.Add(widget.NewLabel(tagsText))
+		}
+
+		// Creation and Completion Details
+		createdLabel := widget.NewLabel(fmt.Sprintf("Created: %s", task.CreatedAt.Format(time.RFC822)))
+		details.Add(createdLabel)
+		if task.Status == "Completed" && task.CompletedAt != "" {
+			completedLabel := widget.NewLabel(fmt.Sprintf("Completed: %s", task.CompletedAt))
+			details.Add(completedLabel)
+			if task.CompletionNotes != "" {
+				notesLabel := widget.NewLabel("Completion Notes:")
+				notesText := widget.NewLabel(task.CompletionNotes)
+				notesText.Wrapping = fyne.TextWrapWord
+				details.Add(notesLabel)
+				details.Add(notesText)
+			}
+		}
+
+		// Accordion item for this task
+		title := fmt.Sprintf("%s (%s)", task.Title, task.Status)
+		accordionItem := widget.NewAccordionItem(title, details)
+		accordion.Append(accordionItem)
+	}
+
+	// Allow multiple items to be open at once
+	accordion.MultiOpen = true
+
+	// Wrap in a scroll container for large task lists
+	scroll := container.NewVScroll(accordion)
+	scroll.SetMinSize(fyne.NewSize(400, 300)) // Set a reasonable default size
+
+	return scroll
 }
 
 func (p *TaskPlugin) Aggregate() eventsourcing.Aggregate {

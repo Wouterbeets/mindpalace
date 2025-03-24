@@ -44,8 +44,7 @@ func (ro *RequestOrchestrator) ProcessRequest(requestText string, requestID stri
 
 	// Gather tools from plugins
 	tools := ro.gatherTools()
-
-	// Call LLM
+	messages = append(messages, llmmodels.Message{Role: "user", Content: "make the neccesary tool calls"})
 	resp, err := ro.llmClient.CallLLM(messages, tools, requestID)
 	if err != nil {
 		return fmt.Errorf("LLM call failed: %v", err)
@@ -92,25 +91,7 @@ You are MindPalace, a friendly AI assistant here to help with various queries an
 1. **Assist effectively**: Prioritize the user's needs, answer directly when possible, and use tools wisely to enhance assistance.
 2. **Communicate clearly**: Provide concise, relevant responses, using context to avoid redundancy.
 3. **Adapt to uncertainty**: Ask clarifying questions or make reasonable assumptions to keep the interaction smooth.
-
-### Response Structure:
-Before answering, always:
-1. Think deeply in <think> tags about the user's request and whether a tool is necessary.
-   - Consider if the user explicitly requested a tool.
-   - Consider if the request implies a tool is needed.
-   - Consider if the information is already accessible without a tool.
-2. Decide if tools are needed based on the above.
-3. Only then respond or call tools.
-
-**Format**:
-<think>Reasoning steps...</think>
-[Tool calls OR Final Answer]
-
-### Tone and Style:
-Be friendly and approachable. Avoid jargon unless necessary. Keep responses concise yet complete.
-
-### Final Notes:
-Adapt to diverse user needs. Use tools to enhance, not replace, your intelligence. Strive for a seamless user experience.`
+`
 
 // buildChatHistory constructs the conversation history
 func (ro *RequestOrchestrator) buildChatHistory(maxMessages int) []llmmodels.Message {
