@@ -112,7 +112,7 @@ func (l *Logger) Trace(format string, args ...interface{}) {
 }
 
 // Command logs information about commands being executed
-func (l *Logger) Command(commandName string, data map[string]interface{}) {
+func (l *Logger) Command(commandName string, data any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	msg := fmt.Sprintf("[COMMAND] %s", commandName)
@@ -166,7 +166,7 @@ func Trace(format string, args ...interface{}) {
 }
 
 // Command logs a command execution
-func Command(commandName string, data map[string]interface{}) {
+func Command(commandName string, data any) {
 	GetLogger().Command(commandName, data)
 }
 

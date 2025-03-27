@@ -55,7 +55,7 @@ type Task struct {
 // TaskAggregate manages the state of tasks with thread safety
 type TaskAggregate struct {
 	tasks    map[string]*Task
-	commands map[string]eventsourcing.Command
+	commands map[string]eventsourcing.CommandHandler
 	mu       sync.RWMutex
 }
 
@@ -63,7 +63,7 @@ type TaskAggregate struct {
 func NewTaskAggregate() *TaskAggregate {
 	return &TaskAggregate{
 		tasks:    make(map[string]*Task),
-		commands: make(map[string]eventsourcing.Command),
+		commands: make(map[string]eventsourcing.CommandHandler),
 	}
 }
 
@@ -158,52 +158,31 @@ type TaskPlugin struct {
 	aggregate *TaskAggregate
 }
 
-// NewPlugin creates a new TaskPlugin instance
 func NewPlugin() eventsourcing.Plugin {
 	agg := NewTaskAggregate()
 	p := &TaskPlugin{aggregate: agg}
-	agg.commands = map[string]eventsourcing.Command{
-		"CreateTask": func(data map[string]interface{}) ([]eventsourcing.Event, error) {
-			var input CreateTaskInput
-			if err := mapToStruct(data, &input); err != nil {
-				return nil, err
-			}
+	agg.commands = map[string]eventsourcing.CommandHandler{
+		"CreateTask": eventsourcing.NewCommand(func(input *CreateTaskInput) ([]eventsourcing.Event, error) {
 			return p.createTaskHandler(input)
-		},
-		"UpdateTask": func(data map[string]interface{}) ([]eventsourcing.Event, error) {
-			var input UpdateTaskInput
-			if err := mapToStruct(data, &input); err != nil {
-				return nil, err
-			}
+		}),
+		"UpdateTask": eventsourcing.NewCommand(func(input *UpdateTaskInput) ([]eventsourcing.Event, error) {
 			return p.updateTaskHandler(input)
-		},
-		"DeleteTask": func(data map[string]interface{}) ([]eventsourcing.Event, error) {
-			var input DeleteTaskInput
-			if err := mapToStruct(data, &input); err != nil {
-				return nil, err
-			}
+		}),
+		"DeleteTask": eventsourcing.NewCommand(func(input *DeleteTaskInput) ([]eventsourcing.Event, error) {
 			return p.deleteTaskHandler(input)
-		},
-		"CompleteTask": func(data map[string]interface{}) ([]eventsourcing.Event, error) {
-			var input CompleteTaskInput
-			if err := mapToStruct(data, &input); err != nil {
-				return nil, err
-			}
+		}),
+		"CompleteTask": eventsourcing.NewCommand(func(input *CompleteTaskInput) ([]eventsourcing.Event, error) {
 			return p.completeTaskHandler(input)
-		},
-		"ListTasks": func(data map[string]interface{}) ([]eventsourcing.Event, error) {
-			var input ListTasksInput
-			if err := mapToStruct(data, &input); err != nil {
-				return nil, err
-			}
+		}),
+		"ListTasks": eventsourcing.NewCommand(func(input *ListTasksInput) ([]eventsourcing.Event, error) {
 			return p.listTasksHandler(input)
-		},
+		}),
 	}
 	return p
 }
 
 // Commands returns the command handlers
-func (p *TaskPlugin) Commands() map[string]eventsourcing.Command {
+func (p *TaskPlugin) Commands() map[string]eventsourcing.CommandHandler {
 	return p.aggregate.commands
 }
 
@@ -213,17 +192,21 @@ func (p *TaskPlugin) Name() string {
 }
 
 // Schemas defines the command schemas
-func (p *TaskPlugin) Schemas() map[string]map[string]interface{} {
-	return map[string]map[string]interface{}{
-		"CreateTask":   (&CreateTaskInput{}).Schema(),
-		"UpdateTask":   (&UpdateTaskInput{}).Schema(),
-		"DeleteTask":   (&DeleteTaskInput{}).Schema(),
-		"CompleteTask": (&CompleteTaskInput{}).Schema(),
-		"ListTasks":    (&ListTasksInput{}).Schema(),
+func (p *TaskPlugin) Schemas() map[string]eventsourcing.CommandInput {
+	return map[string]eventsourcing.CommandInput{
+		"CreateTask":   &CreateTaskInput{},
+		"UpdateTask":   &UpdateTaskInput{},
+		"DeleteTask":   &DeleteTaskInput{},
+		"CompleteTask": &CompleteTaskInput{},
+		"ListTasks":    &ListTasksInput{},
 	}
 }
 
 // Command Input Structs with Schema Generation
+
+func (i *CreateTaskInput) New() any {
+	return &CreateTaskInput{}
+}
 
 // CreateTaskInput defines the input for creating a task
 type CreateTaskInput struct {
@@ -278,6 +261,10 @@ func (c *CreateTaskInput) Schema() map[string]interface{} {
 			"required": []string{"Title"},
 		},
 	}
+}
+
+func (i *UpdateTaskInput) New() any {
+	return &UpdateTaskInput{}
 }
 
 // UpdateTaskInput defines the input for updating a task
@@ -340,6 +327,10 @@ func (u *UpdateTaskInput) Schema() map[string]interface{} {
 	}
 }
 
+func (i *DeleteTaskInput) New() any {
+	return &DeleteTaskInput{}
+}
+
 // DeleteTaskInput defines the input for deleting a task
 type DeleteTaskInput struct {
 	TaskID string `json:"TaskID"`
@@ -359,6 +350,10 @@ func (d *DeleteTaskInput) Schema() map[string]interface{} {
 			"required": []string{"TaskID"},
 		},
 	}
+}
+
+func (i *CompleteTaskInput) New() any {
+	return &CompleteTaskInput{}
 }
 
 // CompleteTaskInput defines the input for completing a task
@@ -385,6 +380,10 @@ func (c *CompleteTaskInput) Schema() map[string]interface{} {
 			"required": []string{"TaskID"},
 		},
 	}
+}
+
+func (i *ListTasksInput) New() any {
+	return &ListTasksInput{}
 }
 
 // ListTasksInput defines the input for listing tasks
@@ -525,7 +524,7 @@ func mapToStruct(data map[string]interface{}, target interface{}) error {
 }
 
 // Command Handlers
-func (p *TaskPlugin) createTaskHandler(input CreateTaskInput) ([]eventsourcing.Event, error) {
+func (p *TaskPlugin) createTaskHandler(input *CreateTaskInput) ([]eventsourcing.Event, error) {
 	if input.Title == "" {
 		return nil, fmt.Errorf("title is required and must be a non-empty string")
 	}
@@ -557,7 +556,7 @@ func (p *TaskPlugin) createTaskHandler(input CreateTaskInput) ([]eventsourcing.E
 	return []eventsourcing.Event{event}, nil
 }
 
-func (p *TaskPlugin) updateTaskHandler(input UpdateTaskInput) ([]eventsourcing.Event, error) {
+func (p *TaskPlugin) updateTaskHandler(input *UpdateTaskInput) ([]eventsourcing.Event, error) {
 	if input.TaskID == "" {
 		return nil, fmt.Errorf("taskID is required and must be a non-empty string")
 	}
@@ -596,7 +595,7 @@ func (p *TaskPlugin) updateTaskHandler(input UpdateTaskInput) ([]eventsourcing.E
 	return []eventsourcing.Event{event}, nil
 }
 
-func (p *TaskPlugin) deleteTaskHandler(input DeleteTaskInput) ([]eventsourcing.Event, error) {
+func (p *TaskPlugin) deleteTaskHandler(input *DeleteTaskInput) ([]eventsourcing.Event, error) {
 	if input.TaskID == "" {
 		return nil, fmt.Errorf("taskID is required and must be a non-empty string")
 	}
@@ -612,7 +611,7 @@ func (p *TaskPlugin) deleteTaskHandler(input DeleteTaskInput) ([]eventsourcing.E
 	return []eventsourcing.Event{event}, nil
 }
 
-func (p *TaskPlugin) completeTaskHandler(input CompleteTaskInput) ([]eventsourcing.Event, error) {
+func (p *TaskPlugin) completeTaskHandler(input *CompleteTaskInput) ([]eventsourcing.Event, error) {
 	if input.TaskID == "" {
 		return nil, fmt.Errorf("taskID is required and must be a non-empty string")
 	}
@@ -637,7 +636,7 @@ func (p *TaskPlugin) completeTaskHandler(input CompleteTaskInput) ([]eventsourci
 	return []eventsourcing.Event{event}, nil
 }
 
-func (p *TaskPlugin) listTasksHandler(input ListTasksInput) ([]eventsourcing.Event, error) {
+func (p *TaskPlugin) listTasksHandler(input *ListTasksInput) ([]eventsourcing.Event, error) {
 	p.aggregate.mu.RLock()
 	defer p.aggregate.mu.RUnlock()
 

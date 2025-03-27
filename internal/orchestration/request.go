@@ -54,20 +54,10 @@ func (ro *RequestOrchestrator) ProcessUserRequestCommand(data map[string]interfa
 	return events, nil
 }
 
-func (ro *RequestOrchestrator) DecideAgentCallCommand(data map[string]interface{}) ([]eventsourcing.Event, error) {
-	logging.Debug("starting decide agent call")
-	requestText, ok := data["RequestText"].(string)
-	if !ok {
-		logging.Debug("in decide agent call: %+v", data)
-	}
-	requestID := data["RequestID"].(string)
-	if requestID == "" {
-		requestID = fmt.Sprintf("req-%d", time.Now().UnixNano())
-	}
-
+func (ro *RequestOrchestrator) DecideAgentCallCommand(event *UserRequestReceivedEvent) ([]eventsourcing.Event, error) {
 	messages := ro.buildChatHistory(ro.agg.ChatHistory, 10)
 	agentTools := ro.gatherAgentTools()
-	resp, err := ro.llmClient.CallLLM(messages, agentTools, requestID, "")
+	resp, err := ro.llmClient.CallLLM(messages, agentTools, event.RequestID, "")
 	if err != nil {
 		return nil, fmt.Errorf("LLM call failed: %v", err)
 	}
@@ -77,23 +67,24 @@ func (ro *RequestOrchestrator) DecideAgentCallCommand(data map[string]interface{
 		for _, call := range resp.Message.ToolCalls {
 			plug, err := ro.pluginManager.GetPlugin(call.Function.Name)
 			if err != nil {
-				return nil, fmt.Errorf("requisted plungin does not exist: %w", err)
+				return nil, fmt.Errorf("requested plugin does not exist: %w", err)
 			}
 			events = append(events, &AgentCallDecidedEvent{
-				EventType: "orchestration_AgentCallDecided",
-				RequestID: requestID,
+				RequestID: event.RequestID,
 				AgentName: plug.Name(),
 				Timestamp: eventsourcing.ISOTimestamp(),
 				Model:     plug.AgentModel(),
-				Query:     requestText,
+				Query:     event.RequestText,
 			})
 		}
 		return events, nil
 	}
 
-	// No agents needed
-	events = append(events, &RequestCompletedEvent{EventType: "orchestration_RequestCompleted", RequestID: requestID, ResponseText: resp.Message.Content})
-
+	events = append(events, &RequestCompletedEvent{
+		RequestID:    event.RequestID,
+		ResponseText: resp.Message.Content,
+		CompletedAt:  eventsourcing.ISOTimestamp(),
+	})
 	return events, nil
 }
 
@@ -120,55 +111,44 @@ func (ro *RequestOrchestrator) gatherAgentTools() []llmmodels.Tool {
 	}
 	return tools
 }
-func (ro *RequestOrchestrator) ExecuteToolCallCommand(data map[string]interface{}) ([]eventsourcing.Event, error) {
-	requestID, _ := data["RequestID"].(string)
-	toolCallID, _ := data["ToolCallID"].(string)
-	function, _ := data["Function"].(string)
-	args, _ := data["Arguments"].(map[string]interface{})
-	if requestID == "" || toolCallID == "" || function == "" {
-		return nil, fmt.Errorf("RequestID, ToolCallID, and Function are required")
-	}
-
+func (ro *RequestOrchestrator) ExecuteToolCallCommand(event *ToolCallRequestPlaced) ([]eventsourcing.Event, error) {
 	var events []eventsourcing.Event
 	events = append(events, &ToolCallStarted{
-		EventType:  "orchestration_ToolCallStarted",
-		RequestID:  requestID,
-		ToolCallID: toolCallID,
-		Function:   function,
+		RequestID:  event.RequestID,
+		ToolCallID: event.ToolCallID,
+		Function:   event.Function,
 		Timestamp:  eventsourcing.ISOTimestamp(),
 	})
 
-	allCommands := make(map[string]eventsourcing.Command)
+	allCommands := make(map[string]eventsourcing.CommandHandler)
 	for _, p := range ro.pluginManager.GetLLMPlugins() {
 		for name, command := range p.Commands() {
 			allCommands[name] = command
 		}
 	}
-	logging.Debug("calling tool %s, %+v", function, args)
-	handler, exists := allCommands[function]
+	logging.Debug("calling tool %s, %+v", event.Function, event.Arguments)
+	handler, exists := allCommands[event.Function]
 	if !exists {
-		return nil, fmt.Errorf("no handler for tool %s", function)
+		return nil, fmt.Errorf("no handler for tool %s", event.Function)
 	}
 
-	toolEvents, err := handler(args)
+	toolEvents, err := handler.Execute(event.Arguments) // Note: This still uses map[string]interface{}
 	if err != nil {
-		return nil, fmt.Errorf("tool %s failed: %v", function, err)
+		return nil, fmt.Errorf("tool %s failed: %v", event.Function, err)
 	}
-	logging.Debug("toolcall finished %s", function)
+	logging.Debug("toolcall finished %s", event.Function)
 
-	for _, event := range toolEvents {
+	for _, tevent := range toolEvents {
 		logging.Debug("returned events from handler: %+v", event)
-		events = append(events, event)
+		events = append(events, tevent)
 		events = append(events, &ToolCallCompleted{
-			EventType:  "orchestration_ToolCallCompleted",
-			RequestID:  requestID,
-			ToolCallID: toolCallID,
-			Function:   function,
-			Results:    map[string]interface{}{"succes": true, "result": toolEvents},
+			RequestID:  event.RequestID,
+			ToolCallID: event.ToolCallID,
+			Function:   event.Function,
+			Results:    map[string]interface{}{"success": true, "result": toolEvents},
 			Timestamp:  eventsourcing.ISOTimestamp(),
 		})
 	}
-
 	return events, nil
 }
 
@@ -206,41 +186,6 @@ func (ro *RequestOrchestrator) buildChatHistory(chat []chat.ChatMessage, maxMess
 	return messages
 }
 
-// gatherTools collects available tools from plugins
-func (ro *RequestOrchestrator) gatherTools() []llmmodels.Tool {
-	var tools []llmmodels.Tool
-	tools = append(tools, llmmodels.Tool{
-		Type: "function",
-		Function: map[string]interface{}{
-			"name":        "InitiatePluginCreation",
-			"description": "Start creating a new plugin based on user input",
-			"parameters": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"PluginName":  map[string]interface{}{"type": "string", "description": "Name of the plugin"},
-					"Description": map[string]interface{}{"type": "string", "description": "What the plugin does"},
-					"Goal":        map[string]interface{}{"type": "string", "description": "Purpose of the plugin"},
-					"Result":      map[string]interface{}{"type": "string", "description": "Expected output"},
-				},
-				"required": []string{"PluginName"},
-			},
-		},
-	})
-	for _, plugin := range ro.pluginManager.GetLLMPlugins() {
-		for name, schema := range plugin.Schemas() {
-			tools = append(tools, llmmodels.Tool{
-				Type: "function",
-				Function: map[string]interface{}{
-					"name":        name,
-					"description": schema["description"],
-					"parameters":  schema["parameters"],
-				},
-			})
-		}
-	}
-	return tools
-}
-
 // gatherPluginTools gathers tools specific to a given plugin
 func (ro *RequestOrchestrator) gatherPluginTools(plugin eventsourcing.Plugin) []llmmodels.Tool {
 	var tools []llmmodels.Tool
@@ -249,40 +194,37 @@ func (ro *RequestOrchestrator) gatherPluginTools(plugin eventsourcing.Plugin) []
 			Type: "function",
 			Function: map[string]interface{}{
 				"name":        name,
-				"description": schema["description"],
-				"parameters":  schema["parameters"],
+				"description": schema.Schema()["description"],
+				"parameters":  schema.Schema()["parameters"],
 			},
 		})
 	}
 	return tools
 }
 
-func (ro *RequestOrchestrator) ExecuteAgentCall(data map[string]interface{}) ([]eventsourcing.Event, error) {
-	agentName, _ := data["AgentName"].(string)
-	query, _ := data["Query"].(string)
-	requestID, _ := data["RequestID"].(string)
-	plugin, err := ro.pluginManager.GetPlugin(agentName)
+func (ro *RequestOrchestrator) ExecuteAgentCall(event *AgentCallDecidedEvent) ([]eventsourcing.Event, error) {
+	plugin, err := ro.pluginManager.GetPlugin(event.AgentName)
 	if err != nil {
 		return nil, fmt.Errorf("agent call failed: %w", err)
 	}
-	resp, err := ro.CallPluginAgent(plugin, query, requestID)
+
+	resp, err := ro.CallPluginAgent(plugin, event.Query, event.RequestID)
 	if err != nil {
 		return nil, fmt.Errorf("plugin call failed: %w", err)
 	}
+
 	var events []eventsourcing.Event
 	for i, toolCall := range resp.Message.ToolCalls {
-		event := &ToolCallRequestPlaced{
-			EventType:  "orchestration_ToolCallRequestPlaced",
-			RequestID:  requestID,
+		events = append(events, &ToolCallRequestPlaced{
+			RequestID:  event.RequestID,
 			Function:   toolCall.Function.Name,
 			Arguments:  toolCall.Function.Arguments,
 			Timestamp:  eventsourcing.ISOTimestamp(),
 			ToolCallID: fmt.Sprintf("toolrequest-%d", i),
-		}
-		events = append(events, event)
+		})
 	}
 	if len(events) == 0 {
-		// TODO agent calls no tools
+		// TODO: Handle case where agent calls no tools
 	}
 	return events, nil
 }
@@ -345,54 +287,31 @@ func (ro *RequestOrchestrator) CompleteRequestCommand(data map[string]interface{
 }
 
 func (ro *RequestOrchestrator) Initialize() {
-	// Register commands with the EventProcessor
-	ro.eventProcessor.RegisterCommand("ProcessUserRequest", ro.ProcessUserRequestCommand)
+	ro.eventProcessor.RegisterCommand("ProcessUserRequest", eventsourcing.NewCommand(ro.ProcessUserRequestCommand))
+	ro.eventProcessor.RegisterCommand("DecideAgentCall", eventsourcing.NewCommand(ro.DecideAgentCallCommand))
 	ro.eventBus.Subscribe("orchestration_UserRequestReceived", func(event eventsourcing.Event) error {
-		if e, ok := event.(*UserRequestReceivedEvent); ok {
-			data := map[string]interface{}{
-				"RequestID":   e.RequestID,
-				"RequestText": e.RequestText,
-			}
-			logging.Debug("passing data: %+v", data)
-			return ro.eventProcessor.ExecuteCommand("DecideAgentCall", data)
-		}
-		return nil
+		return ro.eventProcessor.ExecuteCommand("DecideAgentCall", event)
 	})
-	ro.eventProcessor.RegisterCommand("DecideAgentCall", ro.DecideAgentCallCommand)
+	ro.eventProcessor.RegisterCommand("ExecuteAgentCall", eventsourcing.NewCommand(ro.ExecuteAgentCall))
 	ro.eventBus.Subscribe("orchestration_AgentCallDecided", func(event eventsourcing.Event) error {
 		if e, ok := event.(*AgentCallDecidedEvent); ok {
-			data := map[string]interface{}{
-				"RequestID": e.RequestID,
-				"AgentName": e.AgentName,
-				"Timestamp": e.Timestamp,
-				"Query":     e.Query,
-			}
+			data := e // Directly pass the event
 			return ro.eventProcessor.ExecuteCommand("ExecuteAgentCall", data)
 		}
 		return nil
 	})
-	ro.eventProcessor.RegisterCommand("ExecuteAgentCall", ro.ExecuteAgentCall)
+	ro.eventProcessor.RegisterCommand("ExecuteToolCall", eventsourcing.NewCommand(ro.ExecuteToolCallCommand))
 	ro.eventBus.Subscribe("orchestration_ToolCallRequestPlaced", func(event eventsourcing.Event) error {
 		if e, ok := event.(*ToolCallRequestPlaced); ok {
-			data := map[string]interface{}{
-				"RequestID":  string(e.RequestID),
-				"ToolCallID": e.ToolCallID,
-				"Function":   e.Function,
-				"Arguments":  e.Arguments,
-			}
-			return ro.eventProcessor.ExecuteCommand("ExecuteToolCall", data)
+			return ro.eventProcessor.ExecuteCommand("ExecuteToolCall", e)
 		}
 		return nil
 	})
-	ro.eventProcessor.RegisterCommand("ExecuteToolCall", ro.ExecuteToolCallCommand)
+	ro.eventProcessor.RegisterCommand("CompleteRequest", eventsourcing.NewCommand(ro.CompleteRequestCommand))
 	ro.eventBus.Subscribe("orchestration_ToolCallCompleted", func(event eventsourcing.Event) error {
 		if e, ok := event.(*ToolCallCompleted); ok {
-			data := map[string]interface{}{
-				"RequestID": e.RequestID,
-			}
-			return ro.eventProcessor.ExecuteCommand("CompleteRequest", data)
+			return ro.eventProcessor.ExecuteCommand("CompleteRequest", e)
 		}
 		return nil
 	})
-	ro.eventProcessor.RegisterCommand("CompleteRequest", ro.CompleteRequestCommand)
 }

@@ -211,8 +211,8 @@ func (pm *PluginManager) loadPlugin(soFile string) (eventsourcing.Plugin, error)
 	return pluginInstance, nil
 }
 
-func (pm *PluginManager) RegisterCommands() map[string]eventsourcing.Command {
-	commands := make(map[string]eventsourcing.Command)
+func (pm *PluginManager) RegisterCommands() map[string]eventsourcing.CommandHandler {
+	commands := make(map[string]eventsourcing.CommandHandler)
 	for _, p := range pm.plugins {
 		for name, handler := range p.Commands() {
 			if _, exists := commands[name]; exists {

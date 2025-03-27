@@ -81,8 +81,8 @@ type PluginType string
 
 // Plugin defines the interface for plugins in the system
 type Plugin interface {
-	Commands() map[string]Command
-	Schemas() map[string]map[string]interface{}
+	Commands() map[string]CommandHandler
+	Schemas() map[string]CommandInput
 	Type() PluginType
 	Name() string
 	Aggregate() Aggregate
@@ -95,14 +95,6 @@ type Aggregate interface {
 	ID() string
 	ApplyEvent(event Event) error
 	GetCustomUI() fyne.CanvasObject
-}
-
-// CommandHandler defines the signature for command handling functions, now with access to state
-type Command func(data map[string]interface{}) ([]Event, error)
-
-// DefaultEventHandler is a no-op handler for plugins that don't handle events
-func DefaultEventHandler(event Event, commands map[string]Command) ([]Event, error) {
-	return nil, nil
 }
 
 // Counter for generating unique IDs
