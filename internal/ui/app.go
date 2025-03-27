@@ -3,7 +3,6 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"fyne.io/fyne/v2"
@@ -13,7 +12,6 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"mindpalace/internal/audio"
-	"mindpalace/internal/chat"
 	"mindpalace/internal/orchestration"
 	"mindpalace/pkg/aggregate"
 	"mindpalace/pkg/eventsourcing"
@@ -78,13 +76,9 @@ func NewApp(ep *eventsourcing.EventProcessor, agg *aggregate.AggregateManager, o
 		}
 	}()
 
-	ep.EventBus.Subscribe("RequestCompleted", func(event eventsourcing.Event, state map[string]interface{}, commands map[string]eventsourcing.CommandHandler) ([]eventsourcing.Event, error) {
+	ep.EventBus.SubscribeAll(func(event eventsourcing.Event) error {
 		a.eventChan <- event
-		return nil, nil
-	})
-	ep.EventBus.Subscribe("UserRequestReceived", func(event eventsourcing.Event, state map[string]interface{}, commands map[string]eventsourcing.CommandHandler) ([]eventsourcing.Event, error) {
-		a.eventChan <- event
-		return nil, nil
+		return nil
 	})
 
 	a.chatScroll.Direction = container.ScrollVerticalOnly
@@ -137,7 +131,7 @@ func (a *App) InitUI() {
 	a.eventLog.OnUnselected = func(id widget.ListItemID) {
 		a.eventDetail.SetText("Select an event to view details")
 	}
-	a.RebuildState()
+	a.refreshUI()
 }
 
 // Run starts the UI application
@@ -230,10 +224,13 @@ func (a *App) Run() {
 				processingSpinner.Show()
 			}, false)
 
-			err := a.orchestrator.ProcessRequest(transcriptionText, "")
+			err := a.eventProcessor.ExecuteCommand("ProcessUserRequest", map[string]interface{}{
+				"requestText": transcriptionText,
+			})
 			if err != nil {
 				logging.Error(err.Error())
 			}
+
 			fyne.CurrentApp().Driver().DoFromGoroutine(func() {
 				a.transcriptBox.SetText("")
 				a.transcriptBox.Enable()
@@ -260,8 +257,12 @@ func (a *App) Run() {
 	// Plugin tabs
 	a.pluginTabs = container.NewAppTabs()
 	for _, plugin := range a.plugins {
+		agg, err := a.aggManager.AggregateByName(plugin.Name())
+		if err != nil {
+			logging.Error("aggregate not found")
+		}
 		logging.Debug("adding plugin tabs: %s", plugin.Name())
-		a.pluginTabs.Append(container.NewTabItem(plugin.Name(), plugin.GetCustomUI(a.aggManager.PluginAggregates[plugin.Name()])))
+		a.pluginTabs.Append(container.NewTabItem(plugin.Name(), agg.GetCustomUI()))
 	}
 
 	// Event log
@@ -282,52 +283,24 @@ func (a *App) Run() {
 
 // refreshUI updates the UI components
 func (a *App) refreshUI() {
-	a.ChatHistory.Objects = nil
-
-	for _, msg := range a.aggManager.ChatHistory {
-		var content fyne.CanvasObject
-		if strings.Contains(msg.Role, "[think]") {
-			detailsContent := parseMarkdownToCanvas(msg.Content)
-			detailsItem := widget.NewAccordionItem("Thinking details...", detailsContent)
-			details := widget.NewAccordion(detailsItem)
-			details.MultiOpen = false
-			header := widget.NewLabel("🧠 Assistant thinking process...")
-			header.TextStyle = fyne.TextStyle{Italic: true}
-			content = container.NewVBox(header, details)
-		} else {
-			messageContainer := container.NewVBox()
-			roleLabel := widget.NewLabel("You")
-			if msg.Role != "You" {
-				roleLabel.SetText("MindPalace")
-			}
-			roleLabel.TextStyle = fyne.TextStyle{Bold: true}
-			messageContent := parseMarkdownToCanvas(msg.Content)
-			messageContainer.Add(roleLabel)
-			messageContainer.Add(messageContent)
-			content = container.NewPadded(messageContainer)
-		}
-
-		if len(a.ChatHistory.Objects) > 0 {
-			a.ChatHistory.Add(widget.NewSeparator())
-		}
-		a.ChatHistory.Add(content)
+	orchAgg, err := a.aggManager.AggregateByName("orchestration")
+	if err == nil {
+		chatContent := orchAgg.GetCustomUI().(*fyne.Container)
+		a.ChatHistory.Objects = chatContent.Objects // Update content directly
+		a.ChatHistory.Refresh()
+		a.chatScroll.ScrollToBottom() // Scroll to the latest message
+	} else {
+		logging.Error("Failed to get orchestration aggregate: %v", err)
 	}
 
-	a.ChatHistory.Refresh()
-	if len(a.ChatHistory.Objects) > 0 {
-		a.chatScroll.ScrollToBottom()
-	}
-
+	// Refresh plugin tabs if needed
 	if a.pluginTabs != nil && len(a.pluginTabs.Items) > 0 {
 		for i, tab := range a.pluginTabs.Items {
 			pluginName := tab.Text
 			for _, plugin := range a.plugins {
-				logging.Debug("plugin name %s", plugin.Name())
 				if plugin.Name() == pluginName {
-					logging.Debug("aggs %+v", a.aggManager.PluginAggregates)
 					if agg, exists := a.aggManager.PluginAggregates[pluginName]; exists {
-						logging.Debug("calling getui %+v", agg)
-						a.pluginTabs.Items[i].Content = plugin.GetCustomUI(agg)
+						a.pluginTabs.Items[i].Content = agg.GetCustomUI()
 					}
 				}
 			}
@@ -335,26 +308,13 @@ func (a *App) refreshUI() {
 		a.pluginTabs.Refresh()
 	}
 
+	// Refresh event log
 	events := a.eventProcessor.GetEvents()
 	a.eventLog.Length = func() int { return len(events) }
 	a.eventLog.UpdateItem = func(id widget.ListItemID, obj fyne.CanvasObject) {
 		obj.(*widget.Label).SetText(events[id].Type())
 	}
 	a.eventLog.Refresh()
-}
-
-// RebuildState rebuilds the state from events
-func (a *App) RebuildState() {
-	events := a.eventProcessor.GetEvents()
-	eventsCopy := make([]eventsourcing.Event, len(events))
-	copy(eventsCopy, events)
-
-	for _, event := range eventsCopy {
-		if err := a.aggManager.ApplyEvent(event); err != nil {
-			logging.Error("Failed to apply event during rebuild: %v", err)
-		}
-	}
-	a.refreshUI()
 }
 
 // parseMarkdownToCanvas converts Markdown text into a styled Fyne CanvasObject (unchanged)
@@ -461,71 +421,4 @@ func parseInlineMarkdown(text string) []widget.RichTextSegment {
 	}
 
 	return segments
-}
-
-// parseStreamingContent extracts think tags and regular text from streaming content (unchanged)
-func parseStreamingContent(content string) (thinks []string, regular string) {
-	re := regexp.MustCompile(`(?s)<think>(.*?)</think>`)
-	matches := re.FindAllStringSubmatch(content, -1)
-	for _, match := range matches {
-		thinks = append(thinks, match[1])
-	}
-	regular = re.ReplaceAllString(content, "")
-	return thinks, strings.TrimSpace(regular)
-}
-
-// handleStreamingUpdate processes streaming updates from the LLM and updates the UI (unchanged)
-func (a *App) handleStreamingUpdate(data map[string]interface{}) {
-	requestID, _ := data["RequestID"].(string)
-	partialContent, _ := data["PartialContent"].(string)
-	isFinal, _ := data["IsFinal"].(bool)
-
-	thinks, regularContent := parseStreamingContent(partialContent)
-
-	if len(thinks) > 0 {
-		thinkContent := strings.Join(thinks, "\n\n")
-		thinkMessageFound := false
-		for i, msg := range a.aggManager.ChatHistory {
-			if msg.RequestID == requestID && msg.Role == "Assistant [think]" {
-				a.aggManager.ChatHistory[i].Content = thinkContent
-				thinkMessageFound = true
-				break
-			}
-		}
-		if !thinkMessageFound {
-			thinkMessage := chat.ChatMessage{
-				Role:              "Assistant [think]",
-				Content:           thinkContent,
-				RequestID:         requestID,
-				StreamingComplete: true,
-			}
-			a.aggManager.ChatHistory = append(a.aggManager.ChatHistory, thinkMessage)
-		}
-	}
-
-	var assistantMessageFound bool
-	for i, msg := range a.aggManager.ChatHistory {
-		if msg.RequestID != requestID || msg.Role != "MindPalace" {
-			continue
-		}
-		assistantMessageFound = true
-		a.aggManager.ChatHistory[i].Content = regularContent
-		if isFinal {
-			a.aggManager.ChatHistory[i].StreamingComplete = true
-		}
-		break
-	}
-
-	if !assistantMessageFound && regularContent != "" {
-		newMessage := chat.ChatMessage{
-			Role:              "MindPalace",
-			Content:           regularContent,
-			RequestID:         requestID,
-			StreamingComplete: isFinal,
-		}
-		a.aggManager.ChatHistory = append(a.aggManager.ChatHistory, newMessage)
-	}
-
-	a.refreshUI()
-	a.chatScroll.ScrollToBottom()
 }

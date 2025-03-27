@@ -5,8 +5,8 @@ import (
 	"mindpalace/pkg/logging"
 )
 
-func InitiatePluginCreationCommand(data map[string]interface{}, state map[string]interface{}) ([]eventsourcing.Event, error) {
-	logging.Trace("called InitiatePluginCreationCommand %+v, %+v", data, state)
+func InitiatePluginCreationCommand(data map[string]interface{}) ([]eventsourcing.Event, error) {
+	logging.Trace("called InitiatePluginCreationCommand %+v, %+v", data)
 	return nil, nil
 }
 

@@ -1,7 +1,7 @@
 package aggregate
 
 import (
-	"mindpalace/internal/chat"
+	"fmt"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
 	"strings"
@@ -11,15 +11,12 @@ import (
 type AggregateManager struct {
 	PluginAggregates map[string]eventsourcing.Aggregate // Map of plugin name to its aggregate
 	SystemAggragate  map[string]eventsourcing.Aggregate
-	ChatHistory      []chat.ChatMessage // Core still manages chat history
-	AllCommands      map[string]eventsourcing.CommandHandler
 }
 
 // NewAggregateManager creates a new AggregateManager.
 func NewAggregateManager() *AggregateManager {
 	return &AggregateManager{
 		PluginAggregates: make(map[string]eventsourcing.Aggregate),
-		AllCommands:      make(map[string]eventsourcing.CommandHandler),
 	}
 }
 
@@ -27,10 +24,31 @@ func NewAggregateManager() *AggregateManager {
 func (m *AggregateManager) RegisterAggregate(name string, agg eventsourcing.Aggregate) {
 	m.PluginAggregates[name] = agg
 	// Merge plugin commands into the global command set
-	for cmdName, cmdHandler := range agg.GetAllCommands() {
-		m.AllCommands[cmdName] = cmdHandler
-	}
 	logging.Info("Registered aggregate for plugin: %s", name)
+}
+
+func (m *AggregateManager) AggregateByName(requestedName string) (eventsourcing.Aggregate, error) {
+	for pluginAggName, agg := range m.PluginAggregates {
+		if requestedName == pluginAggName {
+			return agg, nil
+		}
+	}
+	for pluginAggName, agg := range m.SystemAggragate {
+		if requestedName == pluginAggName {
+			return agg, nil
+		}
+	}
+	return nil, fmt.Errorf("Unable to get aggregate by name")
+}
+
+func (m *AggregateManager) AllAggregates() (aggs []eventsourcing.Aggregate) {
+	for _, agg := range m.PluginAggregates {
+		aggs = append(aggs, agg)
+	}
+	for _, agg := range m.SystemAggragate {
+		aggs = append(aggs, agg)
+	}
+	return aggs
 }
 
 // ID returns a generic identifier for the manager (not tied to a single aggregate).
@@ -38,44 +56,17 @@ func (m *AggregateManager) ID() string {
 	return "system"
 }
 
-// GetState aggregates state from all plugin aggregates.
-func (m *AggregateManager) GetState() map[string]interface{} {
-	state := make(map[string]interface{})
-	for pluginName, agg := range m.PluginAggregates {
-		state[pluginName] = agg.GetState()
-	}
-	state["ChatHistory"] = m.ChatHistory
-	return state
-}
-
-// GetAllCommands returns the combined command handlers from all plugins.
-func (m *AggregateManager) GetAllCommands() map[string]eventsourcing.CommandHandler {
-	return m.AllCommands
-}
-
 // ApplyEvent routes the event to the appropriate plugin aggregate or handles core events.
-func (m *AggregateManager) ApplyEvent(event eventsourcing.Event) error {
-	eventType := event.Type()
-
-	// Core events (e.g., chat-related) handled directly
-	// Route to plugin aggregate based on event type prefix or metadata
-	pluginName := determinePluginName(eventType)
-	if pluginName == "" {
-		logging.Debug("No plugin identified for event type: %s", eventType)
-		return nil // Skip unhandled events
+func (m *AggregateManager) RebuildState(events []eventsourcing.Event) error {
+	for _, event := range events {
+		for _, agg := range m.AllAggregates() {
+			err := agg.ApplyEvent(event)
+			if err != nil {
+				return fmt.Errorf("Failed to apply event %s: %v", event.Type(), err)
+			}
+		}
 	}
-
-	agg, exists := m.PluginAggregates[pluginName]
-	if !exists {
-		logging.Debug("No aggregate registered for plugin: %s", pluginName)
-		return nil
-	}
-
-	err := agg.ApplyEvent(event)
-	if err != nil {
-		logging.Error("Failed to apply event %s to plugin %s: %v", eventType, pluginName, err)
-	}
-	return err
+	return nil
 }
 
 // Helper to determine plugin name from event type (e.g., "taskmanager_TaskCreated" -> "taskmanager")

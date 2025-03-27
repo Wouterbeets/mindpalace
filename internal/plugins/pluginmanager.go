@@ -18,16 +18,18 @@ type PluginManager struct {
 }
 
 func NewPluginManager(ep *eventsourcing.EventProcessor) *PluginManager {
-	return &PluginManager{
+	pm := &PluginManager{
 		eventProcessor: ep,
 	}
+	pm.LoadPlugins("plugins")
+	return pm
 }
 
 // In PluginManager
 func (pm *PluginManager) GetLLMPlugins() []eventsourcing.Plugin {
 	var llmPlugins []eventsourcing.Plugin
 	for _, plugin := range pm.plugins {
-		logging.Trace("Checking plugin %s for LLM capability, schemas: %v", plugin.Name(), plugin.Schemas())
+		logging.Trace("Checking plugin %s for LLM capability, schemas: %v", plugin.Name())
 		if plugin.Type() == eventsourcing.LLMPlugin {
 			llmPlugins = append(llmPlugins, plugin)
 		}
@@ -35,8 +37,17 @@ func (pm *PluginManager) GetLLMPlugins() []eventsourcing.Plugin {
 	return llmPlugins
 }
 
+func (pm *PluginManager) GetPlugin(name string) (eventsourcing.Plugin, error) {
+	for _, plugin := range pm.plugins {
+		if plugin.Name() == name {
+			return plugin, nil
+		}
+	}
+	return nil, fmt.Errorf("plugin '%s' not found", name)
+}
+
 // LoadPlugins finds, compiles if needed, and loads all plugins from the given directory
-func (pm *PluginManager) LoadPlugins(pluginDir string, ep *eventsourcing.EventProcessor) {
+func (pm *PluginManager) LoadPlugins(pluginDir string) {
 	logging.Debug("Starting to load plugins from directory: %s", pluginDir)
 
 	pluginDirs, err := pm.discoverPluginDirectories(pluginDir)
@@ -83,10 +94,6 @@ func (pm *PluginManager) LoadPlugins(pluginDir string, ep *eventsourcing.EventPr
 		if plugin != nil {
 			pm.plugins = append(pm.plugins, plugin)
 			logging.Info("Successfully loaded plugin: %s", plugin.Name())
-
-			for eventType, handler := range plugin.EventHandlers() {
-				ep.RegisterEventHandler(eventType, handler)
-			}
 		}
 	}
 
@@ -204,8 +211,8 @@ func (pm *PluginManager) loadPlugin(soFile string) (eventsourcing.Plugin, error)
 	return pluginInstance, nil
 }
 
-func (pm *PluginManager) RegisterCommands() map[string]eventsourcing.CommandHandler {
-	commands := make(map[string]eventsourcing.CommandHandler)
+func (pm *PluginManager) RegisterCommands() map[string]eventsourcing.Command {
+	commands := make(map[string]eventsourcing.Command)
 	for _, p := range pm.plugins {
 		for name, handler := range p.Commands() {
 			if _, exists := commands[name]; exists {

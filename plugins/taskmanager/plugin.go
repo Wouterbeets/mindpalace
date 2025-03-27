@@ -21,6 +21,7 @@ func init() {
 	eventsourcing.RegisterEvent("taskmanager_TaskCreated", func() eventsourcing.Event { return &TaskCreatedEvent{} })
 	eventsourcing.RegisterEvent("taskmanager_TaskUpdated", func() eventsourcing.Event { return &TaskUpdatedEvent{} })
 	eventsourcing.RegisterEvent("taskmanager_TaskCompleted", func() eventsourcing.Event { return &TaskCompletedEvent{} })
+	eventsourcing.RegisterEvent("taskmanager_TasksListed", func() eventsourcing.Event { return &TasksListedEvent{} })
 	eventsourcing.RegisterEvent("taskmanager_TaskDeleted", func() eventsourcing.Event { return &TaskDeletedEvent{} })
 }
 
@@ -54,7 +55,7 @@ type Task struct {
 // TaskAggregate manages the state of tasks with thread safety
 type TaskAggregate struct {
 	tasks    map[string]*Task
-	commands map[string]eventsourcing.CommandHandler
+	commands map[string]eventsourcing.Command
 	mu       sync.RWMutex
 }
 
@@ -62,7 +63,7 @@ type TaskAggregate struct {
 func NewTaskAggregate() *TaskAggregate {
 	return &TaskAggregate{
 		tasks:    make(map[string]*Task),
-		commands: make(map[string]eventsourcing.CommandHandler),
+		commands: make(map[string]eventsourcing.Command),
 	}
 }
 
@@ -76,7 +77,7 @@ func (a *TaskAggregate) ApplyEvent(event eventsourcing.Event) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	data, err := event.Marshal()
+	data, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal event %s: %v", event.Type(), err)
 	}
@@ -147,7 +148,7 @@ func (a *TaskAggregate) ApplyEvent(event eventsourcing.Event) error {
 		delete(a.tasks, e.TaskID)
 
 	default:
-		return fmt.Errorf("unknown event type: %s", event.Type())
+		return nil
 	}
 	return nil
 }
@@ -161,18 +162,48 @@ type TaskPlugin struct {
 func NewPlugin() eventsourcing.Plugin {
 	agg := NewTaskAggregate()
 	p := &TaskPlugin{aggregate: agg}
-	agg.commands = map[string]eventsourcing.CommandHandler{
-		"CreateTask":   p.createTaskHandler,
-		"UpdateTask":   p.updateTaskHandler,
-		"DeleteTask":   p.deleteTaskHandler,
-		"CompleteTask": p.completeTaskHandler,
-		"ListTasks":    p.listTasksHandler,
+	agg.commands = map[string]eventsourcing.Command{
+		"CreateTask": func(data map[string]interface{}) ([]eventsourcing.Event, error) {
+			var input CreateTaskInput
+			if err := mapToStruct(data, &input); err != nil {
+				return nil, err
+			}
+			return p.createTaskHandler(input)
+		},
+		"UpdateTask": func(data map[string]interface{}) ([]eventsourcing.Event, error) {
+			var input UpdateTaskInput
+			if err := mapToStruct(data, &input); err != nil {
+				return nil, err
+			}
+			return p.updateTaskHandler(input)
+		},
+		"DeleteTask": func(data map[string]interface{}) ([]eventsourcing.Event, error) {
+			var input DeleteTaskInput
+			if err := mapToStruct(data, &input); err != nil {
+				return nil, err
+			}
+			return p.deleteTaskHandler(input)
+		},
+		"CompleteTask": func(data map[string]interface{}) ([]eventsourcing.Event, error) {
+			var input CompleteTaskInput
+			if err := mapToStruct(data, &input); err != nil {
+				return nil, err
+			}
+			return p.completeTaskHandler(input)
+		},
+		"ListTasks": func(data map[string]interface{}) ([]eventsourcing.Event, error) {
+			var input ListTasksInput
+			if err := mapToStruct(data, &input); err != nil {
+				return nil, err
+			}
+			return p.listTasksHandler(input)
+		},
 	}
 	return p
 }
 
 // Commands returns the command handlers
-func (p *TaskPlugin) Commands() map[string]eventsourcing.CommandHandler {
+func (p *TaskPlugin) Commands() map[string]eventsourcing.Command {
 	return p.aggregate.commands
 }
 
@@ -183,96 +214,205 @@ func (p *TaskPlugin) Name() string {
 
 // Schemas defines the command schemas
 func (p *TaskPlugin) Schemas() map[string]map[string]interface{} {
-	taskProperties := map[string]interface{}{
-		"Title": map[string]interface{}{
-			"type":        "string",
-			"description": "The title of the task",
-		},
-		"Description": map[string]interface{}{
-			"type":        "string",
-			"description": "Detailed description of the task",
-		},
-		"Status": map[string]interface{}{
-			"type":        "string",
-			"description": "Current status of the task",
-			"enum":        []string{StatusPending, StatusInProgress, StatusCompleted, StatusBlocked},
-		},
-		"Priority": map[string]interface{}{
-			"type":        "string",
-			"description": "Priority level of the task",
-			"enum":        []string{PriorityLow, PriorityMedium, PriorityHigh, PriorityCritical},
-		},
-		"Deadline": map[string]interface{}{
-			"type":        "string",
-			"description": "Deadline for task completion (ISO 8601)",
-		},
-		"Dependencies": map[string]interface{}{
-			"type":        "array",
-			"description": "Task IDs that must be completed first",
-			"items":       map[string]interface{}{"type": "string"},
-		},
-		"Tags": map[string]interface{}{
-			"type":        "array",
-			"description": "Tags for categorizing the task",
-			"items":       map[string]interface{}{"type": "string"},
+	return map[string]map[string]interface{}{
+		"CreateTask":   (&CreateTaskInput{}).Schema(),
+		"UpdateTask":   (&UpdateTaskInput{}).Schema(),
+		"DeleteTask":   (&DeleteTaskInput{}).Schema(),
+		"CompleteTask": (&CompleteTaskInput{}).Schema(),
+		"ListTasks":    (&ListTasksInput{}).Schema(),
+	}
+}
+
+// Command Input Structs with Schema Generation
+
+// CreateTaskInput defines the input for creating a task
+type CreateTaskInput struct {
+	Title        string   `json:"Title"`
+	Description  string   `json:"Description,omitempty"`
+	Status       string   `json:"Status,omitempty"`
+	Priority     string   `json:"Priority,omitempty"`
+	Deadline     string   `json:"Deadline,omitempty"`
+	Dependencies []string `json:"Dependencies,omitempty"`
+	Tags         []string `json:"Tags,omitempty"`
+}
+
+func (c *CreateTaskInput) Schema() map[string]interface{} {
+	return map[string]interface{}{
+		"description": "Creates a new task",
+		"parameters": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"Title": map[string]interface{}{
+					"type":        "string",
+					"description": "The title of the task",
+				},
+				"Description": map[string]interface{}{
+					"type":        "string",
+					"description": "Detailed description of the task",
+				},
+				"Status": map[string]interface{}{
+					"type":        "string",
+					"description": "Current status of the task",
+					"enum":        []string{StatusPending, StatusInProgress, StatusCompleted, StatusBlocked},
+				},
+				"Priority": map[string]interface{}{
+					"type":        "string",
+					"description": "Priority level of the task",
+					"enum":        []string{PriorityLow, PriorityMedium, PriorityHigh, PriorityCritical},
+				},
+				"Deadline": map[string]interface{}{
+					"type":        "string",
+					"description": "Deadline for task completion (ISO 8601)",
+				},
+				"Dependencies": map[string]interface{}{
+					"type":        "array",
+					"description": "Task IDs that must be completed first",
+					"items":       map[string]interface{}{"type": "string"},
+				},
+				"Tags": map[string]interface{}{
+					"type":        "array",
+					"description": "Tags for categorizing the task",
+					"items":       map[string]interface{}{"type": "string"},
+				},
+			},
+			"required": []string{"Title"},
 		},
 	}
+}
 
-	return map[string]map[string]interface{}{
-		"CreateTask": {
-			"description": "Creates a new task",
-			"parameters": map[string]interface{}{
-				"type":       "object",
-				"properties": taskProperties,
-				"required":   []string{"Title"},
-			},
-		},
-		"UpdateTask": {
-			"description": "Updates an existing task",
-			"parameters": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"TaskID":       map[string]interface{}{"type": "string", "description": "ID of the task to update"},
-					"Title":        taskProperties["Title"],
-					"Description":  taskProperties["Description"],
-					"Status":       taskProperties["Status"],
-					"Priority":     taskProperties["Priority"],
-					"Deadline":     taskProperties["Deadline"],
-					"Dependencies": taskProperties["Dependencies"],
-					"Tags":         taskProperties["Tags"],
+// UpdateTaskInput defines the input for updating a task
+type UpdateTaskInput struct {
+	TaskID       string   `json:"TaskID"`
+	Title        string   `json:"Title,omitempty"`
+	Description  string   `json:"Description,omitempty"`
+	Status       string   `json:"Status,omitempty"`
+	Priority     string   `json:"Priority,omitempty"`
+	Deadline     string   `json:"Deadline,omitempty"`
+	Dependencies []string `json:"Dependencies,omitempty"`
+	Tags         []string `json:"Tags,omitempty"`
+}
+
+func (u *UpdateTaskInput) Schema() map[string]interface{} {
+	return map[string]interface{}{
+		"description": "Updates an existing task",
+		"parameters": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"TaskID": map[string]interface{}{
+					"type":        "string",
+					"description": "ID of the task to update",
 				},
-				"required": []string{"TaskID"},
-			},
-		},
-		"DeleteTask": {
-			"description": "Deletes a task",
-			"parameters": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"TaskID": map[string]interface{}{"type": "string", "description": "ID of the task to delete"},
+				"Title": map[string]interface{}{
+					"type":        "string",
+					"description": "The title of the task",
 				},
-				"required": []string{"TaskID"},
-			},
-		},
-		"CompleteTask": {
-			"description": "Marks a task as completed",
-			"parameters": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"TaskID":          map[string]interface{}{"type": "string", "description": "ID of the task to complete"},
-					"CompletionNotes": map[string]interface{}{"type": "string", "description": "Notes about completion"},
+				"Description": map[string]interface{}{
+					"type":        "string",
+					"description": "Detailed description of the task",
 				},
-				"required": []string{"TaskID"},
+				"Status": map[string]interface{}{
+					"type":        "string",
+					"description": "Current status of the task",
+					"enum":        []string{StatusPending, StatusInProgress, StatusCompleted, StatusBlocked},
+				},
+				"Priority": map[string]interface{}{
+					"type":        "string",
+					"description": "Priority level of the task",
+					"enum":        []string{PriorityLow, PriorityMedium, PriorityHigh, PriorityCritical},
+				},
+				"Deadline": map[string]interface{}{
+					"type":        "string",
+					"description": "Deadline for task completion (ISO 8601)",
+				},
+				"Dependencies": map[string]interface{}{
+					"type":        "array",
+					"description": "Task IDs that must be completed first",
+					"items":       map[string]interface{}{"type": "string"},
+				},
+				"Tags": map[string]interface{}{
+					"type":        "array",
+					"description": "Tags for categorizing the task",
+					"items":       map[string]interface{}{"type": "string"},
+				},
 			},
+			"required": []string{"TaskID"},
 		},
-		"ListTasks": {
-			"description": "Lists tasks with optional filtering",
-			"parameters": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"Status":   map[string]interface{}{"type": "string", "enum": []string{"All", StatusPending, StatusInProgress, StatusCompleted, StatusBlocked}},
-					"Priority": map[string]interface{}{"type": "string", "enum": []string{"All", PriorityLow, PriorityMedium, PriorityHigh, PriorityCritical}},
-					"Tag":      map[string]interface{}{"type": "string", "description": "Filter by tag"},
+	}
+}
+
+// DeleteTaskInput defines the input for deleting a task
+type DeleteTaskInput struct {
+	TaskID string `json:"TaskID"`
+}
+
+func (d *DeleteTaskInput) Schema() map[string]interface{} {
+	return map[string]interface{}{
+		"description": "Deletes a task",
+		"parameters": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"TaskID": map[string]interface{}{
+					"type":        "string",
+					"description": "ID of the task to delete",
+				},
+			},
+			"required": []string{"TaskID"},
+		},
+	}
+}
+
+// CompleteTaskInput defines the input for completing a task
+type CompleteTaskInput struct {
+	TaskID          string `json:"TaskID"`
+	CompletionNotes string `json:"CompletionNotes,omitempty"`
+}
+
+func (c *CompleteTaskInput) Schema() map[string]interface{} {
+	return map[string]interface{}{
+		"description": "Marks a task as completed",
+		"parameters": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"TaskID": map[string]interface{}{
+					"type":        "string",
+					"description": "ID of the task to complete",
+				},
+				"CompletionNotes": map[string]interface{}{
+					"type":        "string",
+					"description": "Notes about completion",
+				},
+			},
+			"required": []string{"TaskID"},
+		},
+	}
+}
+
+// ListTasksInput defines the input for listing tasks
+type ListTasksInput struct {
+	Status   string `json:"Status,omitempty"`
+	Priority string `json:"Priority,omitempty"`
+	Tag      string `json:"Tag,omitempty"`
+}
+
+func (l *ListTasksInput) Schema() map[string]interface{} {
+	return map[string]interface{}{
+		"description": "Lists tasks with optional filtering",
+		"parameters": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"Status": map[string]interface{}{
+					"type":        "string",
+					"description": "Filter by status",
+					"enum":        []string{"All", StatusPending, StatusInProgress, StatusCompleted, StatusBlocked},
+				},
+				"Priority": map[string]interface{}{
+					"type":        "string",
+					"description": "Filter by priority",
+					"enum":        []string{"All", PriorityLow, PriorityMedium, PriorityHigh, PriorityCritical},
+				},
+				"Tag": map[string]interface{}{
+					"type":        "string",
+					"description": "Filter by tag",
 				},
 			},
 		},
@@ -281,15 +421,11 @@ func (p *TaskPlugin) Schemas() map[string]map[string]interface{} {
 
 // Event Types
 type TasksListedEvent struct {
-	EventType string   `json:"event_type"`
-	TaskIDs   []string `json:"task_ids"`
+	EventType string  `json:"event_type"`
+	Tasks     []*Task `json:"listed_tasks"`
 }
 
-func (e *TasksListedEvent) Type() string { return "taskmanager_TasksListed" }
-func (e *TasksListedEvent) Marshal() ([]byte, error) {
-	e.EventType = e.Type()
-	return json.Marshal(e)
-}
+func (e *TasksListedEvent) Type() string                { return "taskmanager_TasksListed" }
 func (e *TasksListedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
 
 type TaskCreatedEvent struct {
@@ -380,129 +516,128 @@ func validatePriority(priority string) bool {
 	return priority == PriorityLow || priority == PriorityMedium || priority == PriorityHigh || priority == PriorityCritical
 }
 
+func mapToStruct(data map[string]interface{}, target interface{}) error {
+	bytes, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("invalid parameters: %v", err)
+	}
+	return json.Unmarshal(bytes, target)
+}
+
 // Command Handlers
-func (p *TaskPlugin) createTaskHandler(data map[string]interface{}, state map[string]interface{}) ([]eventsourcing.Event, error) {
-	title, ok := data["Title"].(string)
-	if !ok || title == "" {
+func (p *TaskPlugin) createTaskHandler(input CreateTaskInput) ([]eventsourcing.Event, error) {
+	if input.Title == "" {
 		return nil, fmt.Errorf("title is required and must be a non-empty string")
 	}
 
 	event := &TaskCreatedEvent{
-		TaskID:   generateTaskID(),
-		Title:    title,
-		Status:   StatusPending,
-		Priority: PriorityMedium,
+		EventType:    "taskmanager_TaskCreated",
+		TaskID:       generateTaskID(),
+		Title:        input.Title,
+		Description:  input.Description,
+		Status:       StatusPending,  // Default
+		Priority:     PriorityMedium, // Default
+		Deadline:     input.Deadline,
+		Dependencies: input.Dependencies,
+		Tags:         input.Tags,
 	}
-	if desc, ok := data["Description"].(string); ok {
-		event.Description = desc
+
+	if input.Status != "" && validateStatus(input.Status) {
+		event.Status = input.Status
 	}
-	if status, ok := data["Status"].(string); ok && validateStatus(status) {
-		event.Status = status
+	if input.Priority != "" && validatePriority(input.Priority) {
+		event.Priority = input.Priority
 	}
-	if priority, ok := data["Priority"].(string); ok && validatePriority(priority) {
-		event.Priority = priority
-	}
-	if deadline, ok := data["Deadline"].(string); ok {
-		if t, err := time.Parse(time.RFC3339, deadline); err == nil {
-			event.Deadline = t.Format(time.RFC3339)
+	if input.Deadline != "" {
+		if _, err := time.Parse(time.RFC3339, input.Deadline); err != nil {
+			return nil, fmt.Errorf("invalid deadline format: %v", err)
 		}
 	}
-	if deps, ok := data["Dependencies"].([]interface{}); ok {
-		event.Dependencies = convertToStringSlice(deps)
-	}
-	if tags, ok := data["Tags"].([]interface{}); ok {
-		event.Tags = convertToStringSlice(tags)
-	}
-	return []eventsourcing.Event{event}, nil
 
+	return []eventsourcing.Event{event}, nil
 }
 
-func (p *TaskPlugin) updateTaskHandler(data map[string]interface{}, state map[string]interface{}) ([]eventsourcing.Event, error) {
-	taskID, ok := data["TaskID"].(string)
-	if !ok || taskID == "" {
+func (p *TaskPlugin) updateTaskHandler(input UpdateTaskInput) ([]eventsourcing.Event, error) {
+	if input.TaskID == "" {
 		return nil, fmt.Errorf("taskID is required and must be a non-empty string")
 	}
 
 	p.aggregate.mu.RLock()
-	_, exists := p.aggregate.tasks[taskID]
+	_, exists := p.aggregate.tasks[input.TaskID]
 	p.aggregate.mu.RUnlock()
 	if !exists {
-		return nil, fmt.Errorf("task %s not found", taskID)
+		return nil, fmt.Errorf("task %s not found", input.TaskID)
 	}
 
-	event := &TaskUpdatedEvent{TaskID: taskID}
-	if title, ok := data["Title"].(string); ok && title != "" {
-		event.Title = title
+	event := &TaskUpdatedEvent{
+		EventType:    "taskmanager_TaskUpdated",
+		TaskID:       input.TaskID,
+		Title:        input.Title,
+		Description:  input.Description,
+		Status:       input.Status,
+		Priority:     input.Priority,
+		Deadline:     input.Deadline,
+		Dependencies: input.Dependencies,
+		Tags:         input.Tags,
 	}
-	if desc, ok := data["Description"].(string); ok {
-		event.Description = desc
+
+	if input.Status != "" && !validateStatus(input.Status) {
+		return nil, fmt.Errorf("invalid status: %s", input.Status)
 	}
-	if status, ok := data["Status"].(string); ok && validateStatus(status) {
-		event.Status = status
+	if input.Priority != "" && !validatePriority(input.Priority) {
+		return nil, fmt.Errorf("invalid priority: %s", input.Priority)
 	}
-	if priority, ok := data["Priority"].(string); ok && validatePriority(priority) {
-		event.Priority = priority
-	}
-	if deadline, ok := data["Deadline"].(string); ok {
-		if t, err := time.Parse(time.RFC3339, deadline); err == nil {
-			event.Deadline = t.Format(time.RFC3339)
+	if input.Deadline != "" {
+		if _, err := time.Parse(time.RFC3339, input.Deadline); err != nil {
+			return nil, fmt.Errorf("invalid deadline format: %v", err)
 		}
 	}
-	if deps, ok := data["Dependencies"].([]interface{}); ok {
-		event.Dependencies = convertToStringSlice(deps)
-	}
-	if tags, ok := data["Tags"].([]interface{}); ok {
-		event.Tags = convertToStringSlice(tags)
-	}
+
 	return []eventsourcing.Event{event}, nil
 }
 
-func (p *TaskPlugin) deleteTaskHandler(data map[string]interface{}, state map[string]interface{}) ([]eventsourcing.Event, error) {
-	taskID, ok := data["TaskID"].(string)
-	if !ok || taskID == "" {
+func (p *TaskPlugin) deleteTaskHandler(input DeleteTaskInput) ([]eventsourcing.Event, error) {
+	if input.TaskID == "" {
 		return nil, fmt.Errorf("taskID is required and must be a non-empty string")
 	}
 
 	p.aggregate.mu.RLock()
-	_, exists := p.aggregate.tasks[taskID]
+	_, exists := p.aggregate.tasks[input.TaskID]
 	p.aggregate.mu.RUnlock()
 	if !exists {
-		return nil, fmt.Errorf("task %s not found", taskID)
+		return nil, fmt.Errorf("task %s not found", input.TaskID)
 	}
 
-	event := &TaskDeletedEvent{TaskID: taskID}
+	event := &TaskDeletedEvent{EventType: "taskmanager_TaskDeleted", TaskID: input.TaskID}
 	return []eventsourcing.Event{event}, nil
 }
 
-func (p *TaskPlugin) completeTaskHandler(data map[string]interface{}, state map[string]interface{}) ([]eventsourcing.Event, error) {
-	taskID, ok := data["TaskID"].(string)
-	if !ok || taskID == "" {
+func (p *TaskPlugin) completeTaskHandler(input CompleteTaskInput) ([]eventsourcing.Event, error) {
+	if input.TaskID == "" {
 		return nil, fmt.Errorf("taskID is required and must be a non-empty string")
 	}
 
 	p.aggregate.mu.RLock()
-	task, exists := p.aggregate.tasks[taskID]
+	task, exists := p.aggregate.tasks[input.TaskID]
 	p.aggregate.mu.RUnlock()
 	if !exists {
-		return nil, fmt.Errorf("task %s not found", taskID)
+		return nil, fmt.Errorf("task %s not found", input.TaskID)
 	}
 	if task.Status == StatusCompleted {
-		return nil, fmt.Errorf("task %s is already completed", taskID)
+		return nil, fmt.Errorf("task %s is already completed", input.TaskID)
 	}
 
 	now := time.Now().UTC()
 	event := &TaskCompletedEvent{
-		TaskID:      taskID,
-		CompletedAt: now.Format(time.RFC3339),
-	}
-
-	if notes, ok := data["CompletionNotes"].(string); ok {
-		event.CompletionNotes = notes
+		EventType:       "taskmanager_TaskCompleted",
+		TaskID:          input.TaskID,
+		CompletedAt:     now.Format(time.RFC3339),
+		CompletionNotes: input.CompletionNotes,
 	}
 	return []eventsourcing.Event{event}, nil
 }
 
-func (p *TaskPlugin) listTasksHandler(data map[string]interface{}, state map[string]interface{}) ([]eventsourcing.Event, error) {
+func (p *TaskPlugin) listTasksHandler(input ListTasksInput) ([]eventsourcing.Event, error) {
 	p.aggregate.mu.RLock()
 	defer p.aggregate.mu.RUnlock()
 
@@ -513,14 +648,14 @@ func (p *TaskPlugin) listTasksHandler(data map[string]interface{}, state map[str
 
 	// Apply filters
 	var statusFilter, priorityFilter, tagFilter string
-	if status, ok := data["Status"].(string); ok && status != "All" && validateStatus(status) {
-		statusFilter = status
+	if input.Status != "" && input.Status != "All" && validateStatus(input.Status) {
+		statusFilter = input.Status
 	}
-	if priority, ok := data["Priority"].(string); ok && priority != "All" && validatePriority(priority) {
-		priorityFilter = priority
+	if input.Priority != "" && input.Priority != "All" && validatePriority(input.Priority) {
+		priorityFilter = input.Priority
 	}
-	if tag, ok := data["Tag"].(string); ok {
-		tagFilter = tag
+	if input.Tag != "" {
+		tagFilter = input.Tag
 	}
 
 	filteredTasks := tasks[:0]
@@ -532,28 +667,25 @@ func (p *TaskPlugin) listTasksHandler(data map[string]interface{}, state map[str
 			continue
 		}
 		filteredTasks = append(filteredTasks, task)
+		filteredTaskIDs = append(filteredTaskIDs, task.TaskID)
 	}
 
 	// Sort tasks by creation time
 	sort.Slice(filteredTasks, func(i, j int) bool {
 		return filteredTasks[i].CreatedAt.Before(filteredTasks[j].CreatedAt)
 	})
-	event := &TasksListedEvent{TaskIDs: filteredTaskIDs}
+
+	event := &TasksListedEvent{EventType: "taskmanager_TasksListed", Tasks: filteredTasks}
 	return []eventsourcing.Event{event}, nil
 }
 
 // UI
-func (p *TaskPlugin) GetCustomUI(agg eventsourcing.Aggregate) fyne.CanvasObject {
-	taskAgg, ok := agg.(*TaskAggregate)
-	if !ok {
-		return widget.NewLabel(fmt.Sprintf("Error: Invalid aggregate type: %T", agg))
-	}
+func (ta *TaskAggregate) GetCustomUI() fyne.CanvasObject {
+	ta.mu.RLock()
+	defer ta.mu.RUnlock()
 
-	taskAgg.mu.RLock()
-	defer taskAgg.mu.RUnlock()
-
-	tasks := make([]*Task, 0, len(taskAgg.tasks))
-	for _, task := range taskAgg.tasks {
+	tasks := make([]*Task, 0, len(ta.tasks))
+	for _, task := range ta.tasks {
 		tasks = append(tasks, task)
 	}
 
@@ -575,7 +707,7 @@ func (p *TaskPlugin) GetCustomUI(agg eventsourcing.Aggregate) fyne.CanvasObject 
 
 	content := container.NewVBox()
 	for _, task := range tasks {
-		item := createTaskItem(task, taskAgg)
+		item := createTaskItem(task, ta)
 		content.Add(item)
 	}
 
@@ -664,21 +796,38 @@ func (p *TaskPlugin) Type() eventsourcing.PluginType {
 	return eventsourcing.LLMPlugin
 }
 
+// SystemPrompt provides a specialized prompt for the task manager agent
+func (p *TaskPlugin) SystemPrompt() string {
+	return `You are TaskMaster, a specialized AI for managing tasks in MindPalace.
+Your job is to interpret user requests about tasks and execute the right commands
+(CreateTask, UpdateTask, CompleteTask, etc.) based on the current task state.
+
+Be concise, accurate, and always use the tools provided to manage tasks. Focus on:
+1. Creating detailed tasks with proper priorities and statuses
+2. Updating tasks with relevant information
+3. Completing tasks with helpful completion notes
+4. Listing and filtering tasks as requested
+
+When creating or updating tasks, extract key information from user requests including:
+- Task title and description
+- Priority level (Low, Medium, High, Critical)
+- Status (Pending, In Progress, Completed, Blocked)
+- Deadlines (in ISO format)
+- Tags for organization
+
+Format your responses in a structured way and confirm actions performed.`
+}
+
+// AgentModel specifies the LLM model to use for this plugin's agent
+func (p *TaskPlugin) AgentModel() string {
+	return "qwq" // Using the general-purpose model for task management
+}
+
 func (p *TaskPlugin) EventHandlers() map[string]eventsourcing.EventHandler {
 	return nil
 }
 
 // Helper functions
-func convertToStringSlice(slice []interface{}) []string {
-	result := make([]string, 0, len(slice))
-	for _, item := range slice {
-		if s, ok := item.(string); ok {
-			result = append(result, s)
-		}
-	}
-	return result
-}
-
 func contains(slice []string, item string) bool {
 	for _, s := range slice {
 		if s == item {

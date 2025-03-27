@@ -23,7 +23,7 @@ func NewLLMClient() *LLMClient {
 	return &LLMClient{}
 }
 
-func (c *LLMClient) CallLLM(messages []llmmodels.Message, tools []llmmodels.Tool, requestID string) (*llmmodels.OllamaResponse, error) {
+func (c *LLMClient) CallLLM(messages []llmmodels.Message, tools []llmmodels.Tool, requestID string, model string) (*llmmodels.OllamaResponse, error) {
 	logging.Trace("in call llm, len messages: %i", len(messages))
 	for i, m := range messages {
 		runes := []rune(m.Content)
@@ -31,10 +31,14 @@ func (c *LLMClient) CallLLM(messages []llmmodels.Message, tools []llmmodels.Tool
 		if len(runes) > 30 {
 			limit = 30
 		}
-		logging.Trace("message index: %i, Role: %s", i, m.Role, string(runes[:limit]))
+		logging.Trace("message index: %i, Role: %s, Context: %s", i, m.Role, string(runes[:limit]))
+	}
+	// Use specified model or default to ollamaModel
+	if model == "" {
+		model = ollamaModel
 	}
 	req := llmmodels.OllamaRequest{
-		Model:    ollamaModel,
+		Model:    model,
 		Messages: messages,
 		Stream:   true,
 		Tools:    tools,

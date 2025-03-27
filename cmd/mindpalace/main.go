@@ -70,32 +70,26 @@ func main() {
 			eventType, err, recoveryData, stackTrace)
 	})
 	store := eventsourcing.NewFileEventStore(eventFileFlag)
-	agg := aggregate.NewAggregateManager()
-	ep := eventsourcing.NewEventProcessor(store, agg)
+	aggStore := aggregate.NewAggregateManager()
+	eb := eventsourcing.NewSimpleEventBus(store, aggStore)
+	ep := eventsourcing.NewEventProcessor(store, eb)
 	pluginManager := plugins.NewPluginManager(ep)
 	llmClient := llmprocessor.NewLLMClient()
-
-	// Load plugins and register commands
-	pluginManager.LoadPlugins("plugins", ep)
 
 	// Load events after plugins so plugin events are registered
 	if err := store.Load(); err != nil {
 		logging.Error("Failed to load events: %v", err)
 	}
 
-	commands, _ := pluginManager.RegisterCommands()
-	for name, handler := range commands {
-		agg.AllCommands[name] = handler
-	}
-	agg.AllCommands["InitiatePluginCreation"] = orchestration.InitiatePluginCreationCommand
 	for _, plug := range pluginManager.GetLLMPlugins() {
-		agg.RegisterAggregate(plug.Name(), plug.Aggregate())
+		aggStore.RegisterAggregate(plug.Name(), plug.Aggregate())
 	}
-	agg.RegisterAggregate("orchestration", orchestration.NewOrchestrationAggregate())
+	orchAgg := orchestration.NewOrchestrationAggregate()
+	aggStore.RegisterAggregate("orchestration", orchAgg)
+	aggStore.RebuildState(store.GetEvents())
 
-	orchestrator := orchestration.NewRequestOrchestrator(llmClient, pluginManager, agg, ep.EventBus)
-	// UI setup
-	app := ui.NewApp(ep, agg, orchestrator, pluginManager.GetLLMPlugins())
+	orchestrator := orchestration.NewRequestOrchestrator(llmClient, pluginManager, orchAgg, ep, ep.EventBus)
+	app := ui.NewApp(ep, aggStore, orchestrator, pluginManager.GetLLMPlugins())
 
 	app.InitUI()
 	app.Run()

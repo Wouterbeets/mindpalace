@@ -2,6 +2,7 @@ package eventsourcing
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"mindpalace/pkg/logging"
 	"os"
@@ -53,7 +54,7 @@ func (es *FileEventStore) Append(events ...Event) error {
 	defer es.mu.Unlock()
 
 	for _, event := range events {
-		data, err := event.Marshal()
+		data, err := json.Marshal(event)
 		if err != nil {
 			return err
 		}

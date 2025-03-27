@@ -6,21 +6,18 @@ import (
 )
 
 type EventProcessor struct {
-	store     EventStore
-	aggregate Aggregate
-	commands  map[string]CommandHandler
-	EventBus  EventBus // Changed from unexported to exported
+	store    EventStore
+	commands map[string]Command
+	EventBus EventBus // Changed from unexported to exported
 }
 
-func NewEventProcessor(store EventStore, aggregate Aggregate) *EventProcessor {
+func NewEventProcessor(store EventStore, eventBus EventBus) *EventProcessor {
 	// Create an event bus that will be used for event distribution
-	eventBus := NewSimpleEventBus(store, aggregate)
 
 	ep := &EventProcessor{
-		store:     store,
-		aggregate: aggregate,
-		commands:  make(map[string]CommandHandler),
-		EventBus:  eventBus,
+		store:    store,
+		commands: make(map[string]Command),
+		EventBus: eventBus,
 	}
 
 	// Set the global event bus
@@ -43,24 +40,24 @@ func (ep *EventProcessor) RegisterEventHandler(eventType string, handler EventHa
 	logging.Debug("Registered event handler for event type: %s", eventType)
 }
 
-func (ep *EventProcessor) RegisterCommands(commands map[string]CommandHandler) {
+func (ep *EventProcessor) RegisterCommands(commands map[string]Command) {
 	for name, cmd := range commands {
 		ep.commands[name] = cmd
 	}
 	logging.Debug("Registered %d commands", len(commands))
 }
 
-func (ep *EventProcessor) RegisterCommand(name string, handler CommandHandler) {
+func (ep *EventProcessor) RegisterCommand(name string, handler Command) {
 	ep.commands[name] = handler
 	logging.Debug("Registered command: %s", name)
 }
 
 // Commands returns all registered commands
-func (ep *EventProcessor) Commands() map[string]CommandHandler {
+func (ep *EventProcessor) Commands() map[string]Command {
 	return ep.commands
 }
 
-func (ep *EventProcessor) ExecuteCommand(commandName string, data map[string]interface{}) error {
+func (ep *EventProcessor) ExecuteCommand(commandName string, data map[string]interface{}) error { // TODO make this function take any as a type and do some typechecking
 	// Log command execution
 	logging.Command(commandName, data)
 
@@ -70,7 +67,7 @@ func (ep *EventProcessor) ExecuteCommand(commandName string, data map[string]int
 		return fmt.Errorf("command %s not found", commandName)
 	}
 
-	events, err := handler(data, ep.aggregate.GetState())
+	events, err := handler(data)
 	if err != nil {
 		logging.Error("Error executing command %s: %v", commandName, err)
 		return err
@@ -80,13 +77,6 @@ func (ep *EventProcessor) ExecuteCommand(commandName string, data map[string]int
 
 	// Instead of using SubmitEvent directly, publish to the local event bus
 	for _, event := range events {
-		// Log event at appropriate level
-		if genericEvent, ok := event.(*GenericEvent); ok {
-			logging.Event(genericEvent.EventType, genericEvent.Data)
-		} else {
-			logging.Event(event.Type(), nil)
-		}
-
 		ep.EventBus.Publish(event)
 	}
 	return nil
