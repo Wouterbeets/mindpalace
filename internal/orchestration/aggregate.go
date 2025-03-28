@@ -119,6 +119,39 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 			})
 		}
 
+	case "orchestration_ToolCallFailed":
+		e := event.(*ToolCallFailedEvent)
+		if state, exists := a.ToolCallStates[e.ToolCallID]; exists {
+			state.Status = "failed"
+			state.Results = map[string]interface{}{"error": e.ErrorMsg}
+			state.LastUpdated = e.Timestamp
+			delete(a.PendingToolCalls[e.RequestID], e.ToolCallID)
+			if len(a.PendingToolCalls[e.RequestID]) == 0 {
+				delete(a.PendingToolCalls, e.RequestID)
+			}
+		}
+
+		agentName := "MindPalace"
+		if agentState, exists := a.AgentStates[e.RequestID]; exists {
+			agentName = agentState.AgentName
+			agentState.LastUpdated = eventsourcing.ISOTimestamp()
+			agentState.ChatHistory = append(a.ChatHistory, chat.ChatMessage{
+				Role:              agentName,
+				OllamaRole:        "tool",
+				Content:           fmt.Sprintf("Tool call failed: %s", e.ErrorMsg),
+				RequestID:         e.RequestID,
+				StreamingComplete: true,
+			})
+		} else {
+			a.ChatHistory = append(a.ChatHistory, chat.ChatMessage{
+				Role:              agentName,
+				OllamaRole:        "tool",
+				Content:           fmt.Sprintf("Tool call failed: %s", e.ErrorMsg),
+				RequestID:         e.RequestID,
+				StreamingComplete: true,
+			})
+		}
+
 	case "orchestration_AgentCallDecided":
 		e := event.(*AgentCallDecidedEvent)
 		if a.AgentStates == nil {
@@ -133,6 +166,23 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 			LastUpdated:   e.Timestamp,
 			ChatHistory:   make([]chat.ChatMessage, 0),
 			Model:         e.Model,
+		}
+
+	case "orchestration_AgentExecutionFailed":
+		e := event.(*AgentExecutionFailedEvent)
+		if agentState, exists := a.AgentStates[e.RequestID]; exists {
+			agentState.Status = "failed"
+			agentState.Summary = fmt.Sprintf("Agent execution failed: %s", e.ErrorMsg)
+			agentState.LastUpdated = e.Timestamp
+			
+			// Add error message to chat history
+			a.ChatHistory = append(a.ChatHistory, chat.ChatMessage{
+				Role:              e.AgentName,
+				OllamaRole:        "assistant",
+				Content:           fmt.Sprintf("Error: %s", e.ErrorMsg),
+				RequestID:         e.RequestID,
+				StreamingComplete: true,
+			})
 		}
 
 	case "orchestration_UserRequestReceived":
@@ -240,6 +290,22 @@ func (a *OrchestrationAggregate) renderAgentState(state *AgentState) fyne.Canvas
 
 		contentBox := container.NewVBox(contentElements...)
 		messageContainer.Add(container.NewVBox(roleLabel, contentBox))
+		
+	case "failed":
+		statusLabel := widget.NewLabel(fmt.Sprintf("Agent '%s' failed", state.AgentName))
+		statusLabel.TextStyle = fyne.TextStyle{Italic: true}
+		icon := widget.NewIcon(theme.ErrorIcon())
+
+		var contentElements []fyne.CanvasObject
+		contentElements = append(contentElements, container.NewHBox(icon, statusLabel))
+
+		if state.Summary != "" {
+			contentElements = append(contentElements, widget.NewSeparator())
+			contentElements = append(contentElements, parseMarkdownToCanvas(state.Summary))
+		}
+
+		contentBox := container.NewVBox(contentElements...)
+		messageContainer.Add(container.NewVBox(roleLabel, contentBox))
 	}
 
 	return container.NewPadded(messageContainer)
@@ -275,6 +341,19 @@ func (a *OrchestrationAggregate) renderToolCallState(state *ToolCallState) fyne.
 			container.NewHBox(icon, statusLabel),
 			widget.NewSeparator(),
 			resultContent,
+		)
+		messageContainer.Add(container.NewVBox(roleLabel, contentBox))
+		
+	case "failed":
+		statusLabel := widget.NewLabel(fmt.Sprintf("Tool Call: %s - Failed", state.Function))
+		statusLabel.TextStyle = fyne.TextStyle{Italic: true}
+		icon := widget.NewIcon(theme.ErrorIcon())
+		errorText := fmt.Sprintf("%+v", state.Results["error"])
+		errorContent := parseMarkdownToCanvas(errorText)
+		contentBox := container.NewVBox(
+			container.NewHBox(icon, statusLabel),
+			widget.NewSeparator(),
+			errorContent,
 		)
 		messageContainer.Add(container.NewVBox(roleLabel, contentBox))
 	}
@@ -556,6 +635,40 @@ func (e *AgentCallDecidedEvent) Marshal() ([]byte, error) {
 }
 func (e *AgentCallDecidedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
 
+// AgentExecutionFailedEvent represents a failure in agent execution
+type AgentExecutionFailedEvent struct {
+	EventType   string `json:"event_type"`
+	RequestID   string `json:"request_id"`
+	AgentName   string `json:"agent_name"`
+	ErrorMsg    string `json:"error_msg"`
+	Timestamp   string `json:"timestamp"`
+	Recoverable bool   `json:"recoverable"` // Whether the error is recoverable
+}
+
+func (e *AgentExecutionFailedEvent) Type() string { return "orchestration_AgentExecutionFailed" }
+func (e *AgentExecutionFailedEvent) Marshal() ([]byte, error) {
+	e.EventType = e.Type()
+	return json.Marshal(e)
+}
+func (e *AgentExecutionFailedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
+
+// ToolCallFailedEvent represents a failure in a tool call
+type ToolCallFailedEvent struct {
+	EventType  string `json:"event_type"`
+	RequestID  string `json:"request_id"`
+	ToolCallID string `json:"tool_call_id"`
+	Function   string `json:"function"`
+	ErrorMsg   string `json:"error_msg"`
+	Timestamp  string `json:"timestamp"`
+}
+
+func (e *ToolCallFailedEvent) Type() string { return "orchestration_ToolCallFailed" }
+func (e *ToolCallFailedEvent) Marshal() ([]byte, error) {
+	e.EventType = e.Type()
+	return json.Marshal(e)
+}
+func (e *ToolCallFailedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
+
 func init() {
 	eventsourcing.RegisterEvent("orchestration_UserRequestReceived", func() eventsourcing.Event { return &UserRequestReceivedEvent{} })
 
@@ -563,9 +676,11 @@ func init() {
 	eventsourcing.RegisterEvent("orchestration_ToolCallRequestPlaced", func() eventsourcing.Event { return &ToolCallRequestPlaced{} })
 	eventsourcing.RegisterEvent("orchestration_ToolCallStarted", func() eventsourcing.Event { return &ToolCallStarted{} })
 	eventsourcing.RegisterEvent("orchestration_ToolCallCompleted", func() eventsourcing.Event { return &ToolCallCompleted{} })
+	eventsourcing.RegisterEvent("orchestration_ToolCallFailed", func() eventsourcing.Event { return &ToolCallFailedEvent{} })
 
 	// Agent-related events
 	eventsourcing.RegisterEvent("orchestration_AgentCallDecided", func() eventsourcing.Event { return &AgentCallDecidedEvent{} })
+	eventsourcing.RegisterEvent("orchestration_AgentExecutionFailed", func() eventsourcing.Event { return &AgentExecutionFailedEvent{} })
 
 	eventsourcing.RegisterEvent("orchestration_InitiatePluginCreation", func() eventsourcing.Event { return &InitiatePluginCreationEvent{} })
 
