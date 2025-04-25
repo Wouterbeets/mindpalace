@@ -2,6 +2,7 @@ package eventsourcing
 
 import (
 	"log"
+	"mindpalace/pkg/logging"
 )
 
 type EventBus interface {
@@ -47,24 +48,22 @@ func (eb *SimpleEventBus) Publish(event Event) {
 	for _, agg := range eb.aggStore.AllAggregates() {
 		err := agg.ApplyEvent(event)
 		if err != nil {
-			log.Printf("Failed to apply event %s: %v", event.Type(), err)
-			return
-		}
-	}
-
-	// Notify subscribers
-	if handlers, exists := eb.subscribers[event.Type()]; exists {
-		for _, handler := range handlers {
-			err := handler(event) // frontend updates are triggered from here
-			if err != nil {
-				log.Printf("Handler failed for event %s: %v", event.Type(), err)
-			}
+			logging.Error("Apply failed for event %s, on agg %s: %v", event.Type(), agg.ID(), err)
 		}
 	}
 	for _, handler := range eb.allUpdatesSubscribers {
 		err := handler(event) // frontend updates are triggered from here
 		if err != nil {
-			log.Printf("Handler failed for event %s: %v", event.Type(), err)
+			log.Printf("EventHandler failed for event %s: %v", event.Type(), err)
+		}
+	}
+	// Notify subscribers
+	if handlers, exists := eb.subscribers[event.Type()]; exists {
+		for _, handler := range handlers {
+			err := handler(event) // backend updates are triggered from here
+			if err != nil {
+				log.Printf("EventHandlerHandler failed for event %s: %v", event.Type(), err)
+			}
 		}
 	}
 }

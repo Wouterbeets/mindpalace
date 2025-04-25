@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
-	"strings"
 )
 
 // AggregateManager acts as a facade to manage multiple plugin aggregates.
@@ -67,14 +66,4 @@ func (m *AggregateManager) RebuildState(events []eventsourcing.Event) error {
 		}
 	}
 	return nil
-}
-
-// Helper to determine plugin name from event type (e.g., "taskmanager_TaskCreated" -> "taskmanager")
-func determinePluginName(eventType string) string {
-	parts := strings.SplitN(eventType, "_", 2)
-	if len(parts) > 1 {
-		return parts[0] // Assumes plugin prefixes its events
-	}
-	// Fallback: could use event metadata if available
-	return ""
 }

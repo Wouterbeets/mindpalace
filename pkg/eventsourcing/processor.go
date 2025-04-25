@@ -74,6 +74,8 @@ func (ep *EventProcessor) ExecuteCommand(commandName string, data any) error {
 	}
 	logging.Debug("Command %s generated %d events", commandName, len(events))
 	for _, event := range events {
+		marsh, _ := event.Marshal()
+		logging.Debug("Pugblishing event %s, %s", event.Type(), marsh)
 		ep.EventBus.Publish(event)
 	}
 	return nil

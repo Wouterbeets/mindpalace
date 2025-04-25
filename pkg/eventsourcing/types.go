@@ -70,6 +70,7 @@ type EventStore interface {
 type Event interface {
 	Type() string
 	Unmarshal(data []byte) error
+	Marshal() ([]byte, error)
 }
 
 const (
@@ -114,6 +115,7 @@ type BaseEvent struct {
 }
 
 func (e *BaseEvent) Marshal() ([]byte, error) {
+	logging.Debug("calling base event marshal")
 	return json.Marshal(e)
 }
 func (e *BaseEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }

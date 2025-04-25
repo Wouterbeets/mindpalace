@@ -12,14 +12,14 @@ import (
 type LogLevel int
 
 const (
-	// LogLevelError is for error messages only
+	// LogLevelError LogLevel = iota
 	LogLevelError LogLevel = iota
 	// LogLevelInfo is for important but normal messages
-	LogLevelInfo
+	LogLevelInfo LogLevel = iota
 	// LogLevelDebug is for detailed messages useful for debugging
-	LogLevelDebug
+	LogLevelDebug LogLevel = iota
 	// LogLevelTrace is for extremely detailed messages
-	LogLevelTrace
+	LogLevelTrace LogLevel = iota
 )
 
 // Logger provides a simple logging interface with verbosity controls
@@ -127,24 +127,6 @@ func (l *Logger) Command(commandName string, data any) {
 	}
 }
 
-// Event logs information about events being processed
-func (l *Logger) Event(eventType string, data map[string]interface{}) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	msg := fmt.Sprintf("[EVENT] %s", eventType)
-	l.logger.Println(msg)
-
-	// Log event details at debug level
-	if l.level >= LogLevelDebug {
-		if data != nil {
-			dataMsg := fmt.Sprintf("[DEBUG] Event data: %v", data)
-			l.logger.Println(dataMsg)
-		}
-	}
-}
-
-// Global convenience functions
-
 // Error logs an error message
 func Error(format string, args ...interface{}) {
 	GetLogger().Error(format, args...)
@@ -168,9 +150,4 @@ func Trace(format string, args ...interface{}) {
 // Command logs a command execution
 func Command(commandName string, data any) {
 	GetLogger().Command(commandName, data)
-}
-
-// Event logs an event
-func Event(eventType string, data map[string]interface{}) {
-	GetLogger().Event(eventType, data)
 }

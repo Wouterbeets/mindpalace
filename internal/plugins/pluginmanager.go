@@ -29,7 +29,6 @@ func NewPluginManager(ep *eventsourcing.EventProcessor) *PluginManager {
 func (pm *PluginManager) GetLLMPlugins() []eventsourcing.Plugin {
 	var llmPlugins []eventsourcing.Plugin
 	for _, plugin := range pm.plugins {
-		logging.Trace("Checking plugin %s for LLM capability, schemas: %v", plugin.Name())
 		if plugin.Type() == eventsourcing.LLMPlugin {
 			llmPlugins = append(llmPlugins, plugin)
 		}
@@ -46,7 +45,18 @@ func (pm *PluginManager) GetPlugin(name string) (eventsourcing.Plugin, error) {
 	return nil, fmt.Errorf("plugin '%s' not found", name)
 }
 
-// LoadPlugins finds, compiles if needed, and loads all plugins from the given directory
+func (pm *PluginManager) GetPluginByCommand(commandName string) (eventsourcing.Plugin, error) {
+	for _, plugin := range pm.plugins {
+		for name := range plugin.Commands() {
+			if name == commandName {
+				return plugin, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("plugin '%s' not found", commandName)
+}
+
+// / LoadPlugins finds, compiles if needed, and loads all plugins from the given directory
 func (pm *PluginManager) LoadPlugins(pluginDir string) {
 	logging.Debug("Starting to load plugins from directory: %s", pluginDir)
 
@@ -98,6 +108,11 @@ func (pm *PluginManager) LoadPlugins(pluginDir string) {
 	}
 
 	logging.Info("Finished loading plugins, total loaded: %d", len(pm.plugins))
+	commands := pm.RegisterCommands()
+	for name, handler := range commands {
+		logging.Debug("registering commands en eventprocessor after initial plugin loading: %s", name)
+		pm.eventProcessor.RegisterCommand(name, handler)
+	}
 }
 
 // discoverPluginDirectories finds all directories containing plugin.go files

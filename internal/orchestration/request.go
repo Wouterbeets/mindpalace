@@ -3,61 +3,84 @@ package orchestration
 import (
 	"encoding/json"
 	"fmt"
-	"mindpalace/internal/chat"
+	"text/template"
+	"time"
+
 	"mindpalace/internal/llmprocessor"
 	"mindpalace/internal/plugins"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/llmmodels"
 	"mindpalace/pkg/logging"
-	"time"
 )
 
+const systemPromptTemplate = `You are MindPalace, a friendly AI assistant here to help with various queries and tasks. Provide helpful, accurate, and concise responses, using tools only when they enhance your ability to assist.
+
+{{if .Agents}}
+Based on the user's request, decide if a specialized agent is needed to handle their query efficiently. You can call specialized agents for specific domains by using the CallAgent tool.
+
+Available agents:
+{{range .Agents}}- {{.}}
+{{end}}
+When to call agents:
+- When a request clearly maps to a specific agent's domain
+- When specialized context or tools would benefit the user
+- When the request mentions a specific plugin by name
+
+When NOT to call agents:
+- For general knowledge questions
+- For simple requests that don't need specialized tools
+- When you can handle the request directly
+{{else}}
+Since there are no specialized agents available, respond directly to the user's query.
+{{end}}
+
+Your goal is to provide the most helpful and efficient experience.`
+
 type RequestOrchestrator struct {
-	llmClient      *llmprocessor.LLMClient // Simplified LLM processor
-	pluginManager  *plugins.PluginManager  // For tool/command access
-	agg            *OrchestrationAggregate // State management
-	eventProcessor *eventsourcing.EventProcessor
-	eventBus       eventsourcing.EventBus
+	llmClient        *llmprocessor.LLMClient
+	pluginManager    *plugins.PluginManager
+	agg              *OrchestrationAggregate
+	eventProcessor   *eventsourcing.EventProcessor
+	eventBus         eventsourcing.EventBus
+	systemPromptTmpl *template.Template // Base template, no plugin specifics here
 }
 
 func NewRequestOrchestrator(llmClient *llmprocessor.LLMClient, pm *plugins.PluginManager, agg *OrchestrationAggregate, ep *eventsourcing.EventProcessor, eb eventsourcing.EventBus) *RequestOrchestrator {
-	ro := &RequestOrchestrator{
-		llmClient:      llmClient,
-		eventProcessor: ep,
-		agg:            agg,
-		eventBus:       eb,
-		pluginManager:  pm,
+	tmpl, err := template.New("systemPrompt").Parse(systemPromptTemplate)
+	if err != nil {
+		logging.Error("Failed to parse system prompt template: %v", err)
+		panic(err.Error())
 	}
-	ro.Initialize()
+	ro := &RequestOrchestrator{
+		llmClient:        llmClient,
+		pluginManager:    pm,
+		agg:              agg,
+		eventProcessor:   ep,
+		eventBus:         eb,
+		systemPromptTmpl: tmpl,
+	}
+	ro.initializeCommandsAndSubscriptions()
 	return ro
 }
 
-func (ro *RequestOrchestrator) ProcessUserRequestCommand(data map[string]interface{}) ([]eventsourcing.Event, error) {
-	requestText, ok := data["requestText"].(string)
-	if !ok {
-		return nil, fmt.Errorf("requestText must be a string")
-	}
-	requestID, _ := data["requestID"].(string)
-	if requestID == "" {
-		requestID = fmt.Sprintf("req-%d", time.Now().UnixNano())
-	}
-
-	var events []eventsourcing.Event
-	events = append(events, &UserRequestReceivedEvent{
-		EventType:   "orchestration_UserRequestReceived",
-		RequestID:   requestID,
-		RequestText: requestText,
-		Timestamp:   eventsourcing.ISOTimestamp(),
-	})
-
-	// Start the agent decision process
-	return events, nil
-}
-
+// DecideAgentCallCommand now dynamically fetches plugin prompts per call
 func (ro *RequestOrchestrator) DecideAgentCallCommand(event *UserRequestReceivedEvent) ([]eventsourcing.Event, error) {
-	messages := ro.buildChatHistory(ro.agg.ChatHistory, 10)
-	agentTools := ro.gatherAgentTools()
-	resp, err := ro.llmClient.CallLLM(messages, agentTools, event.RequestID, "")
+	// Get all LLM plugins at this moment
+	plugins := ro.pluginManager.GetLLMPlugins()
+	pluginNames := make([]string, len(plugins))
+	for i, p := range plugins {
+		pluginNames[i] = p.Name()
+	}
+
+	// Reset and populate plugin prompts in ChatManager for this call
+	ro.agg.chatManager.ResetPluginPrompts() // Add this method to ChatManager
+	for _, plugin := range plugins {
+		ro.agg.chatManager.SetPluginPrompt(plugin.Name(), plugin.SystemPrompt())
+	}
+
+	// Get LLM context with fresh plugin data
+	messages := ro.agg.chatManager.GetLLMContext(pluginNames)
+	resp, err := ro.llmClient.CallLLM(messages, ro.gatherAgentTools(), event.RequestID, "")
 	if err != nil {
 		return nil, fmt.Errorf("LLM call failed: %v", err)
 	}
@@ -88,6 +111,7 @@ func (ro *RequestOrchestrator) DecideAgentCallCommand(event *UserRequestReceived
 	return events, nil
 }
 
+// gatherAgentTools remains unchanged but included for context
 func (ro *RequestOrchestrator) gatherAgentTools() []llmmodels.Tool {
 	var tools []llmmodels.Tool
 	for _, plugin := range ro.pluginManager.GetLLMPlugins() {
@@ -111,8 +135,141 @@ func (ro *RequestOrchestrator) gatherAgentTools() []llmmodels.Tool {
 	}
 	return tools
 }
+
+// commandHandler defines the structure for command registration
+type commandHandler struct {
+	name    string
+	handler eventsourcing.CommandHandler
+}
+
+// eventSubscription defines the structure for event subscriptions
+type eventSubscription struct {
+	eventType string
+	handler   func(eventsourcing.Event) error
+}
+
+func (ro *RequestOrchestrator) initializeCommandsAndSubscriptions() {
+	// Define all command handlers
+	commands := []commandHandler{
+		{
+			name:    "ProcessUserRequest",
+			handler: eventsourcing.NewCommand(ro.ProcessUserRequestCommand),
+		},
+		{
+			name:    "DecideAgentCall",
+			handler: eventsourcing.NewCommand(ro.DecideAgentCallCommand),
+		},
+		{
+			name:    "ExecuteAgentCall",
+			handler: eventsourcing.NewCommand(ro.ExecuteAgentCall),
+		},
+		{
+			name:    "ExecuteToolCall",
+			handler: eventsourcing.NewCommand(ro.ExecuteToolCallCommand),
+		},
+		{
+			name:    "CompleteRequest",
+			handler: eventsourcing.NewCommand(ro.CompleteRequestCommand),
+		},
+		{
+			name:    "CompleteRequestWithError",
+			handler: eventsourcing.NewCommand(ro.CompleteRequestWithErrorCommand),
+		},
+	}
+
+	// Define all event subscriptions
+	subscriptions := []eventSubscription{
+		{
+			eventType: "orchestration_UserRequestReceived",
+			handler: func(event eventsourcing.Event) error {
+				return ro.eventProcessor.ExecuteCommand("DecideAgentCall", event)
+			},
+		},
+		{
+			eventType: "orchestration_AgentCallDecided",
+			handler: func(event eventsourcing.Event) error {
+				if e, ok := event.(*AgentCallDecidedEvent); ok {
+					return ro.eventProcessor.ExecuteCommand("ExecuteAgentCall", e)
+				}
+				return nil
+			},
+		},
+		{
+			eventType: "orchestration_ToolCallRequestPlaced",
+			handler: func(event eventsourcing.Event) error {
+				if e, ok := event.(*ToolCallRequestPlaced); ok {
+					return ro.eventProcessor.ExecuteCommand("ExecuteToolCall", e)
+				}
+				return nil
+			},
+		},
+		{
+			eventType: "orchestration_ToolCallCompleted",
+			handler: func(event eventsourcing.Event) error {
+				if e, ok := event.(*ToolCallCompleted); ok {
+					return ro.eventProcessor.ExecuteCommand("CompleteRequest", e)
+				}
+				return nil
+			},
+		},
+		{
+			eventType: "orchestration_AgentExecutionFailed",
+			handler: func(event eventsourcing.Event) error {
+				if e, ok := event.(*AgentExecutionFailedEvent); ok {
+					return ro.eventProcessor.ExecuteCommand("CompleteRequestWithError", e)
+				}
+				return nil
+			},
+		},
+		{
+			eventType: "orchestration_ToolCallFailed",
+			handler: func(event eventsourcing.Event) error {
+				if e, ok := event.(*ToolCallFailedEvent); ok {
+					return ro.eventProcessor.ExecuteCommand("CompleteRequestWithError", e)
+				}
+				return nil
+			},
+		},
+	}
+
+	// Register all commands
+	for _, cmd := range commands {
+		ro.eventProcessor.RegisterCommand(cmd.name, cmd.handler)
+	}
+
+	// Register all subscriptions
+	for _, sub := range subscriptions {
+		ro.eventBus.Subscribe(sub.eventType, sub.handler)
+		logging.Debug("Subscribed to event: %s", sub.eventType)
+	}
+}
+
+func (ro *RequestOrchestrator) ProcessUserRequestCommand(data map[string]interface{}) ([]eventsourcing.Event, error) {
+	requestText, ok := data["requestText"].(string)
+	if !ok {
+		return nil, fmt.Errorf("requestText must be a string")
+	}
+	requestID, _ := data["requestID"].(string)
+	if requestID == "" {
+		requestID = fmt.Sprintf("req-%d", time.Now().UnixNano())
+	}
+
+	logging.Info("Processing user request. Request ID: %s", requestID)
+
+	return []eventsourcing.Event{
+		&UserRequestReceivedEvent{
+			EventType:   "orchestration_UserRequestReceived",
+			RequestID:   requestID,
+			RequestText: requestText,
+			Timestamp:   eventsourcing.ISOTimestamp(),
+		},
+	}, nil
+}
+
 func (ro *RequestOrchestrator) ExecuteToolCallCommand(event *ToolCallRequestPlaced) ([]eventsourcing.Event, error) {
 	var events []eventsourcing.Event
+
+	// Record the start of the tool call
 	events = append(events, &ToolCallStarted{
 		RequestID:  event.RequestID,
 		ToolCallID: event.ToolCallID,
@@ -120,31 +277,10 @@ func (ro *RequestOrchestrator) ExecuteToolCallCommand(event *ToolCallRequestPlac
 		Timestamp:  eventsourcing.ISOTimestamp(),
 	})
 
-	allCommands := make(map[string]eventsourcing.CommandHandler)
-	for _, p := range ro.pluginManager.GetLLMPlugins() {
-		for name, command := range p.Commands() {
-			allCommands[name] = command
-		}
-	}
-	logging.Debug("calling tool %s, %+v", event.Function, event.Arguments)
-	handler, exists := allCommands[event.Function]
-	if !exists {
-		errorMsg := fmt.Sprintf("no handler for tool %s", event.Function)
-		logging.Error(errorMsg)
-		events = append(events, &ToolCallFailedEvent{
-			EventType:  "orchestration_ToolCallFailed",
-			RequestID:  event.RequestID,
-			ToolCallID: event.ToolCallID,
-			Function:   event.Function,
-			ErrorMsg:   errorMsg,
-			Timestamp:  eventsourcing.ISOTimestamp(),
-		})
-		return events, nil
-	}
-
-	toolEvents, err := handler.Execute(event.Arguments)
+	// Step 1: Identify the plugin responsible for the command
+	plugin, err := ro.pluginManager.GetPluginByCommand(event.Function)
 	if err != nil {
-		errorMsg := fmt.Sprintf("tool %s failed: %v", event.Function, err)
+		errorMsg := fmt.Sprintf("no plugin found for command %s", event.Function)
 		logging.Error(errorMsg)
 		events = append(events, &ToolCallFailedEvent{
 			EventType:  "orchestration_ToolCallFailed",
@@ -156,54 +292,99 @@ func (ro *RequestOrchestrator) ExecuteToolCallCommand(event *ToolCallRequestPlac
 		})
 		return events, nil
 	}
-	logging.Debug("toolcall finished %s", event.Function)
 
-	for _, tevent := range toolEvents {
-		logging.Debug("returned events from handler: %+v", event)
-		events = append(events, tevent)
-		events = append(events, &ToolCallCompleted{
+	// Step 2: Retrieve the command's input schema
+	schemas := plugin.Schemas()
+	inputSchema, exists := schemas[event.Function]
+	if !exists {
+		errorMsg := fmt.Sprintf("no schema found for command %s", event.Function)
+		logging.Error(errorMsg)
+		events = append(events, &ToolCallFailedEvent{
+			EventType:  "orchestration_ToolCallFailed",
 			RequestID:  event.RequestID,
 			ToolCallID: event.ToolCallID,
 			Function:   event.Function,
-			Results:    map[string]interface{}{"success": true, "result": toolEvents},
+			ErrorMsg:   errorMsg,
 			Timestamp:  eventsourcing.ISOTimestamp(),
 		})
+		return events, nil
 	}
+
+	// Step 3: Create a new instance of the input struct
+	input := inputSchema.New()
+
+	// Step 4: Convert map[string]interface{} to the struct
+	inputJSON, err := json.Marshal(event.Arguments)
+	if err != nil {
+		errorMsg := fmt.Sprintf("failed to marshal arguments: %v", err)
+		logging.Error(errorMsg)
+		events = append(events, &ToolCallFailedEvent{
+			EventType:  "orchestration_ToolCallFailed",
+			RequestID:  event.RequestID,
+			ToolCallID: event.ToolCallID,
+			Function:   event.Function,
+			ErrorMsg:   errorMsg,
+			Timestamp:  eventsourcing.ISOTimestamp(),
+		})
+		return events, nil
+	}
+
+	if err := json.Unmarshal(inputJSON, input); err != nil {
+		errorMsg := fmt.Sprintf("failed to unmarshal arguments into %T: %v", input, err)
+		logging.Error(errorMsg)
+		events = append(events, &ToolCallFailedEvent{
+			EventType:  "orchestration_ToolCallFailed",
+			RequestID:  event.RequestID,
+			ToolCallID: event.ToolCallID,
+			Function:   event.Function,
+			ErrorMsg:   errorMsg,
+			Timestamp:  eventsourcing.ISOTimestamp(),
+		})
+		return events, nil
+	}
+
+	// Step 5: Execute the command with the correct input type
+	handler, exists := plugin.Commands()[event.Function]
+	if !exists {
+		errorMsg := fmt.Sprintf("no handler for command %s", event.Function)
+		logging.Error(errorMsg)
+		events = append(events, &ToolCallFailedEvent{
+			EventType:  "orchestration_ToolCallFailed",
+			RequestID:  event.RequestID,
+			ToolCallID: event.ToolCallID,
+			Function:   event.Function,
+			ErrorMsg:   errorMsg,
+			Timestamp:  eventsourcing.ISOTimestamp(),
+		})
+		return events, nil
+	}
+
+	toolEvents, err := handler.Execute(input)
+	if err != nil {
+		errorMsg := fmt.Sprintf("command %s failed: %v", event.Function, err)
+		logging.Error(errorMsg)
+		events = append(events, &ToolCallFailedEvent{
+			EventType:  "orchestration_ToolCallFailed",
+			RequestID:  event.RequestID,
+			ToolCallID: event.ToolCallID,
+			Function:   event.Function,
+			ErrorMsg:   errorMsg,
+			Timestamp:  eventsourcing.ISOTimestamp(),
+		})
+		return events, nil
+	}
+
+	// Step 6: Append results and complete the tool call
+	events = append(events, toolEvents...)
+	events = append(events, &ToolCallCompleted{
+		RequestID:  event.RequestID,
+		ToolCallID: event.ToolCallID,
+		Function:   event.Function,
+		Results:    map[string]interface{}{"success": true, "result": toolEvents},
+		Timestamp:  eventsourcing.ISOTimestamp(),
+	})
+
 	return events, nil
-}
-
-var systemPrompt string = `
-You are MindPalace, a friendly AI assistant here to help with various queries and tasks. Provide helpful, accurate, and concise responses, using tools only when they enhance your ability to assist.
-
-Based on the user's request, decide if a specialized agent is needed to handle their query efficiently. You can call specialized agents for specific domains by using the CallAgent tool.
-
-Available agents:
-- taskmanager: Specialized agent for managing tasks (create, update, complete, list, delete)
-
-When to call agents:
-- When a request clearly maps to a specific agent's domain
-- When specialized context or tools would benefit the user
-- When the request mentions a specific plugin by name
-
-When NOT to call agents:
-- For general knowledge questions
-- For simple requests that don't need specialized tools
-- When you can handle the request directly
-
-Respond directly if no agent is needed. Your goal is to provide the most helpful and efficient experience.`
-
-// buildChatHistory constructs the conversation history
-func (ro *RequestOrchestrator) buildChatHistory(chat []chat.ChatMessage, maxMessages int) []llmmodels.Message {
-	messages := []llmmodels.Message{{Role: "system", Content: systemPrompt}}
-	for _, msg := range ro.agg.ChatHistory {
-		if msg.OllamaRole != "none" {
-			messages = append(messages, llmmodels.Message{Role: msg.OllamaRole, Content: msg.Content})
-		}
-	}
-	if len(messages) > maxMessages+1 { // +1 for system prompt
-		return messages[len(messages)-maxMessages-1:]
-	}
-	return messages
 }
 
 // gatherPluginTools gathers tools specific to a given plugin
@@ -223,9 +404,9 @@ func (ro *RequestOrchestrator) gatherPluginTools(plugin eventsourcing.Plugin) []
 }
 
 func (ro *RequestOrchestrator) ExecuteAgentCall(event *AgentCallDecidedEvent) ([]eventsourcing.Event, error) {
+	var events []eventsourcing.Event
 	plugin, err := ro.pluginManager.GetPlugin(event.AgentName)
 	if err != nil {
-		// Return an agent execution failed event instead of an error
 		errorMsg := fmt.Sprintf("agent call failed: %v", err)
 		return []eventsourcing.Event{&AgentExecutionFailedEvent{
 			EventType:   "orchestration_AgentExecutionFailed",
@@ -239,7 +420,6 @@ func (ro *RequestOrchestrator) ExecuteAgentCall(event *AgentCallDecidedEvent) ([
 
 	resp, err := ro.CallPluginAgent(plugin, event.Query, event.RequestID)
 	if err != nil {
-		// Return an agent execution failed event instead of an error
 		errorMsg := fmt.Sprintf("plugin call failed: %v", err)
 		return []eventsourcing.Event{&AgentExecutionFailedEvent{
 			EventType:   "orchestration_AgentExecutionFailed",
@@ -251,7 +431,6 @@ func (ro *RequestOrchestrator) ExecuteAgentCall(event *AgentCallDecidedEvent) ([
 		}}, nil
 	}
 
-	var events []eventsourcing.Event
 	for i, toolCall := range resp.Message.ToolCalls {
 		events = append(events, &ToolCallRequestPlaced{
 			RequestID:  event.RequestID,
@@ -262,7 +441,6 @@ func (ro *RequestOrchestrator) ExecuteAgentCall(event *AgentCallDecidedEvent) ([
 		})
 	}
 	if len(events) == 0 {
-		// Handle case where agent calls no tools by emitting a RequestCompletedEvent
 		events = append(events, &RequestCompletedEvent{
 			EventType:    "orchestration_RequestCompleted",
 			RequestID:    event.RequestID,
@@ -270,6 +448,7 @@ func (ro *RequestOrchestrator) ExecuteAgentCall(event *AgentCallDecidedEvent) ([
 			CompletedAt:  eventsourcing.ISOTimestamp(),
 		})
 	}
+
 	return events, nil
 }
 
@@ -282,6 +461,7 @@ func (ro *RequestOrchestrator) CallPluginAgent(plugin eventsourcing.Plugin, requ
 		return nil, fmt.Errorf("failed to marshal plugin state: %v", err)
 	}
 
+	logging.Debug("current state in agent call %s", stateJSON)
 	// Build dynamic prompt with plugin state
 	prompt := fmt.Sprintf("%s\n\nCurrent State:\n%s", plugin.SystemPrompt(), string(stateJSON))
 
@@ -300,18 +480,17 @@ func (ro *RequestOrchestrator) CompleteRequestCommand(event *ToolCallCompleted) 
 	requestID := event.RequestID
 	// Check if all tool calls for this RequestID are complete
 	if pending, exists := ro.agg.PendingToolCalls[requestID]; exists && len(pending) > 0 {
+		logging.Debug("pending toolcalls: %d", len(pending))
 		// Not all tool calls are done yet; no events to emit
 		return nil, nil
 	}
 
-	chatHist := ro.agg.ChatHistory
 	model := "qwq"
 	if agentState, exists := ro.agg.AgentStates[requestID]; exists {
-		chatHist = agentState.ChatHistory
 		model = agentState.Model
 	}
 
-	resp, err := ro.llmClient.CallLLM(ro.buildChatHistory(chatHist, 10), nil, requestID, model)
+	resp, err := ro.llmClient.CallLLM(ro.agg.chatManager.GetLLMContext(nil), nil, requestID, model)
 	if err != nil {
 		return nil, fmt.Errorf("error calling llm client: %w", err)
 	}
@@ -323,6 +502,8 @@ func (ro *RequestOrchestrator) CompleteRequestCommand(event *ToolCallCompleted) 
 		ResponseText: resp.Message.Content,
 		CompletedAt:  eventsourcing.ISOTimestamp(),
 	}
+	marsh, _ := completedEvent.Marshal()
+	logging.Debug("calling marshall in complete request %s", marsh)
 	return []eventsourcing.Event{completedEvent}, nil
 }
 
@@ -330,7 +511,7 @@ func (ro *RequestOrchestrator) CompleteRequestCommand(event *ToolCallCompleted) 
 func (ro *RequestOrchestrator) CompleteRequestWithErrorCommand(event eventsourcing.Event) ([]eventsourcing.Event, error) {
 	requestID := ""
 	errorMsg := ""
-	
+
 	// Extract the requestID and errorMsg from different error event types
 	switch e := event.(type) {
 	case *AgentExecutionFailedEvent:
@@ -357,50 +538,6 @@ func (ro *RequestOrchestrator) CompleteRequestWithErrorCommand(event eventsourci
 		ResponseText: fmt.Sprintf("I encountered an error while processing your request: %s", errorMsg),
 		CompletedAt:  eventsourcing.ISOTimestamp(),
 	}
-	
-	return []eventsourcing.Event{completedEvent}, nil
-}
 
-func (ro *RequestOrchestrator) Initialize() {
-	ro.eventProcessor.RegisterCommand("ProcessUserRequest", eventsourcing.NewCommand(ro.ProcessUserRequestCommand))
-	ro.eventProcessor.RegisterCommand("DecideAgentCall", eventsourcing.NewCommand(ro.DecideAgentCallCommand))
-	ro.eventBus.Subscribe("orchestration_UserRequestReceived", func(event eventsourcing.Event) error {
-		return ro.eventProcessor.ExecuteCommand("DecideAgentCall", event)
-	})
-	ro.eventProcessor.RegisterCommand("ExecuteAgentCall", eventsourcing.NewCommand(ro.ExecuteAgentCall))
-	ro.eventBus.Subscribe("orchestration_AgentCallDecided", func(event eventsourcing.Event) error {
-		if e, ok := event.(*AgentCallDecidedEvent); ok {
-			return ro.eventProcessor.ExecuteCommand("ExecuteAgentCall", e)
-		}
-		return nil
-	})
-	ro.eventProcessor.RegisterCommand("ExecuteToolCall", eventsourcing.NewCommand(ro.ExecuteToolCallCommand))
-	ro.eventBus.Subscribe("orchestration_ToolCallRequestPlaced", func(event eventsourcing.Event) error {
-		if e, ok := event.(*ToolCallRequestPlaced); ok {
-			return ro.eventProcessor.ExecuteCommand("ExecuteToolCall", e)
-		}
-		return nil
-	})
-	ro.eventProcessor.RegisterCommand("CompleteRequest", eventsourcing.NewCommand(ro.CompleteRequestCommand))
-	ro.eventBus.Subscribe("orchestration_ToolCallCompleted", func(event eventsourcing.Event) error {
-		if e, ok := event.(*ToolCallCompleted); ok {
-			return ro.eventProcessor.ExecuteCommand("CompleteRequest", e)
-		}
-		return nil
-	})
-	
-	// Register the error handling command and subscribe to error events
-	ro.eventProcessor.RegisterCommand("CompleteRequestWithError", eventsourcing.NewCommand(ro.CompleteRequestWithErrorCommand))
-	ro.eventBus.Subscribe("orchestration_AgentExecutionFailed", func(event eventsourcing.Event) error {
-		if e, ok := event.(*AgentExecutionFailedEvent); ok {
-			return ro.eventProcessor.ExecuteCommand("CompleteRequestWithError", e)
-		}
-		return nil
-	})
-	ro.eventBus.Subscribe("orchestration_ToolCallFailed", func(event eventsourcing.Event) error {
-		if e, ok := event.(*ToolCallFailedEvent); ok {
-			return ro.eventProcessor.ExecuteCommand("CompleteRequestWithError", e)
-		}
-		return nil
-	})
+	return []eventsourcing.Event{completedEvent}, nil
 }

@@ -54,7 +54,7 @@ type Task struct {
 
 // TaskAggregate manages the state of tasks with thread safety
 type TaskAggregate struct {
-	tasks    map[string]*Task
+	Tasks    map[string]*Task
 	commands map[string]eventsourcing.CommandHandler
 	mu       sync.RWMutex
 }
@@ -62,7 +62,7 @@ type TaskAggregate struct {
 // NewTaskAggregate creates a new thread-safe TaskAggregate
 func NewTaskAggregate() *TaskAggregate {
 	return &TaskAggregate{
-		tasks:    make(map[string]*Task),
+		Tasks:    make(map[string]*Task),
 		commands: make(map[string]eventsourcing.CommandHandler),
 	}
 }
@@ -88,7 +88,7 @@ func (a *TaskAggregate) ApplyEvent(event eventsourcing.Event) error {
 		if err := json.Unmarshal(data, &e); err != nil {
 			return fmt.Errorf("failed to unmarshal TaskCreated: %v", err)
 		}
-		a.tasks[e.TaskID] = &Task{
+		a.Tasks[e.TaskID] = &Task{
 			TaskID:       e.TaskID,
 			Title:        e.Title,
 			Description:  e.Description,
@@ -105,7 +105,7 @@ func (a *TaskAggregate) ApplyEvent(event eventsourcing.Event) error {
 		if err := json.Unmarshal(data, &e); err != nil {
 			return fmt.Errorf("failed to unmarshal TaskUpdated: %v", err)
 		}
-		if task, exists := a.tasks[e.TaskID]; exists {
+		if task, exists := a.Tasks[e.TaskID]; exists {
 			if e.Title != "" {
 				task.Title = e.Title
 			}
@@ -134,7 +134,7 @@ func (a *TaskAggregate) ApplyEvent(event eventsourcing.Event) error {
 		if err := json.Unmarshal(data, &e); err != nil {
 			return fmt.Errorf("failed to unmarshal TaskCompleted: %v", err)
 		}
-		if task, exists := a.tasks[e.TaskID]; exists {
+		if task, exists := a.Tasks[e.TaskID]; exists {
 			task.Status = StatusCompleted
 			task.CompletedAt = parseTime(e.CompletedAt)
 			task.CompletionNotes = e.CompletionNotes
@@ -145,7 +145,7 @@ func (a *TaskAggregate) ApplyEvent(event eventsourcing.Event) error {
 		if err := json.Unmarshal(data, &e); err != nil {
 			return fmt.Errorf("failed to unmarshal TaskDeleted: %v", err)
 		}
-		delete(a.tasks, e.TaskID)
+		delete(a.Tasks, e.TaskID)
 
 	default:
 		return nil
@@ -424,7 +424,11 @@ type TasksListedEvent struct {
 	Tasks     []*Task `json:"listed_tasks"`
 }
 
-func (e *TasksListedEvent) Type() string                { return "taskmanager_TasksListed" }
+func (e *TasksListedEvent) Type() string { return "taskmanager_TasksListed" }
+func (e *TasksListedEvent) Marshal() ([]byte, error) {
+	e.EventType = e.Type()
+	return json.Marshal(e)
+}
 func (e *TasksListedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
 
 type TaskCreatedEvent struct {
@@ -495,7 +499,6 @@ func (e *TaskDeletedEvent) Unmarshal(data []byte) error { return json.Unmarshal(
 func generateTaskID() string {
 	return fmt.Sprintf("task_%d", eventsourcing.GenerateUniqueID())
 }
-
 func parseTime(timeStr string) time.Time {
 	if timeStr == "" {
 		return time.Time{}
@@ -548,11 +551,34 @@ func (p *TaskPlugin) createTaskHandler(input *CreateTaskInput) ([]eventsourcing.
 		event.Priority = input.Priority
 	}
 	if input.Deadline != "" {
-		if _, err := time.Parse(time.RFC3339, input.Deadline); err != nil {
-			return nil, fmt.Errorf("invalid deadline format: %v", err)
+		// List of supported formats
+		formats := []string{
+			time.RFC3339,           // "2006-01-02T15:04:05Z07:00"
+			"2006-01-02",           // "2023-11-25"
+			"2006-01-02 15:04:05",  // "2023-11-25 14:30:00"
+			"2006-01-02T15:04:05Z", // "2023-11-25T14:30:00Z"
+		}
+
+		var parsedTime time.Time
+		var err error
+
+		// Try each format until one succeeds
+		for _, format := range formats {
+			parsedTime, err = time.Parse(format, input.Deadline)
+			if err == nil {
+				break
+			}
+		}
+
+		if err != nil {
+			return nil, fmt.Errorf("invalid deadline format: '%s' doesn't match any supported formats (e.g., '2006-01-02', '2006-01-02T15:04:05Z')", input.Deadline)
+		}
+
+		// Optional: Validate the parsed time is reasonable
+		if parsedTime.Year() < 1970 || parsedTime.Year() > 9999 {
+			return nil, fmt.Errorf("deadline year %d is out of valid range (1970-9999)", parsedTime.Year())
 		}
 	}
-
 	return []eventsourcing.Event{event}, nil
 }
 
@@ -562,7 +588,7 @@ func (p *TaskPlugin) updateTaskHandler(input *UpdateTaskInput) ([]eventsourcing.
 	}
 
 	p.aggregate.mu.RLock()
-	_, exists := p.aggregate.tasks[input.TaskID]
+	_, exists := p.aggregate.Tasks[input.TaskID]
 	p.aggregate.mu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("task %s not found", input.TaskID)
@@ -601,7 +627,7 @@ func (p *TaskPlugin) deleteTaskHandler(input *DeleteTaskInput) ([]eventsourcing.
 	}
 
 	p.aggregate.mu.RLock()
-	_, exists := p.aggregate.tasks[input.TaskID]
+	_, exists := p.aggregate.Tasks[input.TaskID]
 	p.aggregate.mu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("task %s not found", input.TaskID)
@@ -617,7 +643,7 @@ func (p *TaskPlugin) completeTaskHandler(input *CompleteTaskInput) ([]eventsourc
 	}
 
 	p.aggregate.mu.RLock()
-	task, exists := p.aggregate.tasks[input.TaskID]
+	task, exists := p.aggregate.Tasks[input.TaskID]
 	p.aggregate.mu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("task %s not found", input.TaskID)
@@ -640,8 +666,8 @@ func (p *TaskPlugin) listTasksHandler(input *ListTasksInput) ([]eventsourcing.Ev
 	p.aggregate.mu.RLock()
 	defer p.aggregate.mu.RUnlock()
 
-	tasks := make([]*Task, 0, len(p.aggregate.tasks))
-	for _, task := range p.aggregate.tasks {
+	tasks := make([]*Task, 0, len(p.aggregate.Tasks))
+	for _, task := range p.aggregate.Tasks {
 		tasks = append(tasks, task)
 	}
 
@@ -678,13 +704,13 @@ func (p *TaskPlugin) listTasksHandler(input *ListTasksInput) ([]eventsourcing.Ev
 	return []eventsourcing.Event{event}, nil
 }
 
-// UI
+// GetCustomUI returns a Kanban board-style UI for the task manager
 func (ta *TaskAggregate) GetCustomUI() fyne.CanvasObject {
 	ta.mu.RLock()
 	defer ta.mu.RUnlock()
 
-	tasks := make([]*Task, 0, len(ta.tasks))
-	for _, task := range ta.tasks {
+	tasks := make([]*Task, 0, len(ta.Tasks))
+	for _, task := range ta.Tasks {
 		tasks = append(tasks, task)
 	}
 
@@ -692,7 +718,28 @@ func (ta *TaskAggregate) GetCustomUI() fyne.CanvasObject {
 		return container.NewCenter(widget.NewLabel("No tasks available. Create one to get started!"))
 	}
 
-	// Sort tasks by priority and deadline
+	// Define Kanban columns based on task statuses
+	statuses := []string{StatusPending, StatusInProgress, StatusBlocked, StatusCompleted}
+	columns := make(map[string]*fyne.Container)
+	scrolls := make(map[string]*container.Scroll) // Store scroll containers separately
+
+	// Initialize each column
+	for _, status := range statuses {
+		header := widget.NewLabel(status)
+		header.TextStyle = fyne.TextStyle{Bold: true}
+		header.Alignment = fyne.TextAlignCenter
+		content := container.NewVBox()
+		scroll := container.NewVScroll(content)   // Create scroll container
+		scroll.SetMinSize(fyne.NewSize(250, 400)) // Set size directly on scroll
+		columns[status] = container.NewBorder(
+			container.NewPadded(header),
+			nil, nil, nil,
+			scroll, // Pass the scroll container directly
+		)
+		scrolls[status] = scroll // Store the scroll reference
+	}
+
+	// Sort tasks by priority and deadline within each column
 	sort.Slice(tasks, func(i, j int) bool {
 		pi, pj := priorityValue(tasks[i].Priority), priorityValue(tasks[j].Priority)
 		if pi != pj {
@@ -704,58 +751,69 @@ func (ta *TaskAggregate) GetCustomUI() fyne.CanvasObject {
 		return tasks[i].CreatedAt.Before(tasks[j].CreatedAt)
 	})
 
-	content := container.NewVBox()
+	// Populate columns with tasks
 	for _, task := range tasks {
-		item := createTaskItem(task, ta)
-		content.Add(item)
+		card := createTaskCard(task)
+		// Use the stored scroll reference instead of type-asserting Objects[1]
+		columnContent := scrolls[task.Status].Content.(*fyne.Container)
+		columnContent.Add(card)
 	}
 
-	scroll := container.NewVScroll(content)
-	scroll.SetMinSize(fyne.NewSize(500, 400))
-	return scroll
-}
+	// Assemble the Kanban board
+	board := container.NewHBox()
+	for _, status := range statuses {
+		board.Add(columns[status])
+	}
 
-func createTaskItem(task *Task, agg *TaskAggregate) fyne.CanvasObject {
-	title := widget.NewLabel(fmt.Sprintf("%s (%s)", task.Title, task.Status))
+	// Wrap in a scrollable container for wide boards
+	return container.NewHScroll(board)
+} // createTaskCard creates a compact card UI for a single task
+func createTaskCard(task *Task) fyne.CanvasObject {
+	// Title with priority icon
+	title := widget.NewLabel(task.Title)
 	title.TextStyle = fyne.TextStyle{Bold: true}
 	if task.Status == StatusCompleted {
 		title.TextStyle.Italic = true
 	}
+	title.Wrapping = fyne.TextWrapWord
+	titleBox := container.NewHBox(
+		widget.NewIcon(priorityIcon(task.Priority)),
+		title,
+	)
 
-	details := container.NewVBox()
+	// Compact details
+	var detailLines []string
 	if task.Description != "" {
-		desc := widget.NewLabel(task.Description)
-		desc.Wrapping = fyne.TextWrapWord
-		details.Add(desc)
+		desc := strings.TrimSpace(task.Description)
+		if len(desc) > 50 {
+			desc = desc[:47] + "..."
+		}
+		detailLines = append(detailLines, desc)
 	}
-
-	info := container.NewHBox(
-		widget.NewLabel(fmt.Sprintf("Priority: %s", task.Priority)),
-		widget.NewLabel("|"),
-		widget.NewLabel(fmt.Sprintf("Status: %s", task.Status)),
-	)
 	if !task.Deadline.IsZero() {
-		info.Add(widget.NewLabel("|"))
-		info.Add(widget.NewLabel(fmt.Sprintf("Due: %s", task.Deadline.Format("2006-01-02"))))
+		detailLines = append(detailLines, fmt.Sprintf("Due: %s", task.Deadline.Format("2006-01-02")))
 	}
-	details.Add(info)
-
 	if len(task.Tags) > 0 {
-		tags := widget.NewLabel(fmt.Sprintf("Tags: %s", strings.Join(task.Tags, ", ")))
-		details.Add(tags)
+		detailLines = append(detailLines, fmt.Sprintf("Tags: %s", strings.Join(task.Tags, ", ")))
 	}
+	details := widget.NewLabel(strings.Join(detailLines, "\n"))
+	details.Wrapping = fyne.TextWrapWord
 
-	accordion := widget.NewAccordion(widget.NewAccordionItem("", details))
-	accordion.Items[0].Title = "" // Hide title in accordion
-	accordion.Open(0)
-
-	return container.NewBorder(
-		container.NewHBox(title, widget.NewIcon(priorityIcon(task.Priority))),
-		nil, nil, nil,
-		accordion,
+	// Card layout
+	card := container.NewVBox(
+		titleBox,
+		widget.NewSeparator(),
+		details,
 	)
+
+	// Style the card with a border and padding
+	return container.NewPadded(container.NewBorder(
+		nil, nil, nil, nil,
+		card,
+	))
 }
 
+// priorityValue assigns a numeric value to priorities
 func priorityValue(priority string) int {
 	switch priority {
 	case PriorityCritical:
@@ -771,6 +829,7 @@ func priorityValue(priority string) int {
 	}
 }
 
+// priorityIcon returns an icon based on priority
 func priorityIcon(priority string) fyne.Resource {
 	switch priority {
 	case PriorityCritical:
@@ -795,17 +854,54 @@ func (p *TaskPlugin) Type() eventsourcing.PluginType {
 	return eventsourcing.LLMPlugin
 }
 
-// SystemPrompt provides a specialized prompt for the task manager agent
 func (p *TaskPlugin) SystemPrompt() string {
-	return `You are TaskMaster, a specialized AI for managing tasks in MindPalace.
-Your job is to interpret user requests about tasks and execute the right commands
-(CreateTask, UpdateTask, CompleteTask, etc.) based on the current task state.
+	// Acquire read lock to safely access tasks
+	p.aggregate.mu.RLock()
+	defer p.aggregate.mu.RUnlock()
+
+	// Collect tasks into a slice for sorting
+	tasks := make([]*Task, 0, len(p.aggregate.Tasks))
+	for _, task := range p.aggregate.Tasks {
+		tasks = append(tasks, task)
+	}
+
+	// Sort tasks by creation time for consistent ordering
+	sort.Slice(tasks, func(i, j int) bool {
+		return tasks[i].CreatedAt.Before(tasks[j].CreatedAt)
+	})
+
+	// Build the task list string
+	var taskList strings.Builder
+	if len(tasks) == 0 {
+		taskList.WriteString("There are currently no tasks.\n")
+	} else {
+		taskList.WriteString("Current tasks:\n")
+		for _, task := range tasks {
+			taskList.WriteString(fmt.Sprintf("- Task ID: %s, Title: \"%s\"\n", task.TaskID, task.Title))
+		}
+	}
+
+	// Construct the full dynamic prompt
+	prompt := `You are TaskMaster, a specialized AI for managing tasks in MindPalace.
+
+Your job is to interpret user requests about tasks and execute the right commands (CreateTask, UpdateTask, CompleteTask, DeleteTask, ListTasks) based on the current task state.
+
+` + taskList.String() + `
 
 Be concise, accurate, and always use the tools provided to manage tasks. Focus on:
+
 1. Creating detailed tasks with proper priorities and statuses
 2. Updating tasks with relevant information
 3. Completing tasks with helpful completion notes
-4. Listing and filtering tasks as requested
+4. Deleting tasks when requested to remove or delete
+5. Listing and filtering tasks as requested
+
+When interpreting user requests, pay close attention to the intent:
+- If the user asks to "remove," "delete," or "get rid of" a task, use the DeleteTask command.
+- If the user asks to "complete" or "finish" a task, use the CompleteTask command.
+- If the user asks to "create" or "add" a task, use the CreateTask command.
+- If the user asks to "update" or "modify" a task, use the UpdateTask command.
+- If the user asks to "list" or "show" tasks, use the ListTasks command.
 
 When creating or updating tasks, extract key information from user requests including:
 - Task title and description
@@ -815,6 +911,8 @@ When creating or updating tasks, extract key information from user requests incl
 - Tags for organization
 
 Format your responses in a structured way and confirm actions performed.`
+
+	return prompt
 }
 
 // AgentModel specifies the LLM model to use for this plugin's agent

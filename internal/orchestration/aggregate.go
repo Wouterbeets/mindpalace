@@ -3,8 +3,6 @@ package orchestration
 import (
 	"encoding/json"
 	"fmt"
-	"mindpalace/internal/chat"
-	"mindpalace/pkg/eventsourcing"
 	"regexp"
 	"strings"
 
@@ -12,13 +10,31 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+
+	"mindpalace/internal/chat"
+	"mindpalace/pkg/eventsourcing"
 )
 
 type OrchestrationAggregate struct {
-	ChatHistory      []chat.ChatMessage
-	PendingToolCalls map[string]map[string]struct{} // RequestID -> Map of ToolCallIDs
-	ToolCallStates   map[string]*ToolCallState      // ToolCallID -> Current State
-	AgentStates      map[string]*AgentState         // RequestID -> Agent State
+	chatManager      *chat.ChatManager
+	PendingToolCalls map[string]map[string]struct{}
+	ToolCallStates   map[string]*ToolCallState
+	AgentStates      map[string]*AgentState
+}
+
+func NewOrchestrationAggregate() *OrchestrationAggregate {
+	// Initialize ChatManager with a base system prompt and context size
+	basePrompt := "You are MindPalace, a friendly AI assistant here to help with various queries and tasks."
+	return &OrchestrationAggregate{
+		chatManager:      chat.NewChatManager(10, basePrompt), // 10 messages max for LLM context
+		PendingToolCalls: make(map[string]map[string]struct{}),
+		ToolCallStates:   make(map[string]*ToolCallState),
+		AgentStates:      make(map[string]*AgentState),
+	}
+}
+
+func (a *OrchestrationAggregate) ID() string {
+	return "orchestration"
 }
 
 // AgentState represents the current state of an agent interaction
@@ -30,7 +46,6 @@ type AgentState struct {
 	ExecutionData map[string]interface{} // Any data from execution
 	Summary       string                 // Final summary from agent
 	LastUpdated   string                 // Timestamp of last update
-	ChatHistory   []chat.ChatMessage
 	Model         string
 }
 
@@ -43,17 +58,13 @@ type ToolCallState struct {
 	LastUpdated string // Timestamp for sorting or debugging
 }
 
-func NewOrchestrationAggregate() *OrchestrationAggregate {
-	return &OrchestrationAggregate{
-		PendingToolCalls: make(map[string]map[string]struct{}),
-		ToolCallStates:   make(map[string]*ToolCallState),
-		AgentStates:      make(map[string]*AgentState),
+func (a *OrchestrationAggregate) AgentName(requestID string) string {
+	var agent *AgentState
+	var ok bool
+	if agent, ok = a.AgentStates[requestID]; !ok {
+		return ""
 	}
-}
-
-// ID returns the aggregate's identifier.
-func (a *OrchestrationAggregate) ID() string {
-	return "orchestration"
+	return agent.AgentName
 }
 
 func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
@@ -80,45 +91,19 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 
 	case "orchestration_ToolCallStarted":
 		e := event.(*ToolCallStarted)
-		if state, exists := a.ToolCallStates[e.ToolCallID]; exists {
-			state.Status = "started"
-			state.LastUpdated = e.Timestamp
-		}
+		a.chatManager.AddMessage(chat.RoleSystem, fmt.Sprintf("Tool Call started'%s'", e.Function), e.RequestID, a.AgentStates[e.RequestID].AgentName, nil)
 
 	case "orchestration_ToolCallCompleted":
 		e := event.(*ToolCallCompleted)
-		if state, exists := a.ToolCallStates[e.ToolCallID]; exists {
-			state.Status = "completed"
-			state.Results = e.Results
-			state.LastUpdated = e.Timestamp
-			delete(a.PendingToolCalls[e.RequestID], e.ToolCallID)
-			if len(a.PendingToolCalls[e.RequestID]) == 0 {
-				delete(a.PendingToolCalls, e.RequestID)
-			}
-		}
-
-		agentName := "MindPalace"
+		bytes, _ := json.Marshal(e.Results)
 		if agentState, exists := a.AgentStates[e.RequestID]; exists {
-			agentName = agentState.AgentName
 			agentState.ExecutionData[e.ToolCallID] = e.Results
 			agentState.LastUpdated = eventsourcing.ISOTimestamp()
-			agentState.ChatHistory = append(a.ChatHistory, chat.ChatMessage{
-				Role:              agentName,
-				OllamaRole:        "tool",
-				Content:           fmt.Sprintf("%+v", e.Results),
-				RequestID:         e.RequestID,
-				StreamingComplete: true,
-			})
-		} else {
-			a.ChatHistory = append(a.ChatHistory, chat.ChatMessage{
-				Role:              agentName,
-				OllamaRole:        "tool",
-				Content:           fmt.Sprintf("%+v", e.Results),
-				RequestID:         e.RequestID,
-				StreamingComplete: true,
-			})
 		}
-
+		agentName := a.AgentName(e.RequestID)
+		a.chatManager.AddMessage(chat.RoleTool, string(bytes), e.RequestID, agentName, map[string]interface{}{
+			"function": e.Function,
+		})
 	case "orchestration_ToolCallFailed":
 		e := event.(*ToolCallFailedEvent)
 		if state, exists := a.ToolCallStates[e.ToolCallID]; exists {
@@ -131,32 +116,14 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 			}
 		}
 
-		agentName := "MindPalace"
 		if agentState, exists := a.AgentStates[e.RequestID]; exists {
-			agentName = agentState.AgentName
 			agentState.LastUpdated = eventsourcing.ISOTimestamp()
-			agentState.ChatHistory = append(a.ChatHistory, chat.ChatMessage{
-				Role:              agentName,
-				OllamaRole:        "tool",
-				Content:           fmt.Sprintf("Tool call failed: %s", e.ErrorMsg),
-				RequestID:         e.RequestID,
-				StreamingComplete: true,
-			})
-		} else {
-			a.ChatHistory = append(a.ChatHistory, chat.ChatMessage{
-				Role:              agentName,
-				OllamaRole:        "tool",
-				Content:           fmt.Sprintf("Tool call failed: %s", e.ErrorMsg),
-				RequestID:         e.RequestID,
-				StreamingComplete: true,
-			})
 		}
+		agentName := a.AgentName(e.RequestID)
+		a.chatManager.AddMessage(chat.RoleSystem, fmt.Sprintf("Tool Call failed '%s'", e.ErrorMsg), e.RequestID, agentName, nil)
 
 	case "orchestration_AgentCallDecided":
 		e := event.(*AgentCallDecidedEvent)
-		if a.AgentStates == nil {
-			a.AgentStates = make(map[string]*AgentState)
-		}
 		a.AgentStates[e.RequestID] = &AgentState{
 			RequestID:     e.RequestID,
 			AgentName:     e.AgentName,
@@ -164,9 +131,9 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 			ToolCallIDs:   []string{},
 			ExecutionData: make(map[string]interface{}),
 			LastUpdated:   e.Timestamp,
-			ChatHistory:   make([]chat.ChatMessage, 0),
 			Model:         e.Model,
 		}
+		a.chatManager.AddMessage(chat.RoleSystem, fmt.Sprintf("Calling agent '%s'...", e.AgentName), e.RequestID, e.AgentName, nil)
 
 	case "orchestration_AgentExecutionFailed":
 		e := event.(*AgentExecutionFailedEvent)
@@ -174,78 +141,89 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 			agentState.Status = "failed"
 			agentState.Summary = fmt.Sprintf("Agent execution failed: %s", e.ErrorMsg)
 			agentState.LastUpdated = e.Timestamp
-			
-			// Add error message to chat history
-			a.ChatHistory = append(a.ChatHistory, chat.ChatMessage{
-				Role:              e.AgentName,
-				OllamaRole:        "assistant",
-				Content:           fmt.Sprintf("Error: %s", e.ErrorMsg),
-				RequestID:         e.RequestID,
-				StreamingComplete: true,
-			})
 		}
+		agentName := a.AgentName(e.RequestID)
+		a.chatManager.AddMessage(chat.RoleMindPalace, fmt.Sprintf("Error %s", e.ErrorMsg), e.RequestID, agentName, nil)
 
 	case "orchestration_UserRequestReceived":
-		return a.handleUserRequestReceived(event)
-	case "orchestration_RequestCompleted":
-		return a.handleRequestCompleted(event)
-	}
-	return nil
-}
+		e := event.(*UserRequestReceivedEvent)
+		agentName := a.AgentName(e.RequestID)
+		a.chatManager.AddMessage(chat.RoleUser, e.RequestText, e.RequestID, agentName, nil)
 
-// handleUserRequestReceived adds a user request to the chat history.
-func (a *OrchestrationAggregate) handleUserRequestReceived(event eventsourcing.Event) error {
-	e, ok := event.(*UserRequestReceivedEvent)
-	if !ok {
-		return fmt.Errorf("expected *eventsourcing.UserRequestReceivedEvent")
+	case "orchestration_RequestCompleted":
+		e := event.(*RequestCompletedEvent)
+		thinks, regular := parseResponseText(e.ResponseText)
+
+		agentName := a.AgentName(e.RequestID)
+		for _, think := range thinks {
+			a.chatManager.AddMessage(chat.RoleHidden, think, e.RequestID, agentName, nil)
+		}
+		if regular != "" {
+			a.chatManager.AddMessage(chat.RoleMindPalace, regular, e.RequestID, agentName, nil)
+		}
 	}
-	a.ChatHistory = append(a.ChatHistory, chat.ChatMessage{
-		Role:              "You",
-		OllamaRole:        "user",
-		Content:           e.RequestText,
-		RequestID:         e.RequestID,
-		StreamingComplete: true,
-	})
 	return nil
 }
 
 func (a *OrchestrationAggregate) GetCustomUI() fyne.CanvasObject {
 	var chatUIList []fyne.CanvasObject
+	messages := a.chatManager.GetUIMessages()
 
-	// Add user and assistant messages from ChatHistory
-	for i, msg := range a.ChatHistory {
-		if msg.OllamaRole == "user" || msg.OllamaRole == "assistant" {
-			content := a.renderChatMessage(msg)
-			chatUIList = append(chatUIList, content)
-			if i < len(a.ChatHistory)-1 {
-				chatUIList = append(chatUIList, widget.NewSeparator())
+	currentRequestID := ""
+	for i, msg := range messages {
+		if msg.RequestID != currentRequestID && currentRequestID != "" {
+			// Add processing indicator if request is ongoing (logic simplified)
+			if a.isRequestPending(currentRequestID) {
+				chatUIList = append(chatUIList, container.NewHBox(
+					widget.NewProgressBarInfinite(),
+					widget.NewLabel("Processing..."),
+				), widget.NewSeparator())
 			}
+			currentRequestID = msg.RequestID
+		} else if currentRequestID == "" {
+			currentRequestID = msg.RequestID
+		}
+
+		chatUIList = append(chatUIList, a.renderChatMessage(msg))
+		if i < len(messages)-1 {
+			chatUIList = append(chatUIList, widget.NewSeparator())
 		}
 	}
 
-	// Add current agent states
-	for _, state := range a.AgentStates {
-		content := a.renderAgentState(state)
-		chatUIList = append(chatUIList, content, widget.NewSeparator())
-	}
-
-	// Add current tool call states
-	for _, state := range a.ToolCallStates {
-		content := a.renderToolCallState(state)
-		chatUIList = append(chatUIList, content, widget.NewSeparator())
+	// Check last request
+	if currentRequestID != "" && a.isRequestPending(currentRequestID) {
+		chatUIList = append(chatUIList, container.NewHBox(
+			widget.NewProgressBarInfinite(),
+			widget.NewLabel("Processing..."),
+		))
 	}
 
 	return container.NewVBox(chatUIList...)
 }
 
-func (a *OrchestrationAggregate) renderChatMessage(msg chat.ChatMessage) fyne.CanvasObject {
-	messageContainer := container.NewVBox()
-	roleLabel := widget.NewLabel(msg.Role)
+func (a *OrchestrationAggregate) renderChatMessage(msg chat.Message) fyne.CanvasObject {
+	roleLabel := widget.NewLabel("")
 	roleLabel.TextStyle = fyne.TextStyle{Bold: true}
-	content := parseMarkdownToCanvas(msg.Content)
-	messageContainer.Add(roleLabel)
-	messageContainer.Add(content)
-	return container.NewPadded(messageContainer)
+	var content fyne.CanvasObject
+
+	switch msg.Role {
+	case chat.RoleUser:
+		roleLabel.Text = "You"
+		content = parseMarkdownToCanvas(msg.Content)
+	case chat.RoleMindPalace:
+		roleLabel.Text = "MindPalace"
+		content = parseMarkdownToCanvas(msg.Content)
+	case chat.RoleTool:
+		roleLabel.Text = fmt.Sprintf("%s (tool)", msg.Metadata["function"])
+		content = parseMarkdownToCanvas(msg.Content)
+	}
+
+	return container.NewVBox(roleLabel, content)
+}
+
+// Helper to check if a request is still processing
+func (a *OrchestrationAggregate) isRequestPending(requestID string) bool {
+	return len(a.PendingToolCalls[requestID]) > 0 || (a.AgentStates[requestID] != nil && a.AgentStates[requestID].Status != "completed")
 }
 
 func (a *OrchestrationAggregate) renderAgentState(state *AgentState) fyne.CanvasObject {
@@ -290,7 +268,7 @@ func (a *OrchestrationAggregate) renderAgentState(state *AgentState) fyne.Canvas
 
 		contentBox := container.NewVBox(contentElements...)
 		messageContainer.Add(container.NewVBox(roleLabel, contentBox))
-		
+
 	case "failed":
 		statusLabel := widget.NewLabel(fmt.Sprintf("Agent '%s' failed", state.AgentName))
 		statusLabel.TextStyle = fyne.TextStyle{Italic: true}
@@ -343,7 +321,7 @@ func (a *OrchestrationAggregate) renderToolCallState(state *ToolCallState) fyne.
 			resultContent,
 		)
 		messageContainer.Add(container.NewVBox(roleLabel, contentBox))
-		
+
 	case "failed":
 		statusLabel := widget.NewLabel(fmt.Sprintf("Tool Call: %s - Failed", state.Function))
 		statusLabel.TextStyle = fyne.TextStyle{Italic: true}
@@ -477,33 +455,9 @@ type RequestCompletedEvent struct {
 }
 
 func (e *RequestCompletedEvent) Type() string { return "orchestration_RequestCompleted" }
-
-// handleRequestCompleted processes the LLM response and updates the chat history.
-func (a *OrchestrationAggregate) handleRequestCompleted(event eventsourcing.Event) error {
-	e, ok := event.(*RequestCompletedEvent)
-	if !ok {
-		return fmt.Errorf("expected RequestCompleted event type")
-	}
-	thinks, regular := parseResponseText(e.ResponseText)
-	for _, think := range thinks {
-		a.ChatHistory = append(a.ChatHistory, chat.ChatMessage{
-			Role:              "Assistant [think]",
-			OllamaRole:        "none",
-			Content:           think,
-			RequestID:         e.RequestID,
-			StreamingComplete: true,
-		})
-	}
-	if regular != "" {
-		a.ChatHistory = append(a.ChatHistory, chat.ChatMessage{
-			Role:              "MindPalace",
-			OllamaRole:        "assistant",
-			Content:           regular,
-			RequestID:         e.RequestID,
-			StreamingComplete: true,
-		})
-	}
-	return nil
+func (e *RequestCompletedEvent) Marshal() ([]byte, error) {
+	e.EventType = e.Type()
+	return json.Marshal(e)
 }
 
 // parseResponseText extracts <think> tags and regular content from the response.
