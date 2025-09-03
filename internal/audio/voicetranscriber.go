@@ -71,7 +71,7 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 
 	// Initialize Python transcription process
 	logging.Trace("Starting transcription process...")
-	vt.cmd = exec.Command("/home/mindpalace/mindpalace_venv/bin/python3", "transcribe.py")
+	vt.cmd = exec.Command("python3", "transcribe.py")
 	stdin, err := vt.cmd.StdinPipe()
 	if err != nil {
 		log.Printf("Error getting stdin pipe: %v", err)
