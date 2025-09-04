@@ -845,6 +845,15 @@ func priorityIcon(priority string) fyne.Resource {
 	}
 }
 
+// GetWebUI returns HTMX-enabled HTML for the web UI
+func (ta *TaskAggregate) GetWebUI() string {
+	ta.Mu.RLock()
+	tasks := make([]*Task, 0, len(ta.Tasks))
+	for _, t := range ta.Tasks { tasks = append(tasks, t) }
+	ta.Mu.RUnlock()
+	return TasksPage(tasks).String() // Rendered HTML from Templ
+}
+
 // Additional Plugin Methods
 func (p *TaskPlugin) Aggregate() eventsourcing.Aggregate {
 	return p.aggregate
@@ -928,7 +937,7 @@ func (p *TaskPlugin) EventHandlers() map[string]eventsourcing.EventHandler {
 func contains(slice []string, item string) bool {
 	for _, s := range slice {
 		if s == item {
-			return true
+			return s
 		}
 	}
 	return false

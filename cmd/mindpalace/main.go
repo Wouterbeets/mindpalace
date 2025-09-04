@@ -103,82 +103,7 @@ func main() {
 			http.Error(w, "Task aggregate not found", 500)
 			return
 		}
-
-		// Use reflection to access the aggregate's fields
-		v := reflect.ValueOf(agg)
-		if v.Kind() == reflect.Ptr {
-			v = v.Elem()
-		}
-
-		// Access and lock the mutex for thread safety
-		muField := v.FieldByName("Mu")
-		if !muField.IsValid() {
-			http.Error(w, "Invalid aggregate structure", 500)
-			return
-		}
-		mu := muField.Interface().(sync.RWMutex)
-		mu.RLock()
-		defer mu.RUnlock()
-
-		// Access the Tasks map
-		tasksField := v.FieldByName("Tasks")
-		if !tasksField.IsValid() {
-			http.Error(w, "Tasks field not found", 500)
-			return
-		}
-
-		// Render HTML for tasks
-		html := `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tasks - MindPalace Web</title>
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-</head>
-<body>
-    <h1>Tasks</h1>
-    <button hx-get="/tasks" hx-target="#task-list">Refresh Tasks</button>
-    <div id="task-list">
-`
-		// Iterate over the tasks map using reflection
-		iter := tasksField.MapRange()
-		taskCount := 0
-		for iter.Next() {
-			taskV := iter.Value()
-			if taskV.Kind() == reflect.Ptr {
-				taskV = taskV.Elem()
-			}
-
-			// Extract fields
-			titleField := taskV.FieldByName("Title")
-			descField := taskV.FieldByName("Description")
-			statusField := taskV.FieldByName("Status")
-			priorityField := taskV.FieldByName("Priority")
-
-			if titleField.IsValid() && descField.IsValid() && statusField.IsValid() && priorityField.IsValid() {
-				title := titleField.String()
-				desc := descField.String()
-				status := statusField.String()
-				priority := priorityField.String()
-				html += fmt.Sprintf("<li><strong>%s</strong> - %s (Status: %s, Priority: %s)</li>", title, desc, status, priority)
-				taskCount++
-			}
-		}
-
-		if taskCount == 0 {
-			html += "<p>No tasks available.</p>"
-		} else {
-			html = strings.Replace(html, "<div id=\"task-list\">", "<div id=\"task-list\"><ul>", 1)
-			html += "</ul>"
-		}
-
-		html += `
-    </div>
-    <a href="/">Back to Home</a>
-</body>
-</html>`
+		html := agg.GetWebUI() // Direct call to new method
 		fmt.Fprint(w, html)
 	}
 
@@ -187,7 +112,7 @@ func main() {
 		http.HandleFunc("/", webHandler)
 		http.HandleFunc("/tasks", tasksHandler)
 		logging.Info("Starting web server on :3030")
-		if err := http.ListenAndServe(":3030", nil); err != nil {
+		if err := http.ListenAndServe(":3030", err != nil {
 			logging.Error("Web server error: %v", err)
 		}
 	}()

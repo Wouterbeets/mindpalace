@@ -1,0 +1,48 @@
+package main
+
+import (
+	"time"
+)
+
+// Task represents a single task's state (mirrored from plugin.go for Templ)
+type Task struct {
+	TaskID          string    `json:"task_id"`
+	Title           string    `json:"title"`
+	Description     string    `json:"description,omitempty"`
+	Status          string    `json:"status"`
+	Priority        string    `json:"priority"`
+	Deadline        time.Time `json:"deadline,omitempty"`
+	Dependencies    []string  `json:"dependencies,omitempty"`
+	Tags            []string  `json:"tags,omitempty"`
+	CompletedAt     time.Time `json:"completed_at,omitempty"`
+	CompletionNotes string    `json:"completion_notes,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+templ TasksPage(tasks []*Task) {
+	<!DOCTYPE html>
+	<html lang="en">
+	<head>
+		<meta charset="UTF-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<title>Tasks - MindPalace Web</title>
+		<script src="https://unpkg.com/htmx.org@1.9.10"></script>
+	</head>
+	<body>
+		<h1>Tasks</h1>
+		<button hx-get="/tasks" hx-target="#task-list">Refresh Tasks</button>
+		<div id="task-list">
+			if len(tasks) == 0 {
+				<p>No tasks available.</p>
+			} else {
+				<ul>
+					for _, task := range tasks {
+						<li><strong>{ task.Title }</strong> - { task.Description } (Status: { task.Status }, Priority: { task.Priority })</li>
+					}
+				</ul>
+			}
+		</div>
+		<a href="/">Back to Home</a>
+	</body>
+	</html>
+}
