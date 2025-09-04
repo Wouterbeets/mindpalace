@@ -1,21 +1,3 @@
-package main
-
-import (
-	"encoding/json"
-	"fmt"
-	"sort"
-	"strings"
-	"sync"
-	"time"
-
-	"mindpalace/pkg/eventsourcing"
-
-	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/theme"
-	"fyne.io/fyne/v2/widget"
-)
-
 // Register event types
 func init() {
 	eventsourcing.RegisterEvent("taskmanager_TaskCreated", func() eventsourcing.Event { return &TaskCreatedEvent{} })
@@ -757,6 +739,9 @@ func (ta *TaskAggregate) GetCustomUI() fyne.CanvasObject {
 		// Use the stored scroll reference instead of type-asserting Objects[1]
 		columnContent := scrolls[task.Status].Content.(*fyne.Container)
 		columnContent.Add(card)
+		if i < len(tasks)-1 {
+			columnContent.Add(widget.NewSeparator())
+		}
 	}
 
 	// Assemble the Kanban board
@@ -849,9 +834,11 @@ func priorityIcon(priority string) fyne.Resource {
 func (ta *TaskAggregate) GetWebUI() string {
 	ta.Mu.RLock()
 	tasks := make([]*Task, 0, len(ta.Tasks))
-	for _, t := range ta.Tasks { tasks = append(tasks, t) }
+	for _, t := range ta.Tasks {
+		tasks = append(tasks, t)
+	}
 	ta.Mu.RUnlock()
-	return TasksPage(tasks).String() // Rendered HTML from Templ
+	return TasksPage(tasks).String() // Use the generated Templ function
 }
 
 // Additional Plugin Methods
@@ -937,7 +924,7 @@ func (p *TaskPlugin) EventHandlers() map[string]eventsourcing.EventHandler {
 func contains(slice []string, item string) bool {
 	for _, s := range slice {
 		if s == item {
-			return s
+			return true
 		}
 	}
 	return false
