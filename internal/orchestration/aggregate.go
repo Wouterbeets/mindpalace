@@ -488,6 +488,10 @@ func (e *UserRequestReceivedEvent) Marshal() ([]byte, error) {
 	return json.Marshal(e)
 }
 
+func (e *UserRequestReceivedEvent) Unmarshal(data []byte) error {
+	return json.Unmarshal(data, e)
+}
+
 type RequestCompleted struct {
 	EventType   string `json:"event_type"`
 	RequestID   string `json:"request_id"`
@@ -504,9 +508,7 @@ func (e *RequestCompleted) Marshal() ([]byte, error) {
 	return json.Marshal(e)
 }
 
-func (e *UserRequestReceivedEvent) Unmarshal(data []byte) error {
-	return json.Unmarshal(data, e)
-}
+func (e *UserRequestReceivedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
 
 type InitiatePluginCreationEvent struct {
 	EventType   string `json:"event_type"`
@@ -640,4 +642,21 @@ func init() {
 
 	// Last event in chain
 	eventsourcing.RegisterEvent("orchestration_RequestCompleted", func() eventsourcing.Event { return &RequestCompletedEvent{} })
+}
+
+// GetWebUI returns HTMX-enabled HTML for the web UI
+func (a *OrchestrationAggregate) GetWebUI() string {
+	return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Orchestration - MindPalace Web</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+</head>
+<body>
+    <h1>Orchestration Web UI</h1>
+    <p>Not implemented yet. This will handle chat and request orchestration.</p>
+    <a href="/">Back to Home</a>
+</body>
+</html>`
 }

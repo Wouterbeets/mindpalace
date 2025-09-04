@@ -12,9 +12,6 @@ import (
 	"mindpalace/pkg/logging"
 	"net/http"
 	"os"
-	"reflect"
-	"strings"
-	"sync"
 )
 
 func main() {
