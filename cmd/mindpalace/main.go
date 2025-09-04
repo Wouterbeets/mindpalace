@@ -112,7 +112,7 @@ func main() {
 		http.HandleFunc("/", webHandler)
 		http.HandleFunc("/tasks", tasksHandler)
 		logging.Info("Starting web server on :3030")
-		if err := http.ListenAndServe(":3030", err != nil {
+		if err := http.ListenAndServe(":3030", nil); err != nil {
 			logging.Error("Web server error: %v", err)
 		}
 	}()
