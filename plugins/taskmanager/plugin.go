@@ -1,3 +1,21 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"mindpalace/pkg/eventsourcing"
+
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
+)
+
 // Register event types
 func init() {
 	eventsourcing.RegisterEvent("taskmanager_TaskCreated", func() eventsourcing.Event { return &TaskCreatedEvent{} })
@@ -36,7 +54,7 @@ type Task struct {
 
 // TaskAggregate manages the state of tasks with thread safety
 type TaskAggregate struct {
-	Tasks map[string]*Task
+	Tasks    map[string]*Task
 	commands map[string]eventsourcing.CommandHandler
 	Mu       sync.RWMutex
 }
