@@ -757,9 +757,7 @@ func (ta *TaskAggregate) GetCustomUI() fyne.CanvasObject {
 		// Use the stored scroll reference instead of type-asserting Objects[1]
 		columnContent := scrolls[task.Status].Content.(*fyne.Container)
 		columnContent.Add(card)
-		if i < len(tasks)-1 {
-			columnContent.Add(widget.NewSeparator())
-		}
+		columnContent.Add(widget.NewSeparator())  // Always add separator after each card
 	}
 
 	// Assemble the Kanban board
