@@ -10,9 +10,11 @@ import (
 	"mindpalace/pkg/aggregate"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
-	"mindpalace/plugins/taskmanager"
 	"net/http"
 	"os"
+	"reflect"
+	"strings"
+	"sync"
 )
 
 func main() {
@@ -101,19 +103,29 @@ func main() {
 			http.Error(w, "Task aggregate not found", 500)
 			return
 		}
-		taskAgg, ok := agg.(*taskmanager.TaskAggregate)
-		if !ok {
-			http.Error(w, "Invalid aggregate type", 500)
-			return
+
+		// Use reflection to access the aggregate's fields
+		v := reflect.ValueOf(agg)
+		if v.Kind() == reflect.Ptr {
+			v = v.Elem()
 		}
 
-		// Safely read tasks
-		taskAgg.Mu.RLock()
-		tasks := make([]*taskmanager.Task, 0, len(taskAgg.Tasks))
-		for _, t := range taskAgg.Tasks {
-			tasks = append(tasks, t)
+		// Access and lock the mutex for thread safety
+		muField := v.FieldByName("Mu")
+		if !muField.IsValid() {
+			http.Error(w, "Invalid aggregate structure", 500)
+			return
 		}
-		taskAgg.Mu.RUnlock()
+		mu := muField.Interface().(sync.RWMutex)
+		mu.RLock()
+		defer mu.RUnlock()
+
+		// Access the Tasks map
+		tasksField := v.FieldByName("Tasks")
+		if !tasksField.IsValid() {
+			http.Error(w, "Tasks field not found", 500)
+			return
+		}
 
 		// Render HTML for tasks
 		html := `
@@ -130,15 +142,38 @@ func main() {
     <button hx-get="/tasks" hx-target="#task-list">Refresh Tasks</button>
     <div id="task-list">
 `
-		if len(tasks) == 0 {
+		// Iterate over the tasks map using reflection
+		iter := tasksField.MapRange()
+		taskCount := 0
+		for iter.Next() {
+			taskV := iter.Value()
+			if taskV.Kind() == reflect.Ptr {
+				taskV = taskV.Elem()
+			}
+
+			// Extract fields
+			titleField := taskV.FieldByName("Title")
+			descField := taskV.FieldByName("Description")
+			statusField := taskV.FieldByName("Status")
+			priorityField := taskV.FieldByName("Priority")
+
+			if titleField.IsValid() && descField.IsValid() && statusField.IsValid() && priorityField.IsValid() {
+				title := titleField.String()
+				desc := descField.String()
+				status := statusField.String()
+				priority := priorityField.String()
+				html += fmt.Sprintf("<li><strong>%s</strong> - %s (Status: %s, Priority: %s)</li>", title, desc, status, priority)
+				taskCount++
+			}
+		}
+
+		if taskCount == 0 {
 			html += "<p>No tasks available.</p>"
 		} else {
-			html += "<ul>"
-			for _, task := range tasks {
-				html += fmt.Sprintf("<li><strong>%s</strong> - %s (Status: %s, Priority: %s)</li>", task.Title, task.Description, task.Status, task.Priority)
-			}
+			html = strings.Replace(html, "<div id=\"task-list\">", "<div id=\"task-list\"><ul>", 1)
 			html += "</ul>"
 		}
+
 		html += `
     </div>
     <a href="/">Back to Home</a>
