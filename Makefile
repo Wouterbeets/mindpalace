@@ -7,7 +7,7 @@ PLUGIN_DIR = plugins
 BUILD_DIR = build
 MAIN_SRC = cmd/mindpalace/main.go
 PLUGINS = $(wildcard $(PLUGIN_DIR)/*/plugin.go)
-PLUGIN_OUTPUTS = $(patsubst $(PLUGIN_DIR)/%/plugin.go,$(PLUGIN_DIR)/%/$(notdir $(patsubst %/plugin.go,%,$(dir $<))).so,$(PLUGINS))
+PLUGIN_OUTPUTS = $(patsubst $(PLUGIN_DIR)/%/plugin.go,$(PLUGIN_DIR)/%.so,$(PLUGINS))
 
 # Allow passing arguments to run
 RUN_ARGS ?=
@@ -30,7 +30,8 @@ plugins: $(PLUGIN_OUTPUTS)
 # Pattern rule for building plugins
 $(PLUGIN_DIR)/%.so: $(PLUGIN_DIR)/%/plugin.go
 	@echo "Building plugin: $@"
-	$(GO) build $(GOFLAGS) -buildmode=plugin -o $@ $<
+	cd $(PLUGIN_DIR)/$* && templ generate
+	$(GO) build $(GOFLAGS) -buildmode=plugin -o $@ $(PLUGIN_DIR)/$*/.
 
 # Run the application with optional arguments
 .PHONY: run
@@ -93,7 +94,7 @@ lint:
 release: clean build plugins
 	@echo "Creating release package..."
 	@mkdir -p release
-	tar -czf release/mindpalace.tar.gz $(BUILD_DIR)/$(BINARY_NAME) $(PLUGIN_DIR)/*/taskmanager.so events.json
+	tar -czf release/mindpalace.tar.gz $(BUILD_DIR)/$(BINARY_NAME) $(PLUGIN_DIR)/*.so events.json
 
 .PHONY: dev
 dev:
