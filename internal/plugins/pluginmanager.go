@@ -68,18 +68,17 @@ func (pm *PluginManager) LoadPlugins(pluginDir string) {
 
 	for _, dir := range pluginDirs {
 		pluginName := filepath.Base(dir)
-		goFile := filepath.Join(dir, "plugin.go")
 		soFile := filepath.Join(dir, pluginName+".so")
 
-		shouldBuild, err := pm.shouldBuildPlugin(goFile, soFile)
+		shouldBuild, err := pm.shouldBuildPlugin(dir, soFile)
 		if err != nil {
 			logging.Error("Error checking if plugin needs building: %v", err)
 			continue
 		}
 
 		if shouldBuild {
-			if err := pm.buildPlugin(goFile, soFile); err != nil {
-				logging.Error("Failed to build plugin %s: %v", goFile, err)
+			if err := pm.buildPlugin(dir, soFile); err != nil {
+				logging.Error("Failed to build plugin %s: %v", dir, err)
 				continue
 			}
 		}
@@ -89,8 +88,8 @@ func (pm *PluginManager) LoadPlugins(pluginDir string) {
 		if err != nil {
 			logging.Error("Failed to load plugin %s: %v", soFile, err)
 			// Attempt to rebuild the plugin if loading failed
-			if err := pm.buildPlugin(goFile, soFile); err != nil {
-				logging.Error("Failed to rebuild plugin %s: %v", goFile, err)
+			if err := pm.buildPlugin(dir, soFile); err != nil {
+				logging.Error("Failed to rebuild plugin %s: %v", dir, err)
 				continue
 			}
 			// Try loading again after rebuilding
@@ -143,11 +142,14 @@ func (pm *PluginManager) discoverPluginDirectories(rootDir string) ([]string, er
 }
 
 // shouldBuildPlugin checks if a plugin should be built based on file existence or modification times
-func (pm *PluginManager) shouldBuildPlugin(goFile, soFile string) (bool, error) {
-	// Check if the source file exists
-	goInfo, err := os.Stat(goFile)
+func (pm *PluginManager) shouldBuildPlugin(dir, soFile string) (bool, error) {
+	// Glob all .go files in the directory
+	goFiles, err := filepath.Glob(filepath.Join(dir, "*.go"))
 	if err != nil {
-		return false, fmt.Errorf("source file error: %w", err)
+		return false, fmt.Errorf("error globbing .go files: %w", err)
+	}
+	if len(goFiles) == 0 {
+		return false, fmt.Errorf("no .go files found in directory: %s", dir)
 	}
 
 	// Check if the SO file exists
@@ -160,10 +162,16 @@ func (pm *PluginManager) shouldBuildPlugin(goFile, soFile string) (bool, error) 
 		return false, fmt.Errorf("SO file check error: %w", err)
 	}
 
-	// Both files exist, check if GO file is newer than SO file
-	if goInfo.ModTime().After(soInfo.ModTime()) {
-		logging.Debug("Plugin source is newer than SO, will rebuild: %s", goFile)
-		return true, nil
+	// Check if any GO file is newer than SO file
+	for _, goFile := range goFiles {
+		goInfo, err := os.Stat(goFile)
+		if err != nil {
+			return false, fmt.Errorf("source file error for %s: %w", goFile, err)
+		}
+		if goInfo.ModTime().After(soInfo.ModTime()) {
+			logging.Debug("Plugin source is newer than SO, will rebuild: %s", goFile)
+			return true, nil
+		}
 	}
 
 	// SO file exists and is up to date
@@ -172,8 +180,17 @@ func (pm *PluginManager) shouldBuildPlugin(goFile, soFile string) (bool, error) 
 }
 
 // buildPlugin compiles a plugin from the given source to the given output
-func (pm *PluginManager) buildPlugin(goFile, soFile string) error {
-	logging.Debug("Building plugin from %s to %s", goFile, soFile)
+func (pm *PluginManager) buildPlugin(dir, soFile string) error {
+	logging.Debug("Building plugin from %s to %s", dir, soFile)
+
+	// Glob all .go files in the directory
+	goFiles, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		return fmt.Errorf("error globbing .go files: %w", err)
+	}
+	if len(goFiles) == 0 {
+		return fmt.Errorf("no .go files found in directory: %s", dir)
+	}
 
 	// If SO file already exists, remove it first to avoid any issues
 	if _, err := os.Stat(soFile); err == nil {
@@ -182,7 +199,11 @@ func (pm *PluginManager) buildPlugin(goFile, soFile string) error {
 		}
 	}
 
-	cmd := exec.Command("go", "build", "-buildmode=plugin", "-o", soFile, goFile)
+	// Prepare arguments for go build
+	args := []string{"build", "-buildmode=plugin", "-o", soFile}
+	args = append(args, goFiles...)
+
+	cmd := exec.Command("go", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -245,10 +266,10 @@ func (pm *PluginManager) LoadNewPlugin(pluginPath string) error {
 	plugin, err := pm.loadPlugin(pluginPath)
 	if err != nil {
 		// If loading fails, attempt to rebuild from source if we can find it
-		goFile := filepath.Join(filepath.Dir(pluginPath), "plugin.go")
-		if _, statErr := os.Stat(goFile); statErr == nil {
-			logging.Info("Attempting to rebuild plugin from source: %s", goFile)
-			if buildErr := pm.buildPlugin(goFile, pluginPath); buildErr != nil {
+		dir := filepath.Dir(pluginPath)
+		if _, statErr := os.Stat(filepath.Join(dir, "plugin.go")); statErr == nil {
+			logging.Info("Attempting to rebuild plugin from source: %s", dir)
+			if buildErr := pm.buildPlugin(dir, pluginPath); buildErr != nil {
 				return fmt.Errorf("failed to rebuild plugin: %w", buildErr)
 			}
 			// Try loading again after rebuild
