@@ -12,20 +12,7 @@ import (
 	"time"
 )
 
-// Task represents a single task's state (mirrored from plugin.go for Templ)
-type Task struct {
-	TaskID          string    `json:"task_id"`
-	Title           string    `json:"title"`
-	Description     string    `json:"description,omitempty"`
-	Status          string    `json:"status"`
-	Priority        string    `json:"priority"`
-	Deadline        time.Time `json:"deadline,omitempty"`
-	Dependencies    []string  `json:"dependencies,omitempty"`
-	Tags            []string  `json:"tags,omitempty"`
-	CompletedAt     time.Time `json:"completed_at,omitempty"`
-	CompletionNotes string    `json:"completion_notes,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-}
+// Task represents a single task's state (mirrored from plugin.go for Templ) - REMOVED TO AVOID REDECLARATION
 
 func TasksPage(tasks []*Task) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
@@ -108,7 +95,7 @@ func TasksPage(tasks []*Task) templ.Component {
 				}
 				var templ_7745c5c3_Var5 string
 				templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(task.Priority)
-				if templ_7745c5c3_Err != nil {
+				if templ_7745c5c5c3_Err != nil {
 					return templ.Error{Err: templ_7745c5c3_Err, FileName: `tasks.templ`, Line: 40, Col: 116}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -854,7 +856,13 @@ func (ta *TaskAggregate) GetWebUI() string {
 		tasks = append(tasks, t)
 	}
 	ta.Mu.RUnlock()
-	return TasksPage(tasks).String() // Use the generated Templ function
+
+	var buf bytes.Buffer
+	err := TasksPage(tasks).Render(context.Background(), &buf)
+	if err != nil {
+		return "Error rendering template"
+	}
+	return buf.String()
 }
 
 // Additional Plugin Methods
@@ -942,6 +950,7 @@ func contains(slice []string, item string) bool {
 		if s == item {
 			return true
 		}
+		return false
 	}
 	return false
 }

@@ -4,20 +4,7 @@ import (
 	"time"
 )
 
-// Task represents a single task's state (mirrored from plugin.go for Templ)
-type Task struct {
-	TaskID          string    `json:"task_id"`
-	Title           string    `json:"title"`
-	Description     string    `json:"description,omitempty"`
-	Status          string    `json:"status"`
-	Priority        string    `json:"priority"`
-	Deadline        time.Time `json:"deadline,omitempty"`
-	Dependencies    []string  `json:"dependencies,omitempty"`
-	Tags            []string  `json:"tags,omitempty"`
-	CompletedAt     time.Time `json:"completed_at,omitempty"`
-	CompletionNotes string    `json:"completion_notes,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-}
+// Task represents a single task's state (mirrored from plugin.go for Templ) - REMOVED TO AVOID REDECLARATION
 
 templ TasksPage(tasks []*Task) {
 	<!DOCTYPE html>
