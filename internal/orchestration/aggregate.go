@@ -508,8 +508,6 @@ func (e *RequestCompleted) Marshal() ([]byte, error) {
 	return json.Marshal(e)
 }
 
-func (e *UserRequestReceivedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
-
 type InitiatePluginCreationEvent struct {
 	EventType   string `json:"event_type"`
 	RequestID   string `json:"request_id"`
