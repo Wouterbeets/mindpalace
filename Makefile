@@ -31,7 +31,7 @@ plugins: $(PLUGIN_OUTPUTS)
 $(PLUGIN_DIR)/%.so: $(PLUGIN_DIR)/%/plugin.go
 	@echo "Building plugin: $@"
 	cd $(PLUGIN_DIR)/$* && templ generate
-	$(GO) build $(GOFLAGS) -buildmode=plugin -o $@ $(PLUGIN_DIR)/$*/.
+	$(GO) build $(GOFLAGS) -buildmode=plugin -o $@ $(PLUGIN_DIR)/$*/plugin.go $(PLUGIN_DIR)/$*/tasks_templ.go
 
 # Run the application with optional arguments
 .PHONY: run
