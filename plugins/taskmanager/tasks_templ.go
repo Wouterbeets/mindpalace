@@ -94,7 +94,7 @@ func TasksPage(tasks []*Task) templ.Component {
 				}
 				var templ_7745c5c3_Var5 string
 				templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(task.Priority)
-				if templ_7745c5c3_Err != nil {
+				if templ_7745c5c5c3_Err != nil {
 					return templ.Error{Err: templ_7745c5c3_Err, FileName: `tasks.templ`, Line: 27, Col: 116}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
