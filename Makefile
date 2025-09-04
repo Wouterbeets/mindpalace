@@ -1,4 +1,5 @@
 # Makefile for MindPalace project
+
 # Variables
 GO = go
 GOFLAGS = -v
@@ -7,7 +8,7 @@ PLUGIN_DIR = plugins
 BUILD_DIR = build
 MAIN_SRC = cmd/mindpalace/main.go
 PLUGINS = $(wildcard $(PLUGIN_DIR)/*/plugin.go)
-PLUGIN_OUTPUTS = $(patsubst $(PLUGIN_DIR)/%/plugin.go,$(PLUGIN_DIR)/$*.so,$(PLUGINS))
+PLUGIN_OUTPUTS = $(patsubst $(PLUGIN_DIR)/%/plugin.go,$(PLUGIN_DIR)/%/%.so,$(PLUGINS))
 
 # Allow passing arguments to run
 RUN_ARGS ?=
@@ -23,20 +24,20 @@ build:
 	@mkdir -p $(BUILD_DIR)
 	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_SRC)
 
+# Generate templ files (once at root)
+.PHONY: templ
+templ:
+	@echo "Generating templ files..."
+	templ generate
+
 # Build all plugins
 .PHONY: plugins
-plugins: $(PLUGIN_OUTPUTS)
+plugins: templ $(PLUGIN_OUTPUTS)
 
-# Specific rule for building the taskmanager plugin
-$(PLUGIN_DIR)/taskmanager.so: $(PLUGIN_DIR)/taskmanager/plugin.go
+# Generic rule for building plugins
+$(PLUGIN_DIR)/%/%.so: $(PLUGIN_DIR)/%/plugin.go
 	@echo "Building plugin: $@"
-	cd $(PLUGIN_DIR)/taskmanager && templ generate
-	$(GO) build $(GOFLAGS) -buildmode=plugin -o ../$(notdir $@) $(PLUGIN_DIR)/taskmanager/plugin.go $(PLUGIN_DIR)/taskmanager/tasks_templ.go
-
-# General rule for building plugins (fallback for any plugin not covered by specific rules)
-$(PLUGIN_DIR)/%.so: $(PLUGIN_DIR)/%/plugin.go
-	@echo "Building plugin: $@"
-	cd $(dir $<) && $(GO) build $(GOFLAGS) -buildmode=plugin -o ../$(notdir $@) $<
+	cd $(dir $<) && $(GO) build $(GOFLAGS) -buildmode=plugin -o $(notdir $@) ./*.go
 
 # Run the application with optional arguments
 .PHONY: run
@@ -99,8 +100,9 @@ lint:
 release: clean build plugins
 	@echo "Creating release package..."
 	@mkdir -p release
-	tar -czf release/mindpalace.tar.gz $(BUILD_DIR)/$(BINARY_NAME) $(PLUGIN_DIR)/*.so events.json
+	tar -czf release/mindpalace.tar.gz $(BUILD_DIR)/$(BINARY_NAME) $(PLUGIN_OUTPUTS) events.json
 
+# Development targets
 .PHONY: dev
 dev:
 	@echo "Starting development with air..."
@@ -117,6 +119,7 @@ help:
 	@echo "Available targets:"
 	@echo "  all         : Build everything (default)"
 	@echo "  build       : Build the main binary"
+	@echo "  templ       : Generate templ files"
 	@echo "  plugins     : Build all plugins"
 	@echo "  run         : Build and run (use RUN_ARGS='flags' for arguments)"
 	@echo "  run-verbose : Run with verbose logging"
@@ -128,6 +131,8 @@ help:
 	@echo "  doc         : Generate documentation"
 	@echo "  lint        : Run linter"
 	@echo "  release     : Create a release package"
+	@echo "  dev         : Start development mode with air"
+	@echo "  dev-verbose : Start development mode in verbose"
 	@echo "  help        : Show this help message"
 	@echo ""
 	@echo "Example: make run RUN_ARGS='-v --events custom_events.json'"
