@@ -7,7 +7,7 @@ PLUGIN_DIR = plugins
 BUILD_DIR = build
 MAIN_SRC = cmd/mindpalace/main.go
 PLUGINS = $(wildcard $(PLUGIN_DIR)/*/plugin.go)
-PLUGIN_OUTPUTS = $(patsubst $(PLUGIN_DIR)/%/plugin.go,$(PLUGIN_DIR)/%.so,$(PLUGINS))
+PLUGIN_OUTPUTS = $(patsubst $(PLUGIN_DIR)/%/plugin.go,$(PLUGIN_DIR)/$*/$*.so,$(PLUGINS))
 
 # Allow passing arguments to run
 RUN_ARGS ?=
@@ -27,11 +27,11 @@ build:
 .PHONY: plugins
 plugins: $(PLUGIN_OUTPUTS)
 
-# Pattern rule for building plugins
-$(PLUGIN_DIR)/%.so: $(PLUGIN_DIR)/%/plugin.go
+# Specific rule for building the taskmanager plugin (nested output)
+$(PLUGIN_DIR)/taskmanager/taskmanager.so: $(PLUGIN_DIR)/taskmanager/plugin.go
 	@echo "Building plugin: $@"
-	cd $(PLUGIN_DIR)/$* && templ generate
-	$(GO) build $(GOFLAGS) -buildmode=plugin -o $@ $(PLUGIN_DIR)/$*/plugin.go $(PLUGIN_DIR)/$*/tasks_templ.go
+	cd $(PLUGIN_DIR)/taskmanager && templ generate
+	$(GO) build $(GOFLAGS) -buildmode=plugin -o $@ $(PLUGIN_DIR)/taskmanager/plugin.go $(PLUGIN_DIR)/taskmanager/tasks_templ.go
 
 # Run the application with optional arguments
 .PHONY: run
