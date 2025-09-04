@@ -33,6 +33,11 @@ $(PLUGIN_DIR)/taskmanager.so: $(PLUGIN_DIR)/taskmanager/plugin.go
 	cd $(PLUGIN_DIR)/taskmanager && templ generate
 	$(GO) build $(GOFLAGS) -buildmode=plugin -o ../$(notdir $@) $(PLUGIN_DIR)/taskmanager/plugin.go $(PLUGIN_DIR)/taskmanager/tasks_templ.go
 
+# General rule for building plugins (fallback for any plugin not covered by specific rules)
+$(PLUGIN_DIR)/%.so: $(PLUGIN_DIR)/%/plugin.go
+	@echo "Building plugin: $@"
+	cd $(dir $<) && $(GO) build $(GOFLAGS) -buildmode=plugin -o ../$(notdir $@) $<
+
 # Run the application with optional arguments
 .PHONY: run
 run: build plugins
