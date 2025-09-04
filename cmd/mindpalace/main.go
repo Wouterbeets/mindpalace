@@ -10,6 +10,7 @@ import (
 	"mindpalace/pkg/aggregate"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
+	"net/http"
 	"os"
 )
 
@@ -91,6 +92,36 @@ func main() {
 	orchestrator := orchestration.NewRequestOrchestrator(llmClient, pluginManager, orchAgg, ep, ep.EventBus)
 	app := ui.NewApp(ep, aggStore, orchestrator, pluginManager.GetLLMPlugins())
 
+	// Start the web server in a goroutine on port 3030
+	go func() {
+		http.HandleFunc("/", webHandler)
+		logging.Info("Starting web server on :3030")
+		if err := http.ListenAndServe(":3030", nil); err != nil {
+			logging.Error("Web server error: %v", err)
+		}
+	}()
+
 	app.InitUI()
 	app.Run()
+}
+
+// webHandler serves a basic HTMX-enabled HTML page for the web front-end
+func webHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	html := `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MindPalace Web</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+</head>
+<body>
+    <h1>Welcome to MindPalace (Web)</h1>
+    <p>This is the HTMX-based web interface. Migration in progress...</p>
+    <!-- Future: Add HTMX attributes for dynamic content, e.g., <div hx-get="/api/tasks" hx-trigger="load">Loading tasks...</div> -->
+</body>
+</html>`
+	fmt.Fprint(w, html)
 }
