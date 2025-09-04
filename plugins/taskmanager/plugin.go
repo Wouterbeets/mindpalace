@@ -54,9 +54,9 @@ type Task struct {
 
 // TaskAggregate manages the state of tasks with thread safety
 type TaskAggregate struct {
-	Tasks    map[string]*Task
+	Tasks map[string]*Task
 	commands map[string]eventsourcing.CommandHandler
-	mu       sync.RWMutex
+	Mu       sync.RWMutex
 }
 
 // NewTaskAggregate creates a new thread-safe TaskAggregate
@@ -74,8 +74,8 @@ func (a *TaskAggregate) ID() string {
 
 // ApplyEvent updates the aggregate state based on task-related events
 func (a *TaskAggregate) ApplyEvent(event eventsourcing.Event) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
 
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -587,9 +587,9 @@ func (p *TaskPlugin) updateTaskHandler(input *UpdateTaskInput) ([]eventsourcing.
 		return nil, fmt.Errorf("taskID is required and must be a non-empty string")
 	}
 
-	p.aggregate.mu.RLock()
+	p.aggregate.Mu.RLock()
 	_, exists := p.aggregate.Tasks[input.TaskID]
-	p.aggregate.mu.RUnlock()
+	p.aggregate.Mu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("task %s not found", input.TaskID)
 	}
@@ -626,9 +626,9 @@ func (p *TaskPlugin) deleteTaskHandler(input *DeleteTaskInput) ([]eventsourcing.
 		return nil, fmt.Errorf("taskID is required and must be a non-empty string")
 	}
 
-	p.aggregate.mu.RLock()
+	p.aggregate.Mu.RLock()
 	_, exists := p.aggregate.Tasks[input.TaskID]
-	p.aggregate.mu.RUnlock()
+	p.aggregate.Mu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("task %s not found", input.TaskID)
 	}
@@ -642,9 +642,9 @@ func (p *TaskPlugin) completeTaskHandler(input *CompleteTaskInput) ([]eventsourc
 		return nil, fmt.Errorf("taskID is required and must be a non-empty string")
 	}
 
-	p.aggregate.mu.RLock()
+	p.aggregate.Mu.RLock()
 	task, exists := p.aggregate.Tasks[input.TaskID]
-	p.aggregate.mu.RUnlock()
+	p.aggregate.Mu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("task %s not found", input.TaskID)
 	}
@@ -663,8 +663,8 @@ func (p *TaskPlugin) completeTaskHandler(input *CompleteTaskInput) ([]eventsourc
 }
 
 func (p *TaskPlugin) listTasksHandler(input *ListTasksInput) ([]eventsourcing.Event, error) {
-	p.aggregate.mu.RLock()
-	defer p.aggregate.mu.RUnlock()
+	p.aggregate.Mu.RLock()
+	defer p.aggregate.Mu.RUnlock()
 
 	tasks := make([]*Task, 0, len(p.aggregate.Tasks))
 	for _, task := range p.aggregate.Tasks {
@@ -706,8 +706,8 @@ func (p *TaskPlugin) listTasksHandler(input *ListTasksInput) ([]eventsourcing.Ev
 
 // GetCustomUI returns a Kanban board-style UI for the task manager
 func (ta *TaskAggregate) GetCustomUI() fyne.CanvasObject {
-	ta.mu.RLock()
-	defer ta.mu.RUnlock()
+	ta.Mu.RLock()
+	defer ta.Mu.RUnlock()
 
 	tasks := make([]*Task, 0, len(ta.Tasks))
 	for _, task := range ta.Tasks {
@@ -856,8 +856,8 @@ func (p *TaskPlugin) Type() eventsourcing.PluginType {
 
 func (p *TaskPlugin) SystemPrompt() string {
 	// Acquire read lock to safely access tasks
-	p.aggregate.mu.RLock()
-	defer p.aggregate.mu.RUnlock()
+	p.aggregate.Mu.RLock()
+	defer p.aggregate.Mu.RUnlock()
 
 	// Collect tasks into a slice for sorting
 	tasks := make([]*Task, 0, len(p.aggregate.Tasks))

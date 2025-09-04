@@ -10,6 +10,7 @@ import (
 	"mindpalace/pkg/aggregate"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
+	"mindpalace/plugins/taskmanager"
 	"net/http"
 	"os"
 )
@@ -92,9 +93,64 @@ func main() {
 	orchestrator := orchestration.NewRequestOrchestrator(llmClient, pluginManager, orchAgg, ep, ep.EventBus)
 	app := ui.NewApp(ep, aggStore, orchestrator, pluginManager.GetLLMPlugins())
 
+	// Define handlers as closures to access aggStore
+	tasksHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		agg, err := aggStore.AggregateByName("taskmanager")
+		if err != nil {
+			http.Error(w, "Task aggregate not found", 500)
+			return
+		}
+		taskAgg, ok := agg.(*taskmanager.TaskAggregate)
+		if !ok {
+			http.Error(w, "Invalid aggregate type", 500)
+			return
+		}
+
+		// Safely read tasks
+		taskAgg.Mu.RLock()
+		tasks := make([]*taskmanager.Task, 0, len(taskAgg.Tasks))
+		for _, t := range taskAgg.Tasks {
+			tasks = append(tasks, t)
+		}
+		taskAgg.Mu.RUnlock()
+
+		// Render HTML for tasks
+		html := `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tasks - MindPalace Web</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+</head>
+<body>
+    <h1>Tasks</h1>
+    <button hx-get="/tasks" hx-target="#task-list">Refresh Tasks</button>
+    <div id="task-list">
+`
+		if len(tasks) == 0 {
+			html += "<p>No tasks available.</p>"
+		} else {
+			html += "<ul>"
+			for _, task := range tasks {
+				html += fmt.Sprintf("<li><strong>%s</strong> - %s (Status: %s, Priority: %s)</li>", task.Title, task.Description, task.Status, task.Priority)
+			}
+			html += "</ul>"
+		}
+		html += `
+    </div>
+    <a href="/">Back to Home</a>
+</body>
+</html>`
+		fmt.Fprint(w, html)
+	}
+
 	// Start the web server in a goroutine on port 3030
 	go func() {
 		http.HandleFunc("/", webHandler)
+		http.HandleFunc("/tasks", tasksHandler)
 		logging.Info("Starting web server on :3030")
 		if err := http.ListenAndServe(":3030", nil); err != nil {
 			logging.Error("Web server error: %v", err)
@@ -120,7 +176,10 @@ func webHandler(w http.ResponseWriter, r *http.Request) {
 <body>
     <h1>Welcome to MindPalace (Web)</h1>
     <p>This is the HTMX-based web interface. Migration in progress...</p>
-    <!-- Future: Add HTMX attributes for dynamic content, e.g., <div hx-get="/api/tasks" hx-trigger="load">Loading tasks...</div> -->
+    <nav>
+        <a href="/tasks">View Tasks</a> | <a href="/chat">Chat (Coming Soon)</a>
+    </nav>
+    <!-- Future: Add HTMX attributes for dynamic content -->
 </body>
 </html>`
 	fmt.Fprint(w, html)
