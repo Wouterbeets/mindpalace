@@ -44,7 +44,7 @@ templ OrchestrationPage(messages []chat.Message, agentStates map[string]*AgentSt
 							<strong>{ msg.Agent } (tool)</strong>
 						} else {
 							<strong>{ msg.Role.UIRole }</strong>
-						}: { templ.Raw(string(markdownToHTML(msg.Content))) }
+						}: { markdownToHTML(msg.Content) }
 					</div>
 				}
 			}
