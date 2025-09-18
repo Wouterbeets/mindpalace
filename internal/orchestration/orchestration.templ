@@ -26,14 +26,14 @@ templ OrchestrationPage(messages []chat.Message, agentStates map[string]*AgentSt
 			} else {
 				for _, msg := range messages {
 					<div class="message">
-						if msg.Role == "user" {
+						if msg.Role.UIRole == "You" {
 							<strong>You</strong>
-						} else if msg.Role == "mindpalace" {
+						} else if msg.Role.UIRole == "MindPalace" {
 							<strong>MindPalace</strong>
-						} else if msg.Role == "tool" {
+						} else if msg.Role.UIRole == "Tool" {
 							<strong>{ msg.Metadata["function"] } (tool)</strong>
 						} else {
-							<strong>{ msg.Role }</strong>
+							<strong>{ msg.Role.UIRole }</strong>
 						}: { msg.Content }
 					</div>
 				}
