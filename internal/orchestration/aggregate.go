@@ -104,7 +104,7 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 		}
 
 		if state, exists := a.ToolCallStates[e.ToolCallID]; exists {
-			state.Status = "succes"
+			state.Status = "success"
 			state.Results = e.Results
 			state.LastUpdated = e.Timestamp
 			delete(a.PendingToolCalls[e.RequestID], e.ToolCallID)
@@ -475,7 +475,7 @@ func parseInlineMarkdown(text string) []widget.RichTextSegment {
 			segments = append(segments, &widget.TextSegment{
 				Text:  remaining,
 				Style: widget.RichTextStyle{TextStyle: fyne.TextStyle{}},
-			})
+				})
 			remaining = ""
 		}
 	}
