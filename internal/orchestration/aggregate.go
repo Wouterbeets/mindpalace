@@ -100,6 +100,16 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 			agentState.ExecutionData[e.ToolCallID] = e.Results
 			agentState.LastUpdated = eventsourcing.ISOTimestamp()
 		}
+
+		if state, exists := a.ToolCallStates[e.ToolCallID]; exists {
+			state.Status = "succes"
+			state.Results = e.Results
+			state.LastUpdated = e.Timestamp
+			delete(a.PendingToolCalls[e.RequestID], e.ToolCallID)
+			if len(a.PendingToolCalls[e.RequestID]) == 0 {
+				delete(a.PendingToolCalls, e.RequestID)
+			}
+		}
 		agentName := a.AgentName(e.RequestID)
 		a.chatManager.AddMessage(chat.RoleTool, string(bytes), e.RequestID, agentName, map[string]interface{}{
 			"function": e.Function,
@@ -171,8 +181,19 @@ func (a *OrchestrationAggregate) GetCustomUI() fyne.CanvasObject {
 
 	currentRequestID := ""
 	for i, msg := range messages {
+		// Check if we've moved to a new request
 		if msg.RequestID != currentRequestID && currentRequestID != "" {
-			// Add processing indicator if request is ongoing (logic simplified)
+			// Render agent state for the previous request, if it exists
+			if agentState, exists := a.AgentStates[currentRequestID]; exists {
+				chatUIList = append(chatUIList, a.renderAgentState(agentState))
+			}
+			// Render tool call states for the previous request, if any
+			for _, toolState := range a.ToolCallStates {
+				if toolState.RequestID == currentRequestID {
+					chatUIList = append(chatUIList, a.renderToolCallState(toolState))
+				}
+			}
+			// Add processing indicator if the previous request is ongoing
 			if a.isRequestPending(currentRequestID) {
 				chatUIList = append(chatUIList, container.NewHBox(
 					widget.NewProgressBarInfinite(),
@@ -184,18 +205,32 @@ func (a *OrchestrationAggregate) GetCustomUI() fyne.CanvasObject {
 			currentRequestID = msg.RequestID
 		}
 
+		// Render the chat message
 		chatUIList = append(chatUIList, a.renderChatMessage(msg))
 		if i < len(messages)-1 {
 			chatUIList = append(chatUIList, widget.NewSeparator())
 		}
 	}
 
-	// Check last request
-	if currentRequestID != "" && a.isRequestPending(currentRequestID) {
-		chatUIList = append(chatUIList, container.NewHBox(
-			widget.NewProgressBarInfinite(),
-			widget.NewLabel("Processing..."),
-		))
+	// Handle the last request
+	if currentRequestID != "" {
+		// Render agent state for the last request, if it exists
+		if agentState, exists := a.AgentStates[currentRequestID]; exists {
+			chatUIList = append(chatUIList, a.renderAgentState(agentState))
+		}
+		// Render tool call states for the last request, if any
+		for _, toolState := range a.ToolCallStates {
+			if toolState.RequestID == currentRequestID {
+				chatUIList = append(chatUIList, a.renderToolCallState(toolState))
+			}
+		}
+		// Add processing indicator if the last request is ongoing
+		if a.isRequestPending(currentRequestID) {
+			chatUIList = append(chatUIList, container.NewHBox(
+				widget.NewProgressBarInfinite(),
+				widget.NewLabel("Processing..."),
+			))
+		}
 	}
 
 	return container.NewVBox(chatUIList...)
