@@ -504,7 +504,7 @@ func markdownToHTML(text string) template.HTML {
 	})
 
 	// Handle code blocks
-	text = regexp.MustCompile(`(?s)```(.*?)```).ReplaceAllString(text, "<pre><code>$1</code></pre>")
+	text = regexp.MustCompile("(?s)```(.*?)```").ReplaceAllString(text, "<pre><code>$1</code></pre>")
 
 	// Handle inline code
 	text = regexp.MustCompile("`(.*?)`").ReplaceAllString(text, "<code>$1</code>")
