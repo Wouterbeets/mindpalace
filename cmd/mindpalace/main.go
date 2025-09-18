@@ -104,12 +104,24 @@ func main() {
 		fmt.Fprint(w, html)
 	}
 
+	chatHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		agg, err := aggStore.AggregateByName("orchestration")
+		if err != nil {
+			http.Error(w, "Orchestration aggregate not found", 500)
+			return
+		}
+		html := agg.GetWebUI()
+		fmt.Fprint(w, html)
+	}
+
 	// Start the web server in a goroutine on port 3030
 	go func() {
 		http.HandleFunc("/", webHandler)
 		http.HandleFunc("/tasks", tasksHandler)
+		http.HandleFunc("/chat", chatHandler)
 		logging.Info("Starting web server on :3030")
-		if err := http.ListenAndServe(":3030", nil); err != nil {
+		if err := http.ListenAndServe(":3030", err != nil {
 			logging.Error("Web server error: %v", err)
 		}
 	}()
