@@ -16,6 +16,16 @@ templ OrchestrationPage(messages []chat.Message, agentStates map[string]*AgentSt
 			.message { margin: 10px 0; padding: 10px; border: 1px solid #ccc; border-radius: 5px; }
 			.agent-state { background-color: #f0f0f0; padding: 10px; margin: 10px 0; }
 			.tool-call { background-color: #e0e0e0; padding: 10px; margin: 10px 0; }
+			h1 { font-size: 1.5em; }
+			h2 { font-size: 1.3em; }
+			h3 { font-size: 1.1em; }
+			ul { margin: 0; padding-left: 20px; }
+			li { margin: 5px 0; }
+			pre { background-color: #f4f4f4; padding: 10px; border-radius: 5px; overflow-x: auto; }
+			code { background-color: #f4f4f4; padding: 2px 4px; border-radius: 3px; font-family: monospace; }
+			strong { font-weight: bold; }
+			em { font-style: italic; }
+			p { margin: 10px 0; }
 		</style>
 	</head>
 	<body>
@@ -34,7 +44,7 @@ templ OrchestrationPage(messages []chat.Message, agentStates map[string]*AgentSt
 							<strong>{ msg.Agent } (tool)</strong>
 						} else {
 							<strong>{ msg.Role.UIRole }</strong>
-						}: { msg.Content }
+						}: { markdownToHTML(msg.Content) }
 					</div>
 				}
 			}

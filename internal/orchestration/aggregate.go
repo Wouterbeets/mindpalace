@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"regexp"
 	"strings"
 
@@ -487,6 +488,47 @@ func parseInlineMarkdown(text string) []widget.RichTextSegment {
 	return segments
 }
 
+// markdownToHTML converts basic Markdown to HTML for web display
+func markdownToHTML(text string) template.HTML {
+	// Handle headers
+	text = regexp.MustCompile(`(?m)^# (.+)$`).ReplaceAllString(text, "<h1>$1</h1>")
+	text = regexp.MustCompile(`(?m)^## (.+)$`).ReplaceAllString(text, "<h2>$1</h2>")
+	text = regexp.MustCompile(`(?m)^### (.+)$`).ReplaceAllString(text, "<h3>$1</h3>")
+
+	// Handle lists (simple replacement, assumes single-level lists)
+	text = regexp.MustCompile(`(?m)^- (.+)$`).ReplaceAllString(text, "<li>$1</li>")
+	text = regexp.MustCompile(`(?m)^\* (.+)$`).ReplaceAllString(text, "<li>$1</li>")
+	// Wrap consecutive <li> in <ul>
+	text = regexp.MustCompile(`(<li>.*?</li>\n?)+`).ReplaceAllStringFunc(text, func(match string) string {
+		return "<ul>" + match + "</ul>"
+	})
+
+	// Handle code blocks
+	text = regexp.MustCompile(`(?s)\`\`\`(.*?)\`\`\``).ReplaceAllString(text, "<pre><code>$1</code></pre>")
+
+	// Handle inline code
+	text = regexp.MustCompile(`\`(.*?)\``).ReplaceAllString(text, "<code>$1</code>")
+
+	// Handle bold
+	text = regexp.MustCompile(`\*\*(.*?)\*\*`).ReplaceAllString(text, "<strong>$1</strong>")
+
+	// Handle italic
+	text = regexp.MustCompile(`\*(.*?)\*`).ReplaceAllString(text, "<em>$1</em>")
+
+	// Handle links (basic)
+	text = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`).ReplaceAllString(text, `<a href="$2">$1</a>`)
+
+	// Handle line breaks (double newline to paragraph, single to <br>)
+	text = regexp.MustCompile(`\n\n`).ReplaceAllString(text, "</p><p>")
+	text = regexp.MustCompile(`\n`).ReplaceAllString(text, "<br>")
+	text = "<p>" + text + "</p>"
+
+	// Clean up empty paragraphs
+	text = regexp.MustCompile(`<p>\s*</p>`).ReplaceAllString(text, "")
+
+	return template.HTML(text)
+}
+
 type RequestCompletedEvent struct {
 	eventsourcing.BaseEvent
 	EventType    string `json:"event_type"`
@@ -598,7 +640,7 @@ func (e *ToolCallStarted) Unmarshal(data []byte) error { return json.Unmarshal(d
 
 type ToolCallCompleted struct {
 	EventType  string                 `json:"event_type"`
-	RequestID  string                 `json:"request_id"`
+	RequestID  string `json:"request_id"`
 	ToolCallID string                 `json:"tool_call_id"`
 	Function   string                 `json:"function"`
 	Results    map[string]interface{} `json:"results"`
