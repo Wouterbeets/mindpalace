@@ -1,6 +1,8 @@
 package orchestration
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -679,17 +681,11 @@ func init() {
 
 // GetWebUI returns HTMX-enabled HTML for the web UI
 func (a *OrchestrationAggregate) GetWebUI() string {
-	return `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Orchestration - MindPalace Web</title>
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-</head>
-<body>
-    <h1>Orchestration Web UI</h1>
-    <p>Not implemented yet. This will handle chat and request orchestration.</p>
-    <a href="/">Back to Home</a>
-</body>
-</html>`
+	messages := a.chatManager.GetUIMessages()
+	var buf bytes.Buffer
+	err := OrchestrationPage(messages, a.AgentStates, a.ToolCallStates).Render(context.Background(), &buf)
+	if err != nil {
+		return "Error rendering template"
+	}
+	return buf.String()
 }

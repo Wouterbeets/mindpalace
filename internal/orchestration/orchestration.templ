@@ -1,0 +1,61 @@
+package orchestration
+
+import (
+	"mindpalace/internal/chat"
+)
+
+templ OrchestrationPage(messages []chat.Message, agentStates map[string]*AgentState, toolCallStates map[string]*ToolCallState) {
+	<!DOCTYPE html>
+	<html lang="en">
+	<head>
+		<meta charset="UTF-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<title>Orchestration - MindPalace Web</title>
+		<script src="https://unpkg.com/htmx.org@1.9.10"></script>
+		<style>
+			.message { margin: 10px 0; padding: 10px; border: 1px solid #ccc; border-radius: 5px; }
+			.agent-state { background-color: #f0f0f0; padding: 10px; margin: 10px 0; }
+			.tool-call { background-color: #e0e0e0; padding: 10px; margin: 10px 0; }
+		</style>
+	</head>
+	<body>
+		<h1>Orchestration Web UI</h1>
+		<div id="chat">
+			if len(messages) == 0 {
+				<p>No messages yet.</p>
+			} else {
+				for _, msg := range messages {
+					<div class="message">
+						<strong>{ msg.Role.String() }</strong>: { msg.Content }
+					</div>
+				}
+			}
+		</div>
+		<div id="agent-states">
+			if len(agentStates) > 0 {
+				<h2>Agent States</h2>
+				for _, state := range agentStates {
+					<div class="agent-state">
+						<strong>Agent: { state.AgentName }</strong><br>
+						Status: { state.Status }<br>
+						Last Updated: { state.LastUpdated }
+					</div>
+				}
+			}
+		</div>
+		<div id="tool-calls">
+			if len(toolCallStates) > 0 {
+				<h2>Tool Call States</h2>
+				for _, state := range toolCallStates {
+					<div class="tool-call">
+						<strong>Function: { state.Function }</strong><br>
+						Status: { state.Status }<br>
+						Last Updated: { state.LastUpdated }
+					</div>
+				}
+			}
+		</div>
+		<a href="/">Back to Home</a>
+	</body>
+	</html>
+}
