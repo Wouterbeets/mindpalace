@@ -139,7 +139,7 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 		a.AgentStates[e.RequestID] = &AgentState{
 			RequestID:     e.RequestID,
 			AgentName:     e.AgentName,
-			Status:        "deciding",
+			Status:        "executing",
 			ToolCallIDs:   []string{},
 			ExecutionData: make(map[string]interface{}),
 			LastUpdated:   e.Timestamp,
@@ -172,6 +172,10 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 		}
 		if regular != "" {
 			a.chatManager.AddMessage(chat.RoleMindPalace, regular, e.RequestID, agentName, nil)
+		}
+		if agentState, exists := a.AgentStates[e.RequestID]; exists {
+			agentState.Status = "completed"
+			agentState.LastUpdated = eventsourcing.ISOTimestamp()
 		}
 	}
 	return nil

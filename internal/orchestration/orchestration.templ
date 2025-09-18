@@ -31,7 +31,7 @@ templ OrchestrationPage(messages []chat.Message, agentStates map[string]*AgentSt
 						} else if msg.Role.UIRole == "MindPalace" {
 							<strong>MindPalace</strong>
 						} else if msg.Role.UIRole == "Tool" {
-							<strong>{ msg.Agent } (tool)</strong>
+							<strong>{ msg.Metadata["function"] } (tool)</strong>
 						} else {
 							<strong>{ msg.Role.UIRole }</strong>
 						}: { msg.Content }
