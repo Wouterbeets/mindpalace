@@ -58,6 +58,13 @@ run-debug: build plugins
 	./$(BUILD_DIR)/$(BINARY_NAME) -debug
 
 # Clean build artifacts
+	# Run in headless mode
+	.PHONY: run-headless
+	run-headless: build plugins
+		@echo "Running MindPalace in headless mode..."
+		./$(BUILD_DIR)/$(BINARY_NAME) -headless
+	
+	# Clean build artifacts
 .PHONY: clean
 clean:
 	@echo "Cleaning up..."

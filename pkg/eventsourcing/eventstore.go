@@ -80,3 +80,13 @@ func (es *FileEventStore) GetEvents() []Event {
 	defer es.mu.Unlock()
 	return append([]Event{}, es.events...)
 }
+
+// MigrateFromFileToSQLite migrates events from JSON file to SQLite database
+func MigrateFromFileToSQLite(fileStore *FileEventStore, sqliteStore *SQLiteEventStore) error {
+	events := fileStore.GetEvents()
+	if len(events) == 0 {
+		return nil // Nothing to migrate
+	}
+	logging.Info("Migrating %d events from file to SQLite", len(events))
+	return sqliteStore.Append(events...)
+}

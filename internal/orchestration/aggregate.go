@@ -29,7 +29,7 @@ func NewOrchestrationAggregate() *OrchestrationAggregate {
 	// Initialize ChatManager with a base system prompt and context size
 	basePrompt := "You are MindPalace, a friendly AI assistant here to help with various queries and tasks."
 	return &OrchestrationAggregate{
-		chatManager:      chat.NewChatManager(10, basePrompt), // 10 messages max for LLM context
+		chatManager:      chat.NewChatManager(100000, basePrompt), // 100K tokens max for LLM context
 		PendingToolCalls: make(map[string]map[string]struct{}),
 		ToolCallStates:   make(map[string]*ToolCallState),
 		AgentStates:      make(map[string]*AgentState),
@@ -185,6 +185,10 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 func (a *OrchestrationAggregate) GetCustomUI() fyne.CanvasObject {
 	var chatUIList []fyne.CanvasObject
 	messages := a.chatManager.GetUIMessages()
+
+	tokenLabel := widget.NewLabel(fmt.Sprintf("Total Tokens Used: %d", a.chatManager.GetTotalTokens()))
+	tokenLabel.TextStyle = fyne.TextStyle{Bold: true}
+	chatUIList = append(chatUIList, tokenLabel, widget.NewSeparator())
 
 	currentRequestID := ""
 	for i, msg := range messages {
@@ -422,72 +426,6 @@ func parseMarkdownToCanvas(text string) fyne.CanvasObject {
 	return entry
 }
 
-// parseInlineMarkdown handles inline bold (**text**) and italic (*text*) formatting (unchanged)
-func parseInlineMarkdown(text string) []widget.RichTextSegment {
-	segments := []widget.RichTextSegment{}
-	remaining := text
-
-	for len(remaining) > 0 {
-		if boldStart := strings.Index(remaining, "**"); boldStart >= 0 {
-			if boldStart > 0 {
-				segments = append(segments, &widget.TextSegment{
-					Text:  remaining[:boldStart],
-					Style: widget.RichTextStyle{TextStyle: fyne.TextStyle{}},
-				})
-			}
-			boldEnd := strings.Index(remaining[boldStart+2:], "**")
-			if boldEnd >= 0 {
-				boldText := remaining[boldStart+2 : boldStart+2+boldEnd]
-				if boldText != "" {
-					segments = append(segments, &widget.TextSegment{
-						Text:  boldText,
-						Style: widget.RichTextStyle{TextStyle: fyne.TextStyle{Bold: true}},
-					})
-				}
-				remaining = remaining[boldStart+2+boldEnd+2:]
-			} else {
-				segments = append(segments, &widget.TextSegment{
-					Text:  remaining,
-					Style: widget.RichTextStyle{TextStyle: fyne.TextStyle{}},
-				})
-				remaining = ""
-			}
-		} else if italicStart := strings.Index(remaining, "*"); italicStart >= 0 {
-			if italicStart > 0 {
-				segments = append(segments, &widget.TextSegment{
-					Text:  remaining[:italicStart],
-					Style: widget.RichTextStyle{TextStyle: fyne.TextStyle{}},
-				})
-			}
-			italicEnd := strings.Index(remaining[italicStart+1:], "*")
-			if italicEnd >= 0 {
-				italicText := remaining[italicStart+1 : italicStart+1+italicEnd]
-				if italicText != "" {
-					segments = append(segments, &widget.TextSegment{
-						Text:  italicText,
-						Style: widget.RichTextStyle{TextStyle: fyne.TextStyle{Italic: true}},
-					})
-				}
-				remaining = remaining[italicStart+1+italicEnd+1:]
-			} else {
-				segments = append(segments, &widget.TextSegment{
-					Text:  remaining,
-					Style: widget.RichTextStyle{TextStyle: fyne.TextStyle{}},
-				})
-				remaining = ""
-			}
-		} else {
-			segments = append(segments, &widget.TextSegment{
-				Text:  remaining,
-				Style: widget.RichTextStyle{TextStyle: fyne.TextStyle{}},
-				})
-			remaining = ""
-		}
-	}
-
-	return segments
-}
-
 // markdownToHTML converts basic Markdown to HTML for web display
 func markdownToHTML(text string) template.HTML {
 	// Handle headers
@@ -640,7 +578,7 @@ func (e *ToolCallStarted) Unmarshal(data []byte) error { return json.Unmarshal(d
 
 type ToolCallCompleted struct {
 	EventType  string                 `json:"event_type"`
-	RequestID  string `json:"request_id"`
+	RequestID  string                 `json:"request_id"`
 	ToolCallID string                 `json:"tool_call_id"`
 	Function   string                 `json:"function"`
 	Results    map[string]interface{} `json:"results"`

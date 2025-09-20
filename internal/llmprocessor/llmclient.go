@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	ollamaModel       = "qwq"
+	ollamaModel       = "gpt-oss:20b"
 	ollamaAPIEndpoint = "http://localhost:11434/api/chat"
 )
 
@@ -33,6 +33,17 @@ func (c *LLMClient) CallLLM(messages []llmmodels.Message, tools []llmmodels.Tool
 		}
 		logging.Trace("message index: %i, Role: %s, Context: %s", i, m.Role, string(runes[:limit]))
 	}
+	logging.Info("Sending %d messages to LLM for request %s", len(messages), requestID)
+	for i, m := range messages {
+		contentPreview := m.Content
+		if len(m.Content) > 100 {
+			contentPreview = m.Content[:100] + "..."
+		}
+		logging.Info("Message %d: Role=%s, Content=%s", i, m.Role, contentPreview)
+	}
+	if len(tools) > 0 {
+		logging.Info("Sending %d tools to LLM", len(tools))
+	}
 	// Use specified model or default to ollamaModel
 	if model == "" {
 		model = ollamaModel
@@ -49,6 +60,7 @@ func (c *LLMClient) CallLLM(messages []llmmodels.Message, tools []llmmodels.Tool
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %v", err)
 	}
+	logging.Info("LLM Request JSON: %s", string(reqBody))
 
 	resp, err := http.Post(ollamaAPIEndpoint, "application/json", bytes.NewBuffer(reqBody))
 	if err != nil {

@@ -19,13 +19,6 @@ import (
 )
 
 // Register event types
-func init() {
-	eventsourcing.RegisterEvent("taskmanager_TaskCreated", func() eventsourcing.Event { return &TaskCreatedEvent{} })
-	eventsourcing.RegisterEvent("taskmanager_TaskUpdated", func() eventsourcing.Event { return &TaskUpdatedEvent{} })
-	eventsourcing.RegisterEvent("taskmanager_TaskCompleted", func() eventsourcing.Event { return &TaskCompletedEvent{} })
-	eventsourcing.RegisterEvent("taskmanager_TasksListed", func() eventsourcing.Event { return &TasksListedEvent{} })
-	eventsourcing.RegisterEvent("taskmanager_TaskDeleted", func() eventsourcing.Event { return &TaskDeletedEvent{} })
-}
 
 // Constants for task properties
 const (
@@ -180,6 +173,11 @@ func NewPlugin() eventsourcing.Plugin {
 			return p.listTasksHandler(input)
 		}),
 	}
+	eventsourcing.RegisterEvent("taskmanager_TaskCreated", func() eventsourcing.Event { return &TaskCreatedEvent{} })
+	eventsourcing.RegisterEvent("taskmanager_TaskUpdated", func() eventsourcing.Event { return &TaskUpdatedEvent{} })
+	eventsourcing.RegisterEvent("taskmanager_TaskCompleted", func() eventsourcing.Event { return &TaskCompletedEvent{} })
+	eventsourcing.RegisterEvent("taskmanager_TasksListed", func() eventsourcing.Event { return &TasksListedEvent{} })
+	eventsourcing.RegisterEvent("taskmanager_TaskDeleted", func() eventsourcing.Event { return &TaskDeletedEvent{} })
 	return p
 }
 
@@ -192,6 +190,8 @@ func (p *TaskPlugin) Commands() map[string]eventsourcing.CommandHandler {
 func (p *TaskPlugin) Name() string {
 	return "taskmanager"
 }
+
+
 
 // Schemas defines the command schemas
 func (p *TaskPlugin) Schemas() map[string]eventsourcing.CommandInput {
@@ -520,14 +520,6 @@ func validatePriority(priority string) bool {
 	return priority == PriorityLow || priority == PriorityMedium || priority == PriorityHigh || priority == PriorityCritical
 }
 
-func mapToStruct(data map[string]interface{}, target interface{}) error {
-	bytes, err := json.Marshal(data)
-	if err != nil {
-		return fmt.Errorf("invalid parameters: %v", err)
-	}
-	return json.Unmarshal(bytes, target)
-}
-
 // Command Handlers
 func (p *TaskPlugin) createTaskHandler(input *CreateTaskInput) ([]eventsourcing.Event, error) {
 	if input.Title == "" {
@@ -577,8 +569,8 @@ func (p *TaskPlugin) createTaskHandler(input *CreateTaskInput) ([]eventsourcing.
 		}
 
 		// Optional: Validate the parsed time is reasonable
-		if parsedTime.Year() < 1970 || parsedTime.Year() > 9999 {
-			return nil, fmt.Errorf("deadline year %d is out of valid range (1970-9999)", parsedTime.Year())
+		if parsedTime.Year() < 0 || parsedTime.Year() > 9999 {
+			return nil, fmt.Errorf("deadline year %d is out of valid range (1-9999)", parsedTime.Year())
 		}
 	}
 	return []eventsourcing.Event{event}, nil
@@ -759,7 +751,7 @@ func (ta *TaskAggregate) GetCustomUI() fyne.CanvasObject {
 		// Use the stored scroll reference instead of type-asserting Objects[1]
 		columnContent := scrolls[task.Status].Content.(*fyne.Container)
 		columnContent.Add(card)
-		columnContent.Add(widget.NewSeparator())  // Always add separator after each card
+		columnContent.Add(widget.NewSeparator()) // Always add separator after each card
 	}
 
 	// Assemble the Kanban board
@@ -778,7 +770,7 @@ func createTaskCard(task *Task) fyne.CanvasObject {
 	if task.Status == StatusCompleted {
 		title.TextStyle.Italic = true
 	}
-	title.Wrapping = fyne.TextWrapWord
+	title.Wrapping = fyne.TextWrapOff
 	titleBox := container.NewHBox(
 		widget.NewIcon(priorityIcon(task.Priority)),
 		title,
@@ -937,7 +929,7 @@ Format your responses in a structured way and confirm actions performed.`
 
 // AgentModel specifies the LLM model to use for this plugin's agent
 func (p *TaskPlugin) AgentModel() string {
-	return "qwq" // Using the general-purpose model for task management
+	return "gpt-oss:20b" // Using the general-purpose model for task management
 }
 
 func (p *TaskPlugin) EventHandlers() map[string]eventsourcing.EventHandler {

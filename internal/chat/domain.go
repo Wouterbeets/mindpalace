@@ -7,7 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pkoukk/tiktoken-go"
 	"mindpalace/pkg/llmmodels"
+	"mindpalace/pkg/logging"
 )
 
 // Role defines the explicit roles a message can have
@@ -35,23 +37,30 @@ type Message struct {
 	Agent     string                 // Plugin/agent name (e.g., "taskmanager"), empty for core MindPalace
 	Metadata  map[string]interface{} // Extra data
 	Visible   bool                   // UI visibility
+	Tags      []string               // Tags for categorization and retrieval
 }
 
 // ChatManager now tracks messages by agent
 type ChatManager struct {
-	messages       map[string][]Message // Agent name -> message history (empty key for core MindPalace)
-	maxContextSize int                  // Max messages per agent in LLM context
-	systemPrompt   string               // Base system prompt
-	pluginPrompts  map[string]string    // Plugin-specific prompts
+	messages      map[string][]Message // Agent name -> message history (empty key for core MindPalace)
+	totalTokens   map[string]int       // Current token count per agent
+	tokenizer     *tiktoken.Tiktoken   // Tokenizer for token counting
+	maxTokens     int                  // Max tokens in LLM context
+	systemPrompt  string               // Base system prompt
+	pluginPrompts map[string]string    // Plugin-specific prompts
 }
 
 // NewChatManager initializes with a map for agent histories
-func NewChatManager(maxContextSize int, baseSystemPrompt string) *ChatManager {
+func NewChatManager(maxTokens int, baseSystemPrompt string) *ChatManager {
+	t, _ := tiktoken.EncodingForModel("gpt-4")
+
 	return &ChatManager{
-		messages:       make(map[string][]Message),
-		maxContextSize: maxContextSize,
-		systemPrompt:   baseSystemPrompt,
-		pluginPrompts:  make(map[string]string),
+		messages:      make(map[string][]Message),
+		maxTokens:     maxTokens,
+		totalTokens:   make(map[string]int),
+		tokenizer:     t,
+		systemPrompt:  baseSystemPrompt,
+		pluginPrompts: make(map[string]string),
 	}
 }
 
@@ -66,14 +75,19 @@ func (cm *ChatManager) AddMessage(role Role, content string, requestID string, a
 		Agent:     agent, // e.g., "taskmanager", "dogfoodtracker", or "" for core
 		Metadata:  metadata,
 		Visible:   role != RoleSystem && role != RoleHidden,
+		Tags:      []string{},
 	}
 	if _, exists := cm.messages[agent]; !exists {
 		cm.messages[agent] = make([]Message, 0)
 	}
 	cm.messages[agent] = append(cm.messages[agent], msg)
+	tokens := len(cm.tokenizer.Encode(msg.Content, nil, nil))
+	cm.totalTokens[agent] += tokens
 }
 
+// GetLLMContext now includes logging for debugging
 func (cm *ChatManager) GetLLMContext(activeAgents []string) []llmmodels.Message {
+	logging.Info("Building LLM context for active agents: %v", activeAgents)
 	// Build dynamic system prompt
 	var systemContent strings.Builder
 	systemContent.WriteString(cm.systemPrompt)
@@ -83,6 +97,7 @@ func (cm *ChatManager) GetLLMContext(activeAgents []string) []llmmodels.Message 
 			systemContent.WriteString(prompt)
 		}
 	}
+	logging.Info("System prompt built: %s", systemContent.String())
 
 	result := []llmmodels.Message{
 		{Role: string(RoleSystem.SystemRole), Content: systemContent.String()},
@@ -107,11 +122,23 @@ func (cm *ChatManager) GetLLMContext(activeAgents []string) []llmmodels.Message 
 	sort.Slice(mergedMessages, func(i, j int) bool {
 		return mergedMessages[i].Timestamp.Before(mergedMessages[j].Timestamp)
 	})
+	logging.Info("Merged %d visible messages for LLM context", len(mergedMessages))
 
-	// Trim to max context size (most recent)
-	if len(mergedMessages) > cm.maxContextSize {
-		mergedMessages = mergedMessages[len(mergedMessages)-cm.maxContextSize:]
+	// Trim to max tokens (most recent)
+	totalTokens := len(cm.tokenizer.Encode(systemContent.String(), nil, nil))
+	// Keep messages from the end (most recent) that fit within token limit
+	var trimmedMessages []Message
+	for i := len(mergedMessages) - 1; i >= 0; i-- {
+		msg := mergedMessages[i]
+		msgTokens := len(cm.tokenizer.Encode(msg.Content, nil, nil))
+		if totalTokens + msgTokens <= cm.maxTokens {
+			trimmedMessages = append([]Message{msg}, trimmedMessages...)
+			totalTokens += msgTokens
+		} else {
+			break
+		}
 	}
+	mergedMessages = trimmedMessages
 
 	// Convert to LLM format
 	for _, msg := range mergedMessages {
@@ -120,7 +147,98 @@ func (cm *ChatManager) GetLLMContext(activeAgents []string) []llmmodels.Message 
 			Content: msg.Content,
 		})
 	}
+	logging.Info("LLM context prepared with %d messages", len(result))
 	return result
+}
+// GetLLMContextWithTags builds context with tag-based prioritization
+func (cm *ChatManager) GetLLMContextWithTags(activeAgents []string, relevantTags []string) []llmmodels.Message {
+	logging.Info("Building LLM context for active agents: %v with relevant tags: %v", activeAgents, relevantTags)
+	
+	// Build dynamic system prompt
+	var systemContent strings.Builder
+	systemContent.WriteString(cm.systemPrompt)
+	for _, agent := range activeAgents {
+		if prompt, exists := cm.pluginPrompts[agent]; exists {
+			systemContent.WriteString("\n\n")
+			systemContent.WriteString(prompt)
+		}
+	}
+	logging.Info("System prompt built: %s", systemContent.String())
+
+	result := []llmmodels.Message{
+		{Role: string(RoleSystem.SystemRole), Content: systemContent.String()},
+	}
+
+	// Merge histories for active agents + core MindPalace
+	mergedMessages := make([]Message, 0)
+	agentsToMerge := append(activeAgents, "") // Include core (empty agent key)
+
+	for _, agent := range agentsToMerge {
+		if agentMsgs, exists := cm.messages[agent]; exists {
+			// Filter out hidden messages for LLM
+			for _, msg := range agentMsgs {
+				if msg.Role != RoleHidden {
+					mergedMessages = append(mergedMessages, msg)
+				}
+			}
+		}
+	}
+
+	// Sort by relevance (messages with relevant tags first) then by timestamp
+	sort.Slice(mergedMessages, func(i, j int) bool {
+		iHasRelevantTag := cm.hasRelevantTag(mergedMessages[i], relevantTags)
+		jHasRelevantTag := cm.hasRelevantTag(mergedMessages[j], relevantTags)
+		
+		if iHasRelevantTag != jHasRelevantTag {
+			return iHasRelevantTag // Relevant messages first
+		}
+		// If both have same relevance, sort by timestamp (most recent first)
+		return mergedMessages[i].Timestamp.After(mergedMessages[j].Timestamp)
+	})
+	logging.Info("Sorted %d visible messages for LLM context (prioritizing %d relevant tags)", len(mergedMessages), len(relevantTags))
+
+	// Trim to max tokens
+	totalTokens := len(cm.tokenizer.Encode(systemContent.String(), nil, nil))
+	var trimmedMessages []Message
+	for _, msg := range mergedMessages {
+		msgTokens := len(cm.tokenizer.Encode(msg.Content, nil, nil))
+		if totalTokens + msgTokens <= cm.maxTokens {
+			trimmedMessages = append(trimmedMessages, msg)
+			totalTokens += msgTokens
+		} else {
+			break
+		}
+	}
+
+	// Convert to LLM format
+	for _, msg := range trimmedMessages {
+		result = append(result, llmmodels.Message{
+			Role:    string(msg.Role.SystemRole),
+			Content: msg.Content,
+		})
+	}
+	logging.Info("LLM context prepared with %d messages", len(result))
+	return result
+}
+
+// hasRelevantTag checks if a message has any of the relevant tags
+func (cm *ChatManager) hasRelevantTag(msg Message, relevantTags []string) bool {
+	for _, msgTag := range msg.Tags {
+		for _, relevantTag := range relevantTags {
+			if msgTag == relevantTag {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Helper function for min
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // GetUIMessages returns a unified, visible history for UI
@@ -137,6 +255,15 @@ func (cm *ChatManager) GetUIMessages() []Message {
 		return visible[i].Timestamp.Before(visible[j].Timestamp)
 	})
 	return visible
+}
+
+// GetTotalTokens returns the sum of tokens used across all agents
+func (cm *ChatManager) GetTotalTokens() int {
+	total := 0
+	for _, tokens := range cm.totalTokens {
+		total += tokens
+	}
+	return total
 }
 
 // SetPluginPrompt adds or updates a plugin-specific system prompt

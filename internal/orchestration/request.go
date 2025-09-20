@@ -16,6 +16,7 @@ import (
 const systemPromptTemplate = `You are MindPalace, a friendly AI assistant here to help with various queries and tasks. Provide helpful, accurate, and concise responses, using tools only when they enhance your ability to assist.
 
 {{if .Agents}}
+
 Based on the user's request, decide if a specialized agent is needed to handle their query efficiently. You can call specialized agents for specific domains by using the CallAgent tool.
 
 Available agents:
@@ -92,14 +93,21 @@ func (ro *RequestOrchestrator) DecideAgentCallCommand(event *UserRequestReceived
 			if err != nil {
 				return nil, fmt.Errorf("requested plugin does not exist: %w", err)
 			}
-			events = append(events, &AgentCallDecidedEvent{
+			query := ""
+			for argName, argVal := range call.Function.Arguments {
+				query += argName + ":" + argVal.(string)
+			}
+			agentCallEvent := &AgentCallDecidedEvent{
 				RequestID: event.RequestID,
 				AgentName: plug.Name(),
 				Timestamp: eventsourcing.ISOTimestamp(),
 				Model:     plug.AgentModel(),
-				Query:     event.RequestText,
-			})
+				Query:     query,
+			}
+			fmt.Println(agentCallEvent)
+			events = append(events, agentCallEvent)
 		}
+		fmt.Println("In DecideAgentCallCommand", len(events), "were generated")
 		return events, nil
 	}
 
@@ -373,7 +381,9 @@ func (ro *RequestOrchestrator) ExecuteToolCallCommand(event *ToolCallRequestPlac
 		})
 		return events, nil
 	}
-
+	for _, toolEvent := range toolEvents {
+		fmt.Println("tool call returned event:", toolEvent)
+	}
 	// Step 6: Append results and complete the tool call
 	events = append(events, toolEvents...)
 	events = append(events, &ToolCallCompleted{
@@ -383,6 +393,7 @@ func (ro *RequestOrchestrator) ExecuteToolCallCommand(event *ToolCallRequestPlac
 		Results:    map[string]interface{}{"success": true, "result": toolEvents},
 		Timestamp:  eventsourcing.ISOTimestamp(),
 	})
+	fmt.Println("added tool call completed event")
 
 	return events, nil
 }
@@ -485,12 +496,14 @@ func (ro *RequestOrchestrator) CompleteRequestCommand(event *ToolCallCompleted) 
 		return nil, nil
 	}
 
-	model := "qwq"
+	model := "gpt-oss:20b"
 	if agentState, exists := ro.agg.AgentStates[requestID]; exists {
 		model = agentState.Model
 	}
-
-	resp, err := ro.llmClient.CallLLM(ro.agg.chatManager.GetLLMContext(nil), nil, requestID, model)
+	// Use tag-based context selection for better relevance
+	relevantTags := []string{"task", "completion", "response"} // Basic tags for completion context
+	messages := ro.agg.chatManager.GetLLMContextWithTags(nil, relevantTags)
+	resp, err := ro.llmClient.CallLLM(messages, nil, requestID, model)
 	if err != nil {
 		return nil, fmt.Errorf("error calling llm client: %w", err)
 	}
