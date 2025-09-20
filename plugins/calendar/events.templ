@@ -1,0 +1,31 @@
+package main
+
+// CalendarEvent represents a single calendar event's state (mirrored from plugin.go for Templ) - REMOVED TO AVOID REDECLARATION
+
+templ EventsPage(events []*CalendarEvent) {
+	<!DOCTYPE html>
+	<html lang="en">
+	<head>
+		<meta charset="UTF-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<title>Calendar Events - MindPalace Web</title>
+		<script src="https://unpkg.com/htmx.org@1.9.10"></script>
+	</head>
+	<body>
+		<h1>Calendar Events</h1>
+		<button hx-get="/events" hx-target="#event-list">Refresh Events</button>
+		<div id="event-list">
+			if len(events) == 0 {
+				<p>No events available.</p>
+			} else {
+				<ul>
+					for _, event := range events {
+						<li><strong>{ event.Title }</strong> - { event.Description } (Status: { event.Status }, Importance: { event.Importance }, Start: { event.StartTime.Format("2006-01-02 15:04") })</li>
+					}
+				</ul>
+			}
+		</div>
+		<a href="/">Back to Home</a>
+	</body>
+	</html>
+}
