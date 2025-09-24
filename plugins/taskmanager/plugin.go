@@ -487,7 +487,7 @@ type TaskDeletedEvent struct {
 }
 
 func (e *TaskDeletedEvent) Type() string { return "taskmanager_TaskDeleted" }
-func (e *TaskDeletedEvent) Marshal() ([]byte, error) {
+func (e *TaskCompletedEvent) Marshal() ([]byte, error) {
 	e.EventType = e.Type()
 	return json.Marshal(e)
 }
@@ -758,6 +758,8 @@ func (ta *TaskAggregate) GetCustomUI() fyne.CanvasObject {
 
 	// Wrap in a scrollable container for wide boards
 	return container.NewHScroll(board)
+}
+
 func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourcing.DeltaAction {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()
@@ -783,7 +785,7 @@ func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourc
 			NodeType: "Label3D",
 			Properties: map[string]interface{}{ 
 				"text": e.Title, 
-				"position": [0, 1, 0]}, // Relative
+				"position": []interface{}{0, 1, 0}}, // Relative
 		}}
 	case *TaskCompletedEvent:
 		return []eventsourcing.DeltaAction{{
@@ -828,7 +830,7 @@ func (a *TaskAggregate) GetFull3DState() []eventsourcing.DeltaAction {
 			NodeType: "Label3D",
 			Properties: map[string]interface{}{ 
 				"text": task.Title, 
-				"position": [0, 1, 0]},
+				"position": []interface{}{0, 1, 0}},
 		})
 	}
 	return actions
@@ -855,7 +857,7 @@ func randomPos() []float64 {
 	return []float64{0, 0, 0} // placeholder
 }
 
-} // createTaskCard creates a compact card UI for a single task
+// createTaskCard creates a compact card UI for a single task
 func createTaskCard(task *Task) fyne.CanvasObject {
 	// Title with priority icon
 	title := widget.NewLabel(task.Title)
@@ -1019,7 +1021,6 @@ func contains(slice []string, item string) bool {
 		if s == item {
 			return true
 		}
-		return false
 	}
 	return false
 }
