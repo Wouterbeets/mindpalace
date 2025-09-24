@@ -1,7 +1,8 @@
-[gd_scene load_steps=14 format=3 uid="uid://c3k8q2o08q6cv"]
+[gd_scene load_steps=15 format=3 uid="uid://c3k8q2o08q6cv"]
 
 [ext_resource type="PackedScene" uid="uid://2wmloc3b7m4j" path="res://player.tscn" id="1_2qnao"]
 [ext_resource type="Shader" path="res://world.gdshader" id="1_swcde"]
+[ext_resource type="Script" path="res://main.gd" id="2_main"]
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_aowa2"]
 size = Vector3(60, 0.2, 60)
@@ -61,6 +62,7 @@ volumetric_fog_enabled = true
 volumetric_fog_density = 0.002
 
 [node name="Main" type="Node3D"]
+script = ExtResource("2_main")
 
 [node name="Floor" type="StaticBody3D" parent="."]
 
