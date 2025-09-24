@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"regexp"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -665,7 +666,7 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []e
 		return []eventsourcing.DeltaAction{{
 			Type:      "create",
 			NodeType:  "Label3D",
-			Properties: map[string]interface{}{"text": "Thinking...", "position": [0, 2, 0]},
+			Properties: map[string]interface{}{"text": "Thinking...", "position": []interface{}{0, 2, 0}},
 			Metadata:  map[string]interface{}{"request_id": e.RequestID},
 		}}
 	// ... e.g., chat messages as speech bubbles
@@ -679,13 +680,11 @@ func (a *OrchestrationAggregate) GetFull3DState() []eventsourcing.DeltaAction {
 		Type:      "create",
 		NodeType:  "CharacterBody3D",
 		NodeID:    "user_avatar",
-		Properties: map[string]interface{}{"position": [0, 0, 0]},
+		Properties: map[string]interface{}{"position": []interface{}{0, 0, 0}},
 	}}
 	// Add recent messages...
 	return actions
 }
-
-	}
 
 func (a *OrchestrationAggregate) GetChatManager() *chat.ChatManager {
 	return a.chatManager
