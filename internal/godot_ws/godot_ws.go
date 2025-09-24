@@ -3,6 +3,7 @@ package godot_ws
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"mindpalace/pkg/eventsourcing"
@@ -10,30 +11,36 @@ import (
 )
 
 type GodotServer struct {
-	upgrader websocket.Upgrader
-	clients  map[*websocket.Conn]bool
+	upgrader  websocket.Upgrader
+	clients   map[*websocket.Conn]bool
 	deltaChan chan eventsourcing.DeltaEnvelope
 	aggStore  eventsourcing.AggregateStore
+}
 
 func NewGodotServer() *GodotServer {
 	return &GodotServer{
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true }, // Allow all origins for testing
 		},
-		clients: make(map[*websocket.Conn]bool),
+		clients:   make(map[*websocket.Conn]bool),
 		deltaChan: make(chan eventsourcing.DeltaEnvelope, 100),
+	}
+}
+
 func (s *GodotServer) SetDeltaChan(ch chan eventsourcing.DeltaEnvelope) {
 	s.deltaChan = ch
+}
 
 func (s *GodotServer) SetAggStore(aggStore eventsourcing.AggregateStore) {
 	s.aggStore = aggStore
-
+}
 
 func (s *GodotServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		logging.Error("WebSocket upgrade error: %v", err)
 		return
+	}
 	s.clients[conn] = true
 	logging.Info("Godot client connected")
 
@@ -63,6 +70,8 @@ func (s *GodotServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		logging.Error("Error sending to Godot: %v", err)
+	}
+}
 
 func (s *GodotServer) Start() {
 	http.HandleFunc("/godot", s.HandleWebSocket)
@@ -70,3 +79,5 @@ func (s *GodotServer) Start() {
 	err := http.ListenAndServe(":8081", nil)
 	if err != nil {
 		logging.Error("Server error: %v", err)
+	}
+}

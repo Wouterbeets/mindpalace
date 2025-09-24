@@ -6,7 +6,6 @@ import (
 	"html/template"
 	"regexp"
 	"strings"
-	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
