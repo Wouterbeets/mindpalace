@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -190,8 +188,6 @@ func (p *TaskPlugin) Commands() map[string]eventsourcing.CommandHandler {
 func (p *TaskPlugin) Name() string {
 	return "taskmanager"
 }
-
-
 
 // Schemas defines the command schemas
 func (p *TaskPlugin) Schemas() map[string]eventsourcing.CommandInput {
@@ -840,23 +836,7 @@ func priorityIcon(priority string) fyne.Resource {
 	}
 }
 
-// GetWebUI returns HTMX-enabled HTML for the web UI
-func (ta *TaskAggregate) GetWebUI() string {
-	ta.Mu.RLock()
-	tasks := make([]*Task, 0, len(ta.Tasks))
-	for _, t := range ta.Tasks {
-		tasks = append(tasks, t)
-	}
-	ta.Mu.RUnlock()
-
-	var buf bytes.Buffer
-	err := TasksPage(tasks).Render(context.Background(), &buf)
-	if err != nil {
-		return "Error rendering template"
-	}
-	return buf.String()
-}
-
+// Additional Plugin Methods
 // Additional Plugin Methods
 func (p *TaskPlugin) Aggregate() eventsourcing.Aggregate {
 	return p.aggregate

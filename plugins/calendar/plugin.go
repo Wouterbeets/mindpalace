@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -776,24 +774,9 @@ func importanceIcon(importance string) fyne.Resource {
 }
 
 
-// GetWebUI returns HTMX-enabled HTML for the web UI
-func (ca *CalendarAggregate) GetWebUI() string {
-	ca.Mu.RLock()
-	events := make([]*CalendarEvent, 0, len(ca.Events))
-	for _, e := range ca.Events {
-		events = append(events, e)
-	}
-	ca.Mu.RUnlock()
-
-	var buf bytes.Buffer
-	err := EventsPage(events).Render(context.Background(), &buf)
-	if err != nil {
-		return "Error rendering template"
-	}
-	return buf.String()
-}
 
 
+// Additional Plugin Methods
 // Additional Plugin Methods
 func (p *CalendarPlugin) Aggregate() eventsourcing.Aggregate {
 	return p.aggregate
