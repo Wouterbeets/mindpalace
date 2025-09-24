@@ -758,6 +758,103 @@ func (ta *TaskAggregate) GetCustomUI() fyne.CanvasObject {
 
 	// Wrap in a scrollable container for wide boards
 	return container.NewHScroll(board)
+func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourcing.DeltaAction {
+	a.Mu.RLock()
+	defer a.Mu.RUnlock()
+	switch e := event.(type) {
+	case *TaskCreatedEvent:
+		color := priorityColor(e.Priority) // e.g., red for Critical
+		return []eventsourcing.DeltaAction{{
+			Type: "create",
+			NodeID: e.TaskID,
+			NodeType: "MeshInstance3D",
+			Properties: map[string]interface{}{
+				"mesh": "box", // Primitive
+				"position": randomPos(), // Helper func
+				"material_override": map[string]interface{}{ 
+					"albedo_color": color},
+			},
+			Metadata: map[string]interface{}{ 
+				"title": e.Title, 
+				"status": e.Status},
+		}, {
+			Type: "create",
+			NodeID: e.TaskID + "_label",
+			NodeType: "Label3D",
+			Properties: map[string]interface{}{ 
+				"text": e.Title, 
+				"position": [0, 1, 0]}, // Relative
+		}}
+	case *TaskCompletedEvent:
+		return []eventsourcing.DeltaAction{{
+			Type: "animate",
+			NodeID: e.TaskID,
+			Animation: &eventsourcing.AnimationSpec{Property: "modulate:a", To: 0, Duration: 1.0},
+		}, {
+			Type: "delete",
+			NodeID: e.TaskID,
+		}, {
+			Type: "delete",
+			NodeID: e.TaskID + "_label",
+		}}
+	// ... similar for Update/Delete
+	}
+	return nil
+}
+
+func (a *TaskAggregate) GetFull3DState() []eventsourcing.DeltaAction {
+	a.Mu.RLock()
+	defer a.Mu.RUnlock()
+	actions := make([]eventsourcing.DeltaAction, 0)
+	for _, task := range a.Tasks {
+		// Create action for each task (as in Broadcast, but batched)
+		color := priorityColor(task.Priority)
+		actions = append(actions, eventsourcing.DeltaAction{
+			Type: "create",
+			NodeID: task.TaskID,
+			NodeType: "MeshInstance3D",
+			Properties: map[string]interface{}{
+				"mesh": "box",
+				"position": randomPos(),
+				"material_override": map[string]interface{}{ 
+					"albedo_color": color},
+			},
+			Metadata: map[string]interface{}{ 
+				"title": task.Title, 
+				"status": task.Status},
+		}, eventsourcing.DeltaAction{
+			Type: "create",
+			NodeID: task.TaskID + "_label",
+			NodeType: "Label3D",
+			Properties: map[string]interface{}{ 
+				"text": task.Title, 
+				"position": [0, 1, 0]},
+		})
+	}
+	return actions
+}
+
+// Helpers: priorityColor() returns [r,g,b,a]; randomPos() in [ -10..10 ]
+func priorityColor(priority string) []float64 {
+	switch priority {
+	case PriorityCritical:
+		return []float64{1, 0, 0, 1} // red
+	case PriorityHigh:
+		return []float64{1, 0.5, 0, 1} // orange
+	case PriorityMedium:
+		return []float64{1, 1, 0, 1} // yellow
+	case PriorityLow:
+		return []float64{0, 1, 0, 1} // green
+	default:
+		return []float64{0.5, 0.5, 0.5, 1} // gray
+	}
+}
+
+func randomPos() []float64 {
+	// Simple random pos, in practice use rand
+	return []float64{0, 0, 0} // placeholder
+}
+
 } // createTaskCard creates a compact card UI for a single task
 func createTaskCard(task *Task) fyne.CanvasObject {
 	// Title with priority icon

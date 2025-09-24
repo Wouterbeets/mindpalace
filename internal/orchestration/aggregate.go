@@ -659,6 +659,32 @@ func init() {
 
 	// Last event in chain
 	eventsourcing.RegisterEvent("orchestration_RequestCompleted", func() eventsourcing.Event { return &RequestCompletedEvent{} })
+func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourcing.DeltaAction {
+	switch e := event.(type) {
+	case *ToolCallRequestPlaced:
+		return []eventsourcing.DeltaAction{{
+			Type:      "create",
+			NodeType:  "Label3D",
+			Properties: map[string]interface{}{"text": "Thinking...", "position": [0, 2, 0]},
+			Metadata:  map[string]interface{}{"request_id": e.RequestID},
+		}}
+	// ... e.g., chat messages as speech bubbles
+	}
+	return nil
+}
+
+func (a *OrchestrationAggregate) GetFull3DState() []eventsourcing.DeltaAction {
+	// Replay chat history to create user avatar + recent bubbles
+	actions := []eventsourcing.DeltaAction{{
+		Type:      "create",
+		NodeType:  "CharacterBody3D",
+		NodeID:    "user_avatar",
+		Properties: map[string]interface{}{"position": [0, 0, 0]},
+	}}
+	// Add recent messages...
+	return actions
+}
+
 	}
 
 func (a *OrchestrationAggregate) GetChatManager() *chat.ChatManager {
