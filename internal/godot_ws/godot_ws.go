@@ -1,7 +1,6 @@
 package godot_ws
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 
