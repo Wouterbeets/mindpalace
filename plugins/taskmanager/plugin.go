@@ -487,7 +487,7 @@ type TaskDeletedEvent struct {
 }
 
 func (e *TaskDeletedEvent) Type() string { return "taskmanager_TaskDeleted" }
-func (e *TaskCompletedEvent) Marshal() ([]byte, error) {
+func (e *TaskDeletedEvent) Marshal() ([]byte, error) {
 	e.EventType = e.Type()
 	return json.Marshal(e)
 }
@@ -495,7 +495,7 @@ func (e *TaskDeletedEvent) Unmarshal(data []byte) error { return json.Unmarshal(
 
 // Utility functions
 func generateTaskID() string {
-	return fmt.Sprintf("task_%d", eventsourcing.GenerateUniqueID())
+	return fmt.Sprintf("task_%d", time.Now().UnixNano())
 }
 func parseTime(timeStr string) time.Time {
 	if timeStr == "" {
