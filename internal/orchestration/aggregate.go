@@ -660,6 +660,8 @@ func init() {
 
 	// Last event in chain
 	eventsourcing.RegisterEvent("orchestration_RequestCompleted", func() eventsourcing.Event { return &RequestCompletedEvent{} })
+}
+
 func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourcing.DeltaAction {
 	switch e := event.(type) {
 	case *ToolCallRequestPlaced:
