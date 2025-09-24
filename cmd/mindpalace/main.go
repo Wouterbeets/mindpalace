@@ -77,8 +77,10 @@ func main() {
 	store, _ := eventsourcing.NewSQLiteEventStore(storagePath)
 	defer store.Close()
 	aggStore := aggregate.NewAggregateManager()
-	eb := eventsourcing.NewSimpleEventBus(store, aggStore)
-	ep := eventsourcing.NewEventProcessor(store, eb)
+	ep := eventsourcing.NewEventProcessor(store, nil)
+	eb := eventsourcing.NewSimpleEventBus(store, aggStore, ep.DeltaChan())
+	ep.EventBus = eb
+	eventsourcing.SetGlobalEventBus(eb)
 	pluginManager := plugins.NewPluginManager(ep)
 	llmClient := llmprocessor.NewLLMClient()
 
@@ -109,6 +111,8 @@ func main() {
 
 	// Launch Godot WebSocket server
 	server := godot_ws.NewGodotServer()
+	server.SetDeltaChan(ep.DeltaChan())
+	server.SetAggStore(aggStore)
 	go server.Start()
 
 	// Initialize orchestrator and Fyne app

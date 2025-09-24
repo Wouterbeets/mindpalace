@@ -136,3 +136,44 @@ func (e *InitiatePluginCreationEvent) Marshal() ([]byte, error) {
 	return json.Marshal(e)
 }
 func (e *InitiatePluginCreationEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
+
+// DeltaAction represents a single 3D mutation (declarative, idempotent).
+type DeltaAction struct {
+	Type       string                 `json:"type"`                 // "create", "update", "animate", "delete"
+	NodeID     string                 `json:"node_id,omitempty"`    // Unique ID (e.g., "task_123")
+	NodeType   string                 `json:"node_type,omitempty"`  // Godot node (e.g., "MeshInstance3D")
+	Properties map[string]interface{} `json:"properties,omitempty"` // Key-value props (e.g., {"position": [0,1,0]})
+	Animation  *AnimationSpec         `json:"animation,omitempty"`  // For "animate" type
+	Metadata   map[string]interface{} `json:"metadata,omitempty"`   // Aggregate-specific (e.g., {"task_id": "123"})
+}
+
+// AnimationSpec for tween-like effects.
+type AnimationSpec struct {
+	Property string      `json:"property"`       // e.g., "position"
+	To       interface{} `json:"to"`             // Target value (e.g., [5,0,0])
+	Duration float64     `json:"duration"`       // Seconds
+	Ease     string      `json:"ease,omitempty"` // Optional: "linear", "ease_in", etc.
+}
+
+// DeltaEnvelope wraps actions for broadcast (includes context for Godot parsing).
+type DeltaEnvelope struct {
+	Type      string        `json:"type"`      // Always "delta"
+	Aggregate string        `json:"aggregate"` // e.g., "taskmanager"
+	EventID   string        `json:"event_id"`  // For ordering/resync
+	Timestamp string        `json:"timestamp"` // ISO for sorting
+	Actions   []DeltaAction `json:"actions"`
+}
+
+// FullStateEnvelope for initial syncs/queries.
+type FullStateEnvelope struct {
+	Type      string        `json:"type"` // "full_state"
+	Aggregate string        `json:"aggregate"`
+	Actions   []DeltaAction `json:"actions"`
+}
+
+// ThreeDUIBroadcaster allows aggregates to emit 3D deltas on events.
+// Implement if the aggregate wants 3D UI (e.g., tasks as cubes).
+type ThreeDUIBroadcaster interface {
+	Broadcast3DDelta(event Event) []DeltaAction // Returns actions for this event (empty if irrelevant).
+	GetFull3DState() []DeltaAction              // Replays events to build initial/full state.
+}
