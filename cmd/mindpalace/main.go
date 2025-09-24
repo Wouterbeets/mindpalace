@@ -1,9 +1,9 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
+	"mindpalace/internal/godot_ws"
 	"mindpalace/internal/llmprocessor"
 	"mindpalace/internal/orchestration"
 	"mindpalace/internal/plugins"
@@ -11,9 +11,7 @@ import (
 	"mindpalace/pkg/aggregate"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
-	"net/http"
 	"os"
-	"time"
 )
 
 func main() {
@@ -65,15 +63,17 @@ func main() {
 		logging.SetVerbosity(logging.LogLevelInfo)
 		logging.Info("Verbose logging enabled")
 	} else {
-		// Default is minimal logging (info level but with limited output)
 		logging.SetVerbosity(logging.LogLevelInfo)
 		logging.Info("MindPalace starting with minimal logging")
 	}
+
 	// Register a global error handler for goroutine panics
 	eventsourcing.GetGlobalRecoveryManager().RegisterErrorHandler(func(err error, stackTrace string, eventType string, recoveryData map[string]interface{}) {
 		logging.Error("RECOVERED PANIC in event '%s': %v\nContext: %v\nStack trace: %s",
 			eventType, err, recoveryData, stackTrace)
 	})
+
+	// Basic setup
 	store, _ := eventsourcing.NewSQLiteEventStore(storagePath)
 	defer store.Close()
 	aggStore := aggregate.NewAggregateManager()
@@ -93,11 +93,13 @@ func main() {
 			logging.Error("Failed to load old events: %v", err)
 		}
 	}
-	// Load events after plugins so plugin events are registered
+
+	// Load events
 	if err := store.Load(); err != nil {
 		logging.Error("Failed to load events: %v", err)
 	}
 
+	// Register aggregates
 	for _, plug := range pluginManager.GetLLMPlugins() {
 		aggStore.RegisterAggregate(plug.Name(), plug.Aggregate())
 	}
@@ -105,94 +107,19 @@ func main() {
 	aggStore.RegisterAggregate("orchestration", orchAgg)
 	aggStore.RebuildState(store.GetEvents())
 
+	// Launch Godot WebSocket server
+	server := godot_ws.NewGodotServer()
+	go server.Start()
+
+	// Initialize orchestrator and Fyne app
 	orchestrator := orchestration.NewRequestOrchestrator(llmClient, pluginManager, orchAgg, ep, ep.EventBus)
 	app := ui.NewApp(ep, aggStore, orchestrator, pluginManager.GetLLMPlugins())
 
-	tasksHandler := func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		agg, err := aggStore.AggregateByName("taskmanager")
-		if err != nil {
-			http.Error(w, "Task aggregate not found", 500)
-			return
-		}
-		html := agg.GetWebUI() // Direct call to new method
-		fmt.Fprint(w, html)
-	}
-
-	chatHandler := func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		agg, err := aggStore.AggregateByName("orchestration")
-		if err != nil {
-			http.Error(w, "Orchestration aggregate not found", 500)
-			return
-		}
-		html := agg.GetWebUI()
-		fmt.Fprint(w, html)
-	}
-
-	promptHandler := func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", 405)
-			return
-		}
-		var req struct {
-			Prompt string `json:"prompt"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Invalid JSON", 400)
-			return
-		}
-		requestID := fmt.Sprintf("req-%d", time.Now().UnixNano())
-		err := ep.ExecuteCommand("ProcessUserRequest", map[string]interface{}{
-			"requestText": req.Prompt,
-			"requestID":   requestID,
-		})
-		if err != nil {
-			logging.Error("Failed to process user request: %v", err)
-			http.Error(w, "Failed to process request", 500)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "request_id": requestID})
-	}
-
-	http.HandleFunc("/tasks", tasksHandler)
-	http.HandleFunc("/chat", chatHandler)
-	http.HandleFunc("/prompt", promptHandler)
-	go func() {
-		logging.Info("Starting web server on :3030")
-		if err := http.ListenAndServe(":3030", nil); err != nil {
-			logging.Error("Web server error: %v", err)
-		}
-	}()
+	// Run Fyne UI unless headless
 	if !headlessFlag {
 		app.InitUI()
 		app.Run()
 	} else {
 		select {}
 	}
-}
-
-// webHandler serves a basic HTMX-enabled HTML page for the web front-end
-func webHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html")
-	html := `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MindPalace Web</title>
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-</head>
-<body>
-    <h1>Welcome to MindPalace (Web)</h1>
-    <p>This is the HTMX-based web interface. Migration in progress...</p>
-    <nav>
-        <a href="/tasks">View Tasks</a> | <a href="/chat">Chat (Coming Soon)</a>
-    </nav>
-    <!-- Future: Add HTMX attributes for dynamic content -->
-</body>
-</html>`
-	fmt.Fprint(w, html)
 }

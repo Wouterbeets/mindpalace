@@ -1,8 +1,6 @@
 package orchestration
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -661,15 +659,8 @@ func init() {
 
 	// Last event in chain
 	eventsourcing.RegisterEvent("orchestration_RequestCompleted", func() eventsourcing.Event { return &RequestCompletedEvent{} })
-}
-
-// GetWebUI returns HTMX-enabled HTML for the web UI
-func (a *OrchestrationAggregate) GetWebUI() string {
-	messages := a.chatManager.GetUIMessages()
-	var buf bytes.Buffer
-	err := OrchestrationPage(messages, a.AgentStates, a.ToolCallStates).Render(context.Background(), &buf)
-	if err != nil {
-		return "Error rendering template"
 	}
-	return buf.String()
+
+func (a *OrchestrationAggregate) GetChatManager() *chat.ChatManager {
+	return a.chatManager
 }

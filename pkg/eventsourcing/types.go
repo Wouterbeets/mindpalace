@@ -97,7 +97,6 @@ type Aggregate interface {
 	ID() string
 	ApplyEvent(event Event) error
 	GetCustomUI() fyne.CanvasObject
-	GetWebUI() string // New: Returns HTMX-enabled HTML for web UI
 }
 
 // Counter for generating unique IDs
