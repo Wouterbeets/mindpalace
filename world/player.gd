@@ -22,14 +22,14 @@ func _physics_process(delta):
 
 	# Handle vertical movement for floating (Q for up, E for down)
 	var vertical_input = 0.0
-	if Input.is_action_pressed("ui_up"):  # Assuming Q is mapped to ui_up or add custom action
+	if Input.is_key_pressed(KEY_Q):
 		vertical_input += 1.0
-	if Input.is_action_pressed("ui_down"):  # Assuming E is mapped to ui_down or add custom action
+	if Input.is_key_pressed(KEY_E):
 		vertical_input -= 1.0
 	velocity.y = vertical_input * speed
 
 	# Get input direction (WASD for horizontal)
-	var input_dir := Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down")
+	var input_dir := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	var direction := (transform.basis * Vector3(input_dir.x, 0, input_dir.y)).normalized()
 	if direction:
 		velocity.x = direction.x * speed
