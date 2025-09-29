@@ -21,6 +21,7 @@ type OrchestrationAggregate struct {
 	PendingToolCalls map[string]map[string]struct{}
 	ToolCallStates   map[string]*ToolCallState
 	AgentStates      map[string]*AgentState
+	RequestIDs       []string
 }
 
 func NewOrchestrationAggregate() *OrchestrationAggregate {
@@ -31,6 +32,7 @@ func NewOrchestrationAggregate() *OrchestrationAggregate {
 		PendingToolCalls: make(map[string]map[string]struct{}),
 		ToolCallStates:   make(map[string]*ToolCallState),
 		AgentStates:      make(map[string]*AgentState),
+		RequestIDs:       make([]string, 0),
 	}
 }
 
@@ -160,6 +162,7 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 		e := event.(*UserRequestReceivedEvent)
 		agentName := a.AgentName(e.RequestID)
 		a.chatManager.AddMessage(chat.RoleUser, e.RequestText, e.RequestID, agentName, nil)
+		a.RequestIDs = append(a.RequestIDs, e.RequestID)
 
 	case "orchestration_RequestCompleted":
 		e := event.(*RequestCompletedEvent)
@@ -665,12 +668,12 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []e
 	switch e := event.(type) {
 	case *ToolCallRequestPlaced:
 		return []eventsourcing.DeltaAction{{
-			Type:      "create",
-			NodeType:  "Label3D",
+			Type:       "create",
+			NodeType:   "Label3D",
 			Properties: map[string]interface{}{"text": "Thinking...", "position": []interface{}{0, 2, 0}},
-			Metadata:  map[string]interface{}{"request_id": e.RequestID},
+			Metadata:   map[string]interface{}{"request_id": e.RequestID},
 		}}
-	// ... e.g., chat messages as speech bubbles
+		// ... e.g., chat messages as speech bubbles
 	}
 	return nil
 }
@@ -678,12 +681,39 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []e
 func (a *OrchestrationAggregate) GetFull3DState() []eventsourcing.DeltaAction {
 	// Replay chat history to create user avatar + recent bubbles
 	actions := []eventsourcing.DeltaAction{{
-		Type:      "create",
-		NodeType:  "CharacterBody3D",
-		NodeID:    "user_avatar",
-		Properties: map[string]interface{}{"position": []interface{}{0, 0, 0}},
+		Type:     "create",
+		NodeType: "MeshInstance3D",
+		NodeID:   "orchestrator_ai",
+		Properties: map[string]interface{}{
+			"mesh":           "sphere",
+			"position":       []interface{}{0.0, 5.0, 0.0},
+			"emissive_color": []interface{}{1.0, 0.8, 0.4, 1.0}, // Warm golden glow
+			"particles":      true,                              // For gassy smoke effect
+		},
 	}}
-	// Add recent messages...
+	// Create a cube for each user request
+	for i, requestID := range a.RequestIDs {
+		x := float64(i)*0.5 + 2
+		actions = append(actions, eventsourcing.DeltaAction{
+			Type:     "create",
+			NodeID:   fmt.Sprintf("request_%s", requestID),
+			NodeType: "MeshInstance3D",
+			Properties: map[string]interface{}{
+				"mesh":     "box",
+				"position": []interface{}{x, -1.0, 0.0},       // Underground
+				"color":    []interface{}{0.0, 0.0, 1.0, 1.0}, // Blue for requests
+				"stream":   true,                              // Mark for stream animation
+			},
+		}, eventsourcing.DeltaAction{
+			Type:     "create",
+			NodeID:   fmt.Sprintf("request_%s_label", requestID),
+			NodeType: "Label3D",
+			Properties: map[string]interface{}{
+				"text":     "user_request",
+				"position": []interface{}{x, 0.5, 0.0}, // Above the cube
+			},
+		})
+	}
 	return actions
 }
 

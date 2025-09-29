@@ -3,17 +3,18 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
+	"os/exec"
+
 	"mindpalace/internal/godot_ws"
 	"mindpalace/internal/llmprocessor"
 	"mindpalace/internal/orchestration"
 	"mindpalace/internal/plugins"
 	"mindpalace/internal/ui"
 	"mindpalace/pkg/aggregate"
-	"mindpalace/pkg/embed"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
-	"os"
-	"os/exec"
+	"mindpalace/pkg/world"
 )
 
 func main() {
@@ -22,7 +23,7 @@ func main() {
 		verboseFlag  bool
 		debugFlag    bool
 		traceFlag    bool
-	helpFlag     bool
+		helpFlag     bool
 		versionFlag  bool
 		headlessFlag bool
 		storagePath  string
@@ -102,6 +103,8 @@ func main() {
 	if err := store.Load(); err != nil {
 		logging.Error("Failed to load events: %v", err)
 	}
+	events := store.GetEvents()
+	logging.Info("Loaded %d events", len(events))
 
 	// Register aggregates
 	for _, plug := range pluginManager.GetLLMPlugins() {
@@ -109,7 +112,7 @@ func main() {
 	}
 	orchAgg := orchestration.NewOrchestrationAggregate()
 	aggStore.RegisterAggregate("orchestration", orchAgg)
-	aggStore.RebuildState(store.GetEvents())
+	aggStore.RebuildState(events)
 
 	// Launch Godot WebSocket server
 	server := godot_ws.NewGodotServer()
@@ -118,22 +121,13 @@ func main() {
 	go server.Start()
 
 	// Launch embedded Godot binary
-	tmpFile, err := os.CreateTemp("", "godot-*")
+	tmpPath, err := world.ExtractToTemp()
 	if err != nil {
-		logging.Error("Failed to create temp file for Godot: %v", err)
+		logging.Error("Failed to extract Godot binary: %v", err)
 		os.Exit(1)
 	}
-	defer os.Remove(tmpFile.Name())
-	if _, err := tmpFile.Write(embed.GodotBinary); err != nil {
-		logging.Error("Failed to write Godot binary: %v", err)
-		os.Exit(1)
-	}
-	tmpFile.Close()
-	if err := os.Chmod(tmpFile.Name(), 0755); err != nil {
-		logging.Error("Failed to make Godot binary executable: %v", err)
-		os.Exit(1)
-	}
-	cmd := exec.Command(tmpFile.Name())
+	defer os.Remove(tmpPath)
+	cmd := exec.Command(tmpPath)
 	if err := cmd.Start(); err != nil {
 		logging.Error("Failed to start Godot: %v", err)
 		os.Exit(1)
