@@ -17,6 +17,7 @@ noise = SubResource("FastNoiseLite_5vdy2")
 render_priority = 0
 shader = ExtResource("1_swcde")
 shader_parameter/height_scale = 0.1
+shader_parameter/tex_scale = 1.0
 shader_parameter/noise_tex = SubResource("NoiseTexture2D_25h3r")
 
 [sub_resource type="PlaneMesh" id="PlaneMesh_ya4wa"]
@@ -58,7 +59,6 @@ background_energy_multiplier = 0.4
 sky = SubResource("Sky_epkd7")
 fog_light_color = Color(0.00930032, 0.0112573, 0.0147838, 1)
 fog_light_energy = 0.46
-volumetric_fog_enabled = true
 volumetric_fog_density = 0.002
 
 [node name="Main" type="Node3D"]
