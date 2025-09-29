@@ -57,14 +57,13 @@ run-debug: build plugins
 	@echo "Running MindPalace in debug mode..."
 	./$(BUILD_DIR)/$(BINARY_NAME) -debug
 
+# Run in headless mode
+.PHONY: run-headless
+run-headless: build plugins
+	@echo "Running MindPalace in headless mode..."
+	./$(BUILD_DIR)/$(BINARY_NAME) -headless
+
 # Clean build artifacts
-	# Run in headless mode
-	.PHONY: run-headless
-	run-headless: build plugins
-		@echo "Running MindPalace in headless mode..."
-		./$(BUILD_DIR)/$(BINARY_NAME) -headless
-	
-	# Clean build artifacts
 .PHONY: clean
 clean:
 	@echo "Cleaning up..."
@@ -125,6 +124,9 @@ dev-verbose:
 world:
 	@echo "Building Godot world binary..."
 	cd world && godot --headless --export-release Linux ./world.x86_64
+	@echo "Moving Godot world binary to pkg/world..."
+	@mkdir -p pkg/world
+	@cp world/world.x86_64 pkg/world/world
 
 # Help target
 .PHONY: help
@@ -146,7 +148,7 @@ help:
 	@echo "  release     : Create a release package"
 	@echo "  dev         : Start development mode with air"
 	@echo "  dev-verbose : Start development mode in verbose"
-	@echo "  world       : Build the Godot world binary"
+	@echo "  world       : Build the Godot world binary and move to pkg/world"
 	@echo "  help        : Show this help message"
 	@echo ""
 	@echo "Example: make run RUN_ARGS='-v --events custom_events.json'"
