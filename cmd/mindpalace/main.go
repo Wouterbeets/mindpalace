@@ -16,7 +16,7 @@ import (
 	"os/exec"
 )
 
-//go:embed world/world.x86_64
+//go:embed ../world/world.x86_64
 var godotBinary []byte
 
 func main() {
