@@ -9,7 +9,7 @@ import (
 	"mindpalace/internal/plugins"
 	"mindpalace/internal/ui"
 	"mindpalace/pkg/aggregate"
-	"mindpalace/pkg/embed"
+	"mindpalace/embed"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
 	"os"
@@ -22,7 +22,7 @@ func main() {
 		verboseFlag  bool
 		debugFlag    bool
 		traceFlag    bool
-		helpFlag     bool
+	helpFlag     bool
 		versionFlag  bool
 		headlessFlag bool
 		storagePath  string
