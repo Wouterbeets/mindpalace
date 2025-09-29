@@ -16,33 +16,32 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-
 // Register event types
 
 // Constants for event properties
 const (
-	StatusConfirmed   = "Confirmed"
-	StatusTentative   = "Tentative"
-	StatusCancelled   = "Cancelled"
-	ImportanceLow     = "Low"
-	ImportanceMedium  = "Medium"
-	ImportanceHigh    = "High"
-	ImportanceCritical= "Critical"
+	StatusConfirmed    = "Confirmed"
+	StatusTentative    = "Tentative"
+	StatusCancelled    = "Cancelled"
+	ImportanceLow      = "Low"
+	ImportanceMedium   = "Medium"
+	ImportanceHigh     = "High"
+	ImportanceCritical = "Critical"
 )
 
 // CalendarEvent represents a single calendar event's state
 type CalendarEvent struct {
-	EventID      string    `json:"event_id"`
-	Title        string    `json:"title"`
-	Description  string    `json:"description,omitempty"`
-	Status       string    `json:"status"`
-	Importance   string    `json:"importance"`
-	StartTime    time.Time `json:"start_time"`
-	EndTime      time.Time `json:"end_time,omitempty"`
-	Location     string    `json:"location,omitempty"`
-	Attendees    []string  `json:"attendees,omitempty"`
-	Tags         []string  `json:"tags,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
+	EventID     string    `json:"event_id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description,omitempty"`
+	Status      string    `json:"status"`
+	Importance  string    `json:"importance"`
+	StartTime   time.Time `json:"start_time"`
+	EndTime     time.Time `json:"end_time,omitempty"`
+	Location    string    `json:"location,omitempty"`
+	Attendees   []string  `json:"attendees,omitempty"`
+	Tags        []string  `json:"tags,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // CalendarAggregate manages the state of calendar events with thread safety
@@ -64,7 +63,6 @@ func NewCalendarAggregate() *CalendarAggregate {
 func (a *CalendarAggregate) ID() string {
 	return "calendar"
 }
-
 
 // ApplyEvent updates the aggregate state based on event-related events
 func (a *CalendarAggregate) ApplyEvent(event eventsourcing.Event) error {
@@ -144,7 +142,6 @@ func (a *CalendarAggregate) ApplyEvent(event eventsourcing.Event) error {
 	return nil
 }
 
-
 // CalendarPlugin implements the plugin interface
 type CalendarPlugin struct {
 	aggregate *CalendarAggregate
@@ -184,8 +181,6 @@ func (p *CalendarPlugin) Name() string {
 	return "calendar"
 }
 
-
-
 // Schemas defines the command schemas
 func (p *CalendarPlugin) Schemas() map[string]eventsourcing.CommandInput {
 	return map[string]eventsourcing.CommandInput{
@@ -195,7 +190,6 @@ func (p *CalendarPlugin) Schemas() map[string]eventsourcing.CommandInput {
 		"ListEvents":  &ListEventsInput{},
 	}
 }
-
 
 // Command Input Structs with Schema Generation
 
@@ -267,7 +261,6 @@ func (c *CreateEventInput) Schema() map[string]interface{} {
 		},
 	}
 }
-
 
 func (i *UpdateEventInput) New() any {
 	return &UpdateEventInput{}
@@ -343,7 +336,6 @@ func (u *UpdateEventInput) Schema() map[string]interface{} {
 	}
 }
 
-
 func (i *DeleteEventInput) New() any {
 	return &DeleteEventInput{}
 }
@@ -415,11 +407,10 @@ func (l *ListEventsInput) Schema() map[string]interface{} {
 	}
 }
 
-
 // Event Types
 type EventsListedEvent struct {
-	EventType string            `json:"event_type"`
-	Events    []*CalendarEvent  `json:"listed_events"`
+	EventType string           `json:"event_type"`
+	Events    []*CalendarEvent `json:"listed_events"`
 }
 
 func (e *EventsListedEvent) Type() string { return "calendar_EventsListed" }
@@ -483,7 +474,6 @@ func (e *EventDeletedEvent) Marshal() ([]byte, error) {
 }
 func (e *EventDeletedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
 
-
 // Utility functions
 func generateEventID() string {
 	return fmt.Sprintf("event_%d", eventsourcing.GenerateUniqueID())
@@ -506,7 +496,6 @@ func validateStatus(status string) bool {
 func validateImportance(importance string) bool {
 	return importance == ImportanceLow || importance == ImportanceMedium || importance == ImportanceHigh || importance == ImportanceCritical
 }
-
 
 // Command Handlers
 func (p *CalendarPlugin) createEventHandler(input *CreateEventInput) ([]eventsourcing.Event, error) {
@@ -565,7 +554,6 @@ func (p *CalendarPlugin) createEventHandler(input *CreateEventInput) ([]eventsou
 	return []eventsourcing.Event{event}, nil
 }
 
-
 func (p *CalendarPlugin) updateEventHandler(input *UpdateEventInput) ([]eventsourcing.Event, error) {
 	if input.EventID == "" {
 		return nil, fmt.Errorf("eventID is required and must be a non-empty string")
@@ -611,7 +599,6 @@ func (p *CalendarPlugin) updateEventHandler(input *UpdateEventInput) ([]eventsou
 
 	return []eventsourcing.Event{event}, nil
 }
-
 
 func (p *CalendarPlugin) deleteEventHandler(input *DeleteEventInput) ([]eventsourcing.Event, error) {
 	if input.EventID == "" {
@@ -677,7 +664,6 @@ func (p *CalendarPlugin) listEventsHandler(input *ListEventsInput) ([]eventsourc
 	event := &EventsListedEvent{EventType: "calendar_EventsListed", Events: filteredEvents}
 	return []eventsourcing.Event{event}, nil
 }
-
 
 // GetCustomUI returns a list view for the calendar events
 func (ca *CalendarAggregate) GetCustomUI() fyne.CanvasObject {
@@ -773,9 +759,6 @@ func importanceIcon(importance string) fyne.Resource {
 	}
 }
 
-
-
-
 // Additional Plugin Methods
 // Additional Plugin Methods
 func (p *CalendarPlugin) Aggregate() eventsourcing.Aggregate {
@@ -856,6 +839,49 @@ func (p *CalendarPlugin) EventHandlers() map[string]eventsourcing.EventHandler {
 	return nil
 }
 
+func (a *CalendarAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourcing.DeltaAction {
+	// For now, no incremental updates
+	return nil
+}
+
+func (a *CalendarAggregate) GetFull3DState() []eventsourcing.DeltaAction {
+	a.Mu.RLock()
+	defer a.Mu.RUnlock()
+	actions := []eventsourcing.DeltaAction{{
+		Type:     "create",
+		NodeID:   "calendar_hub",
+		NodeType: "MeshInstance3D",
+		Properties: map[string]interface{}{
+			"mesh":     "sphere",
+			"position": []interface{}{0.0, 0.0, -10.0},    // West, at ground level
+			"color":    []interface{}{0.5, 0.5, 0.5, 1.0}, // Gray for calendar
+		},
+	}}
+	// Add cubes for events
+	i := 0
+	for id, event := range a.Events {
+		actions = append(actions, eventsourcing.DeltaAction{
+			Type:     "create",
+			NodeID:   fmt.Sprintf("calendar_event_%s", id),
+			NodeType: "MeshInstance3D",
+			Properties: map[string]interface{}{
+				"mesh":     "box",
+				"position": []interface{}{float64(i*2 - 5), 2.0, -8.0}, // Near hub, above ground
+				"color":    []interface{}{0.8, 0.8, 0.8, 1.0},          // Light gray
+			},
+		}, eventsourcing.DeltaAction{
+			Type:     "create",
+			NodeID:   fmt.Sprintf("calendar_event_%s_label", id),
+			NodeType: "Label3D",
+			Properties: map[string]interface{}{
+				"text":     event.Title,
+				"position": []interface{}{float64(i*2 - 5), 3.5, -8.0},
+			},
+		})
+		i++
+	}
+	return actions
+}
 
 // Helper functions
 func contains(slice []string, item string) bool {
@@ -866,4 +892,3 @@ func contains(slice []string, item string) bool {
 	}
 	return false
 }
-

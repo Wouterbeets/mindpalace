@@ -2,6 +2,7 @@ package godot_ws
 
 import (
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -12,6 +13,7 @@ import (
 type GodotServer struct {
 	upgrader  websocket.Upgrader
 	clients   map[*websocket.Conn]bool
+	clientsMu sync.RWMutex
 	deltaChan chan eventsourcing.DeltaEnvelope
 	aggStore  eventsourcing.AggregateStore
 }
@@ -34,13 +36,28 @@ func (s *GodotServer) SetAggStore(aggStore eventsourcing.AggregateStore) {
 	s.aggStore = aggStore
 }
 
+func (s *GodotServer) broadcast(env eventsourcing.DeltaEnvelope) {
+	s.clientsMu.RLock()
+	defer s.clientsMu.RUnlock()
+	logging.Debug("Broadcasting delta envelope: type=%s, aggregate=%s, actions=%d", env.Type, env.Aggregate, len(env.Actions))
+	for conn := range s.clients {
+		err := conn.WriteJSON(env)
+		if err != nil {
+			logging.Error("Error broadcasting to Godot client: %v", err)
+			// Optionally remove the client if error
+		}
+	}
+}
+
 func (s *GodotServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		logging.Error("WebSocket upgrade error: %v", err)
 		return
 	}
+	s.clientsMu.Lock()
 	s.clients[conn] = true
+	s.clientsMu.Unlock()
 	logging.Info("Godot client connected")
 
 	const pongWait = 60 * time.Second
@@ -50,7 +67,11 @@ func (s *GodotServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Start listening for messages
 	go func() {
 		defer conn.Close()
-		defer delete(s.clients, conn)
+		defer func() {
+			s.clientsMu.Lock()
+			delete(s.clients, conn)
+			s.clientsMu.Unlock()
+		}()
 		for {
 			_, message, err := conn.ReadMessage()
 			if err != nil {
@@ -62,17 +83,38 @@ func (s *GodotServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Send a test message to Godot
-	err = conn.WriteJSON(map[string]interface{}{
-		"id":       "obj1",
-		"position": []float64{10.0, 0.0, 5.0},
-	})
-	if err != nil {
-		logging.Error("Error sending to Godot: %v", err)
+	// Send full 3D state to Godot
+	if s.aggStore != nil {
+		for _, agg := range s.aggStore.AllAggregates() {
+			if broadcaster, ok := agg.(eventsourcing.ThreeDUIBroadcaster); ok {
+				actions := broadcaster.GetFull3DState()
+				logging.Debug("Sending full state for aggregate %s: %d actions", agg.ID(), len(actions))
+				if len(actions) > 0 {
+					env := eventsourcing.DeltaEnvelope{
+						Type:      "delta",
+						Aggregate: agg.ID(),
+						EventID:   "full_state",
+						Timestamp: eventsourcing.ISOTimestamp(),
+						Actions:   actions,
+					}
+					err := conn.WriteJSON(env)
+					if err != nil {
+						logging.Error("Error sending full state to Godot: %v", err)
+					}
+				}
+			}
+		}
 	}
 }
 
 func (s *GodotServer) Start() {
+	// Start broadcasting deltas
+	go func() {
+		for env := range s.deltaChan {
+			s.broadcast(env)
+		}
+	}()
+
 	http.HandleFunc("/godot", s.HandleWebSocket)
 	logging.Info("Starting WebSocket server on :8081")
 	err := http.ListenAndServe(":8081", nil)

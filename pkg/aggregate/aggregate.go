@@ -57,7 +57,9 @@ func (m *AggregateManager) ID() string {
 
 // ApplyEvent routes the event to the appropriate plugin aggregate or handles core events.
 func (m *AggregateManager) RebuildState(events []eventsourcing.Event) error {
+	logging.Info("Rebuilding state for %d events across %d aggregates", len(events), len(m.AllAggregates()))
 	for _, event := range events {
+		logging.Debug("Applying event %s", event.Type())
 		for _, agg := range m.AllAggregates() {
 			err := agg.ApplyEvent(event)
 			if err != nil {
