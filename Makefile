@@ -19,7 +19,7 @@ all: build plugins
 
 # Build the main binary
 .PHONY: build
-build:
+build: world
 	@echo "Building MindPalace binary..."
 	@mkdir -p $(BUILD_DIR)
 	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_SRC)
@@ -120,6 +120,12 @@ dev-verbose:
 	@echo "Starting development with air in verbose mode..."
 	air -c .air.toml -- -v
 
+# Build the Godot world binary
+.PHONY: world
+world:
+	@echo "Building Godot world binary..."
+	cd world && godot --headless --export-release Linux ./world.x86_64
+
 # Help target
 .PHONY: help
 help:
@@ -140,6 +146,7 @@ help:
 	@echo "  release     : Create a release package"
 	@echo "  dev         : Start development mode with air"
 	@echo "  dev-verbose : Start development mode in verbose"
+	@echo "  world       : Build the Godot world binary"
 	@echo "  help        : Show this help message"
 	@echo ""
 	@echo "Example: make run RUN_ARGS='-v --events custom_events.json'"

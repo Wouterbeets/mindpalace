@@ -1,6 +1,7 @@
 package main
 
 import (
+	"embed"
 	"flag"
 	"fmt"
 	"mindpalace/internal/godot_ws"
@@ -12,7 +13,11 @@ import (
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
 	"os"
+	"os/exec"
 )
+
+//go:embed world/world.x86_64
+var godotBinary []byte
 
 func main() {
 	// Define command-line flags
@@ -114,6 +119,29 @@ func main() {
 	server.SetDeltaChan(ep.DeltaChan())
 	server.SetAggStore(aggStore)
 	go server.Start()
+
+	// Launch embedded Godot binary
+	tmpFile, err := os.CreateTemp("", "godot-*")
+	if err != nil {
+		logging.Error("Failed to create temp file for Godot: %v", err)
+		os.Exit(1)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.Write(godotBinary); err != nil {
+		logging.Error("Failed to write Godot binary: %v", err)
+		os.Exit(1)
+	}
+	tmpFile.Close()
+	if err := os.Chmod(tmpFile.Name(), 0755); err != nil {
+		logging.Error("Failed to make Godot binary executable: %v", err)
+		os.Exit(1)
+	}
+	cmd := exec.Command(tmpFile.Name())
+	if err := cmd.Start(); err != nil {
+		logging.Error("Failed to start Godot: %v", err)
+		os.Exit(1)
+	}
+	logging.Info("Godot binary launched")
 
 	// Initialize orchestrator and Fyne app
 	orchestrator := orchestration.NewRequestOrchestrator(llmClient, pluginManager, orchAgg, ep, ep.EventBus)
