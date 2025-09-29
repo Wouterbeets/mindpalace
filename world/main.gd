@@ -1,11 +1,17 @@
 extends Node3D
 
+
+@onready var mesh_instance: MeshInstance3D = $Floor/MeshInstance3D
+
 @onready var websocket = WebSocketPeer.new()
+
 var event_count = 0
 const CUBE_SPACING = 2.0
-const WEBSOCKET_URL = "ws://localhost:8080/events"  # Update this to your actual websocket URL
+const WEBSOCKET_URL = "ws://localhost:8081/godot"  # Update this to your actual websocket URL
 
 func _ready():
+	mesh_instance.extra_cull_margin = 2.0
+	print("main ready call")
 	websocket.connect_to_url(WEBSOCKET_URL)
 	print("Connecting to websocket...")
 
@@ -57,4 +63,4 @@ func spawn_cube_for_event(event: Dictionary):
 	
 	add_child(cube)
 	event_count += 1
-	print("Spawned cube for event: ", event.get("event_type", "unknown"))
+	print("Spawned cube for event: ", event)
