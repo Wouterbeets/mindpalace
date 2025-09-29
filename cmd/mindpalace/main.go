@@ -1,7 +1,6 @@
 package main
 
 import (
-	"embed"
 	"flag"
 	"fmt"
 	"mindpalace/internal/godot_ws"
@@ -10,14 +9,12 @@ import (
 	"mindpalace/internal/plugins"
 	"mindpalace/internal/ui"
 	"mindpalace/pkg/aggregate"
+	"mindpalace/pkg/embed"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
 	"os"
 	"os/exec"
 )
-
-//go:embed ../world/world.x86_64
-var godotBinary []byte
 
 func main() {
 	// Define command-line flags
@@ -127,7 +124,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer os.Remove(tmpFile.Name())
-	if _, err := tmpFile.Write(godotBinary); err != nil {
+	if _, err := tmpFile.Write(embed.GodotBinary); err != nil {
 		logging.Error("Failed to write Godot binary: %v", err)
 		os.Exit(1)
 	}
