@@ -9,7 +9,7 @@ import (
 	"mindpalace/internal/plugins"
 	"mindpalace/internal/ui"
 	"mindpalace/pkg/aggregate"
-	"mindpalace/embed"
+	"mindpalace/assets"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
 	"os"
@@ -124,7 +124,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer os.Remove(tmpFile.Name())
-	if _, err := tmpFile.Write(embed.GodotBinary); err != nil {
+	if _, err := tmpFile.Write(assets.GodotBinary); err != nil {
 		logging.Error("Failed to write Godot binary: %v", err)
 		os.Exit(1)
 	}
