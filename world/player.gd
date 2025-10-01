@@ -10,12 +10,15 @@ func _ready():
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED  # Capture mouse for looking
 
 func _input(event):
-	if event is InputEventMouseMotion:
+	if event is InputEventMouseMotion and get_parent().settings_visible == false:
 		rotate_y(-event.relative.x * mouse_sensitivity)
 		$Camera.rotate_x(-event.relative.y * mouse_sensitivity)
 		$Camera.rotation.x = clamp($Camera.rotation.x, -deg_to_rad(70), deg_to_rad(70))
 
 func _physics_process(delta):
+	if get_parent().settings_visible:
+		return  # Disable movement when settings menu is open
+
 	# Remove gravity for floating
 	# if not is_on_floor():
 	#     velocity.y -= gravity * delta

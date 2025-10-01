@@ -3,13 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"mindpalace/pkg/eventsourcing"
+	"mindpalace/pkg/ui3d"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -775,36 +775,55 @@ func (ta *TaskAggregate) GetCustomUI() fyne.CanvasObject {
 func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourcing.DeltaAction {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()
+	theme := ui3d.DefaultTheme()
 	switch e := event.(type) {
 	case *TaskCreatedEvent:
-		color := priorityColor(e.Priority) // e.g., red for Critical
-		return []eventsourcing.DeltaAction{{
-			Type:     "create",
-			NodeID:   e.TaskID,
-			NodeType: "MeshInstance3D",
-			Properties: map[string]interface{}{
-				"mesh":     "box",       // Primitive
-				"position": randomPos(), // Helper func
-				"material_override": map[string]interface{}{
-					"albedo_color": color},
-			},
-			Metadata: map[string]interface{}{
-				"title":  e.Title,
-				"status": e.Status},
+		// Find the index of this task in the sorted list
+		sortedIDs := a.getSortedTaskIDs()
+		i := 0
+		for _, id := range sortedIDs {
+			if id == e.TaskID {
+				break
+			}
+			i++
+		}
+		pos := ui3d.PositionInCircle(i, 6.0+float64(i)*0.5, 2.0)
+		color := priorityColor(e.Priority)
+		box := ui3d.CreateBox(e.TaskID, pos, theme)
+		box.Properties["material_override"].(map[string]interface{})["albedo_color"] = color
+		box.Metadata = map[string]interface{}{
+			"title":  e.Title,
+			"status": e.Status,
+		}
+		label := ui3d.CreateLabel(e.TaskID+"_label", e.Title, []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
+		return []eventsourcing.DeltaAction{box, label}
+	case *TaskUpdatedEvent:
+		// For updates, recreate the task at the correct position
+		sortedIDs := a.getSortedTaskIDs()
+		i := 0
+		for _, id := range sortedIDs {
+			if id == e.TaskID {
+				break
+			}
+			i++
+		}
+		pos := ui3d.PositionInCircle(i, 6.0+float64(i)*0.5, 2.0)
+		color := priorityColor(a.Tasks[e.TaskID].Priority)
+		box := ui3d.CreateBox(e.TaskID, pos, theme)
+		box.Properties["material_override"].(map[string]interface{})["albedo_color"] = color
+		label := ui3d.CreateLabel(e.TaskID+"_label", a.Tasks[e.TaskID].Title, []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
+		// Delete old and create new
+		oldActions := []eventsourcing.DeltaAction{{
+			Type:   "delete",
+			NodeID: e.TaskID,
 		}, {
-			Type:     "create",
-			NodeID:   e.TaskID + "_label",
-			NodeType: "Label3D",
-			Properties: map[string]interface{}{
-				"text":     e.Title,
-				"position": []interface{}{0, 1, 0}}, // Relative
+			Type:   "delete",
+			NodeID: e.TaskID + "_label",
 		}}
+		newActions := []eventsourcing.DeltaAction{box, label}
+		return append(oldActions, newActions...)
 	case *TaskCompletedEvent:
 		return []eventsourcing.DeltaAction{{
-			Type:      "animate",
-			NodeID:    e.TaskID,
-			Animation: &eventsourcing.AnimationSpec{Property: "modulate:a", To: 0, Duration: 1.0},
-		}, {
 			Type:   "delete",
 			NodeID: e.TaskID,
 		}, {
@@ -819,40 +838,46 @@ func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourc
 func (a *TaskAggregate) GetFull3DState() []eventsourcing.DeltaAction {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()
+	theme := ui3d.DefaultTheme()
 	actions := make([]eventsourcing.DeltaAction, 0)
-	i := 0
-	for _, task := range a.Tasks {
-		// Create action for each task (as in Broadcast, but batched)
-		color := priorityColor(task.Priority)
-		// Position in taskmanager sector (east, angle 0)
-		angle := 0.0 + float64(i)*0.5 // Spread a bit
-		radius := 6.0 + float64(i)*0.5
-		x := radius * math.Cos(angle)
-		z := radius * math.Sin(angle)
-		actions = append(actions, eventsourcing.DeltaAction{
-			Type:     "create",
-			NodeID:   task.TaskID,
-			NodeType: "MeshInstance3D",
-			Properties: map[string]interface{}{
-				"mesh":     "box",
-				"position": []interface{}{x, 2.0, z},
-				"material_override": map[string]interface{}{
-					"albedo_color": color},
-			},
-			Metadata: map[string]interface{}{
-				"title":  task.Title,
-				"status": task.Status},
-		}, eventsourcing.DeltaAction{
-			Type:     "create",
-			NodeID:   task.TaskID + "_label",
-			NodeType: "Label3D",
-			Properties: map[string]interface{}{
-				"text":     task.Title,
-				"position": []interface{}{x, 3.5, z}},
-		})
-		i++
+
+	// Sort tasks by creation time for consistent positioning
+	type taskWithID struct {
+		id   string
+		task *Task
+	}
+	var sortedTasks []taskWithID
+	for id, task := range a.Tasks {
+		sortedTasks = append(sortedTasks, taskWithID{id: id, task: task})
+	}
+	sort.Slice(sortedTasks, func(i, j int) bool {
+		return sortedTasks[i].task.CreatedAt.Before(sortedTasks[j].task.CreatedAt)
+	})
+
+	for i, taskItem := range sortedTasks {
+		pos := ui3d.PositionInCircle(i, 6.0+float64(i)*0.5, 2.0)
+		color := priorityColor(taskItem.task.Priority)
+		// Use themed box but override color for priority
+		box := ui3d.CreateBox(taskItem.id, pos, theme)
+		box.Properties["material_override"].(map[string]interface{})["albedo_color"] = color
+		label := ui3d.CreateLabel(taskItem.id+"_label", taskItem.task.Title, []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
+		actions = append(actions, box, label)
 	}
 	return actions
+}
+
+// getSortedTaskIDs returns task IDs sorted by creation time for consistent positioning
+func (a *TaskAggregate) getSortedTaskIDs() []string {
+	ids := make([]string, 0, len(a.Tasks))
+	for id := range a.Tasks {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		taskI := a.Tasks[ids[i]]
+		taskJ := a.Tasks[ids[j]]
+		return taskI.CreatedAt.Before(taskJ.CreatedAt)
+	})
+	return ids
 }
 
 // Helpers: priorityColor() returns [r,g,b,a]; randomPos() in [ -10..10 ]

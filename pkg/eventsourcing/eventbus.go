@@ -51,6 +51,9 @@ func (eb *SimpleEventBus) Publish(event Event) {
 		err := agg.ApplyEvent(event)
 		if err != nil {
 			logging.Error("Apply failed for event %s, on agg %s: %v", event.Type(), agg.ID(), err)
+		}
+	}
+
 	// Emit 3D deltas
 	for _, agg := range eb.aggStore.AllAggregates() {
 		if broadcaster, ok := agg.(ThreeDUIBroadcaster); ok {
@@ -67,8 +70,6 @@ func (eb *SimpleEventBus) Publish(event Event) {
 				default: // Drop silently to avoid blocking
 				}
 			}
-		}
-	}
 		}
 	}
 	for _, handler := range eb.allUpdatesSubscribers {

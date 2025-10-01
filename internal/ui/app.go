@@ -12,6 +12,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"mindpalace/internal/audio"
+	"mindpalace/internal/godot_ws"
 	"mindpalace/internal/orchestration"
 	"mindpalace/pkg/aggregate"
 	"mindpalace/pkg/eventsourcing"
@@ -34,10 +35,11 @@ type App struct {
 	pluginTabs     *container.AppTabs
 	orchestrator   *orchestration.RequestOrchestrator
 	plugins        []eventsourcing.Plugin
+	godotServer    *godot_ws.GodotServer
 }
 
 // NewApp creates a new UI application
-func NewApp(ep *eventsourcing.EventProcessor, agg *aggregate.AggregateManager, orch *orchestration.RequestOrchestrator, plugins []eventsourcing.Plugin) *App {
+func NewApp(ep *eventsourcing.EventProcessor, agg *aggregate.AggregateManager, orch *orchestration.RequestOrchestrator, plugins []eventsourcing.Plugin, godotServer *godot_ws.GodotServer) *App {
 	ChatHistory := container.NewVBox()
 	fyneApp := app.NewWithID("com.mindpalace.app")
 
@@ -46,11 +48,14 @@ func NewApp(ep *eventsourcing.EventProcessor, agg *aggregate.AggregateManager, o
 		aggManager:     agg,
 		orchestrator:   orch,
 		ui:             fyneApp,
-		transcriber:    audio.NewVoiceTranscriber(),
-		transcribing:   false,
-		transcriptBox:  widget.NewMultiLineEntry(),
-		ChatHistory:    ChatHistory,
-		chatScroll:     container.NewScroll(ChatHistory),
+		transcriber: func() *audio.VoiceTranscriber {
+			vt, _ := audio.NewVoiceTranscriber("models/ggml-base.en.bin")
+			return vt
+		}(),
+		transcribing:  false,
+		transcriptBox: widget.NewMultiLineEntry(),
+		ChatHistory:   ChatHistory,
+		chatScroll:    container.NewScroll(ChatHistory),
 		eventLog: widget.NewList(
 			func() int { return len(ep.GetEvents()) },
 			func() fyne.CanvasObject { return widget.NewLabel("Event") },
@@ -63,7 +68,9 @@ func NewApp(ep *eventsourcing.EventProcessor, agg *aggregate.AggregateManager, o
 		),
 		eventDetail: widget.NewMultiLineEntry(),
 		eventChan:   make(chan eventsourcing.Event, 10),
+		pluginTabs:  container.NewAppTabs(),
 		plugins:     plugins,
+		godotServer: godotServer,
 	}
 	a.ui.Settings().SetTheme(NewCustomTheme())
 
@@ -166,6 +173,11 @@ func (a *App) Run() {
 
 			err := a.transcriber.Start(func(text string) {
 				if strings.TrimSpace(text) != "" {
+					logging.Debug("AUDIO: Transcription: %s", text)
+					if a.godotServer != nil {
+						a.godotServer.SendTranscription(text)
+					}
+					// Still update Fyne UI for now (can be removed later)
 					eventsourcing.SafeGo("TranscriptionCallback", map[string]interface{}{
 						"text": text,
 					}, func() {
@@ -259,24 +271,47 @@ func (a *App) Run() {
 	for _, plugin := range a.plugins {
 		agg, err := a.aggManager.AggregateByName(plugin.Name())
 		if err != nil {
-			logging.Error("aggregate not found")
+			logging.Error("aggregate not found for plugin %s: %v", plugin.Name(), err)
+			continue
 		}
 		logging.Debug("adding plugin tabs: %s", plugin.Name())
-		a.pluginTabs.Append(container.NewTabItem(plugin.Name(), agg.GetCustomUI()))
+		ui := agg.GetCustomUI()
+		if ui == nil {
+			logging.Error("GetCustomUI returned nil for plugin %s", plugin.Name())
+			continue
+		}
+		a.pluginTabs.Append(container.NewTabItem(plugin.Name(), ui))
 	}
 
 	// Event log
 	split := container.NewHSplit(a.eventLog, a.eventDetail)
 	split.SetOffset(0.3)
 
-	// Tabs
-	tabs := container.NewAppTabs(
-		container.NewTabItem("MindPalace", chatInterface),
-		container.NewTabItem("Plugins", a.pluginTabs),
-		container.NewTabItem("Event Log", split),
-	)
+	// Welcome screen
+	welcomeLabel := widget.NewLabel("Welcome to MindPalace")
+	welcomeLabel.TextStyle = fyne.TextStyle{Bold: true}
+	welcomeLabel.Alignment = fyne.TextAlignCenter
+	welcomeDesc := widget.NewLabel("Your local-first AI assistant framework.\n\nUse voice or text to interact with plugins for tasks, calendar, and notes.\n\nClick 'Get Started' to begin.")
+	welcomeDesc.Wrapping = fyne.TextWrapWord
+	welcomeDesc.Alignment = fyne.TextAlignCenter
+	getStartedBtn := widget.NewButton("Get Started", func() {
+		window.SetContent(container.NewAppTabs(
+			container.NewTabItem("MindPalace", chatInterface),
+			container.NewTabItem("Plugins", a.pluginTabs),
+		))
+	})
+	getStartedBtn.Importance = widget.HighImportance
+	welcomeScreen := container.NewCenter(container.NewVBox(
+		welcomeLabel,
+		widget.NewSeparator(),
+		welcomeDesc,
+		widget.NewSeparator(),
+		getStartedBtn,
+	))
 
-	window.SetContent(tabs)
+	// Set initial content to welcome screen
+	window.SetContent(welcomeScreen)
+
 	window.Resize(fyne.NewSize(1000, 700))
 	window.ShowAndRun()
 }
@@ -300,7 +335,10 @@ func (a *App) refreshUI() {
 			for _, plugin := range a.plugins {
 				if plugin.Name() == pluginName {
 					if agg, exists := a.aggManager.PluginAggregates[pluginName]; exists {
-						a.pluginTabs.Items[i].Content = agg.GetCustomUI()
+						ui := agg.GetCustomUI()
+						if ui != nil {
+							a.pluginTabs.Items[i].Content = ui
+						}
 					}
 				}
 			}

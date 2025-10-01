@@ -14,6 +14,7 @@ import (
 
 	"mindpalace/internal/chat"
 	"mindpalace/pkg/eventsourcing"
+	"mindpalace/pkg/ui3d"
 )
 
 type OrchestrationAggregate struct {
@@ -665,20 +666,33 @@ func init() {
 }
 
 func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourcing.DeltaAction {
+	theme := ui3d.DefaultTheme()
 	switch e := event.(type) {
+	case *UserRequestReceivedEvent:
+		// Find the index of this request in RequestIDs
+		requestIndex := -1
+		for i, id := range a.RequestIDs {
+			if id == e.RequestID {
+				requestIndex = i
+				break
+			}
+		}
+		if requestIndex >= 0 {
+			pos := ui3d.PositionInGrid(float64(requestIndex), 0, 2.0)
+			pos[0] = pos[2] // Move Z spacing to X axis
+			pos[1] = -1.0   // Underground
+			pos[2] = 0.0
+			return ui3d.CreateCard(fmt.Sprintf("request_%s", e.RequestID), "User Request", pos, theme)
+		}
 	case *ToolCallRequestPlaced:
-		return []eventsourcing.DeltaAction{{
-			Type:       "create",
-			NodeType:   "Label3D",
-			Properties: map[string]interface{}{"text": "Thinking...", "position": []interface{}{0, 2, 0}},
-			Metadata:   map[string]interface{}{"request_id": e.RequestID},
-		}}
+		return []eventsourcing.DeltaAction{ui3d.CreateLabel(fmt.Sprintf("thinking_%s", e.ToolCallID), "Thinking...", []float64{0, 2, 0}, theme)}
 		// ... e.g., chat messages as speech bubbles
 	}
 	return nil
 }
 
 func (a *OrchestrationAggregate) GetFull3DState() []eventsourcing.DeltaAction {
+	theme := ui3d.DefaultTheme()
 	// Replay chat history to create user avatar + recent bubbles
 	actions := []eventsourcing.DeltaAction{{
 		Type:     "create",
@@ -691,28 +705,13 @@ func (a *OrchestrationAggregate) GetFull3DState() []eventsourcing.DeltaAction {
 			"particles":      true,                              // For gassy smoke effect
 		},
 	}}
-	// Create a cube for each user request
+	// Create a card for each user request
 	for i, requestID := range a.RequestIDs {
-		x := float64(i)*0.5 + 2
-		actions = append(actions, eventsourcing.DeltaAction{
-			Type:     "create",
-			NodeID:   fmt.Sprintf("request_%s", requestID),
-			NodeType: "MeshInstance3D",
-			Properties: map[string]interface{}{
-				"mesh":     "box",
-				"position": []interface{}{x, -1.0, 0.0},       // Underground
-				"color":    []interface{}{0.0, 0.0, 1.0, 1.0}, // Blue for requests
-				"stream":   true,                              // Mark for stream animation
-			},
-		}, eventsourcing.DeltaAction{
-			Type:     "create",
-			NodeID:   fmt.Sprintf("request_%s_label", requestID),
-			NodeType: "Label3D",
-			Properties: map[string]interface{}{
-				"text":     "user_request",
-				"position": []interface{}{x, 0.5, 0.0}, // Above the cube
-			},
-		})
+		pos := ui3d.PositionInGrid(float64(i), 0, 2.0) // Grid layout for requests
+		pos[0] = pos[2]                                // Move Z spacing to X axis
+		pos[1] = -1.0                                  // Underground
+		pos[2] = 0.0
+		actions = append(actions, ui3d.CreateCard(fmt.Sprintf("request_%s", requestID), "User Request", pos, theme)...)
 	}
 	return actions
 }
