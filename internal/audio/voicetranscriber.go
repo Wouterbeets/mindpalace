@@ -1,49 +1,52 @@
 package audio
 
 import (
-	"bufio"
+	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
-	"log"
-	"mindpalace/pkg/logging"
+	"io"
 	"os"
-	"os/exec"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/gordonklaus/portaudio"
+	"github.com/mutablelogic/go-media/pkg/ffmpeg"
+	// "github.com/mutablelogic/go-whisper"
+	// "github.com/mutablelogic/go-whisper/pkg/schema"
+	// "github.com/mutablelogic/go-whisper/pkg/task"
+	"mindpalace/pkg/logging"
 )
 
-// VoiceTranscriber manages audio recording and real-time transcription
+// VoiceTranscriber manages audio recording and real-time transcription using go-whisper
 type VoiceTranscriber struct {
-	wg                    sync.WaitGroup
-	stream                *portaudio.Stream
-	audioFile             *os.File
-	sampleCount           int
+	// whisper               *whisper.Whisper
+	// model                 *schema.Model
 	mu                    sync.Mutex
-	running               bool
 	transcriptionCallback func(string)
 	sessionCallback       func(eventType string, data map[string]interface{})
-	cmd                   *exec.Cmd
-	writer                *bufio.Writer
-	reader                *bufio.Reader
 	audioBuffer           []float32
-	wordHistory           []string
-	historySize           int
-	transcriptionText     string
-	transcriptionHistory  []string
+	sampleRate            int
+	bufferThreshold       int // samples to buffer before transcription
 	sessionID             string
 	startTime             time.Time
 	totalSegments         int
+	running               bool
+	captureCtx            context.Context
+	captureCancel         context.CancelFunc
 }
 
-// NewVoiceTranscriber initializes a new VoiceTranscriber instance
-func NewVoiceTranscriber() *VoiceTranscriber {
-	return &VoiceTranscriber{
-		historySize: 3,
-		wordHistory: make([]string, 0, 3),
+// NewVoiceTranscriber initializes a new VoiceTranscriber instance with go-whisper
+func NewVoiceTranscriber(modelPath string) (*VoiceTranscriber, error) {
+	// Whisper disabled for now
+	logging.Info("AUDIO: Whisper transcription disabled")
+
+	vt := &VoiceTranscriber{
+		sampleRate:      16000,
+		bufferThreshold: 16000 * 1,                    // 1 second of audio for faster testing
+		audioBuffer:     make([]float32, 0, 16000*10), // Pre-allocate for 10 seconds
 	}
+
+	return vt, nil
 }
 
 // SetSessionEventCallback sets the callback for session events
@@ -53,362 +56,318 @@ func (vt *VoiceTranscriber) SetSessionEventCallback(callback func(eventType stri
 	vt.sessionCallback = callback
 }
 
-// Start initiates audio recording and transcription
+// Start initializes the transcriber for receiving audio chunks
 func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
+	logging.Debug("AUDIO: Starting voice transcriber")
 	vt.mu.Lock()
 	defer vt.mu.Unlock()
 
 	if vt.running {
+		logging.Debug("AUDIO: Transcriber already running")
 		return nil
 	}
 
-	vt.transcriptionText = ""
-	vt.audioBuffer = make([]float32, 0, 64000)
 	vt.transcriptionCallback = transcriptionCallback
 	vt.sessionID = fmt.Sprintf("session-%d", time.Now().UnixNano())
 	vt.startTime = time.Now()
 	vt.totalSegments = 0
-
-	// Initialize Python transcription process
-	logging.Trace("Starting transcription process...")
-	vt.cmd = exec.Command("python3", "transcribe.py")
-	stdin, err := vt.cmd.StdinPipe()
-	if err != nil {
-		log.Printf("Error getting stdin pipe: %v", err)
-		return fmt.Errorf("failed to create stdin pipe: %w", err)
-	}
-	stdout, err := vt.cmd.StdoutPipe()
-	if err != nil {
-		log.Printf("Error getting stdout pipe: %v", err)
-		return fmt.Errorf("failed to create stdout pipe: %w", err)
-	}
-	stderr, err := vt.cmd.StderrPipe()
-	if err != nil {
-		log.Printf("Error getting stderr pipe: %v", err)
-		return fmt.Errorf("failed to create stderr pipe: %w", err)
-	}
-	if err := vt.cmd.Start(); err != nil {
-		log.Printf("Error starting Python process: %v", err)
-		return fmt.Errorf("failed to start transcription process: %w", err)
-	}
-	vt.writer = bufio.NewWriter(stdin)
-	vt.reader = bufio.NewReader(stdout)
-
-	go func() {
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			log.Printf("Python stderr: %s", scanner.Text())
-		}
-		if err := scanner.Err(); err != nil {
-			log.Printf("Error reading Python stderr: %v", err)
-		}
-	}()
-
-	// Setup audio file
-	logging.Trace("Creating audio file...")
-	vt.audioFile, err = os.Create("test_audio.wav")
-	if err != nil {
-		vt.cmd.Process.Kill()
-		log.Printf("Error creating audio file: %v", err)
-		return fmt.Errorf("failed to create audio file: %w", err)
-	}
-	vt.writeWAVHeader()
-
-	// Initialize PortAudio
-	logging.Trace("Initializing PortAudio...")
-	var paInitError error
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("RECOVERED PANIC in portaudio initialization: %v", r)
-				paInitError = fmt.Errorf("panic in portaudio initialization: %v", r)
-			}
-		}()
-		paInitError = portaudio.Initialize()
-	}()
-	if paInitError != nil {
-		log.Printf("PortAudio initialization error: %v", paInitError)
-		vt.audioFile.Close()
-		vt.cmd.Process.Kill()
-		return fmt.Errorf("failed to initialize audio system: %w", paInitError)
-	}
-
-	// Open audio stream
-	logging.Trace("Opening audio stream...")
-	bufferSize := 1024
-	buffer := make([]float32, bufferSize)
-	var streamError error
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("RECOVERED PANIC in stream opening: %v", r)
-				streamError = fmt.Errorf("panic in stream opening: %v", r)
-			}
-		}()
-		vt.stream, streamError = portaudio.OpenDefaultStream(1, 0, 16000, bufferSize, &buffer)
-	}()
-	if streamError != nil {
-		log.Printf("Error opening audio stream: %v", streamError)
-		portaudio.Terminate()
-		vt.audioFile.Close()
-		vt.cmd.Process.Kill()
-		return fmt.Errorf("failed to open audio stream: %w", streamError)
-	}
-
-	// Start audio stream
-	var startError error
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("RECOVERED PANIC in stream.Start: %v", r)
-				startError = fmt.Errorf("panic in stream.Start: %v", r)
-			}
-		}()
-		startError = vt.stream.Start()
-	}()
-	if startError != nil {
-		log.Printf("Error starting audio stream: %v", startError)
-		vt.stream.Close()
-		portaudio.Terminate()
-		vt.audioFile.Close()
-		vt.cmd.Process.Kill()
-		return fmt.Errorf("failed to start audio stream: %w", startError)
-	}
-
+	vt.audioBuffer = vt.audioBuffer[:0] // Clear buffer
 	vt.running = true
-	logging.Trace("Audio transcription started successfully")
 
-	// Start goroutines
-	go vt.processTranscriptions()
-	vt.wg.Add(1)
-	go func() {
-		defer vt.wg.Done()
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("RECOVERED PANIC in audio processing loop: %v", r)
-			}
-		}()
+	logging.Info("AUDIO: Voice transcriber started with session %s", vt.sessionID)
+	return nil
+}
 
-		logging.Trace("Starting audio reading loop...")
-		for {
-			vt.mu.Lock()
-			if !vt.running || vt.stream == nil {
-				vt.mu.Unlock()
-				logging.Trace("Audio reading loop stopping")
-				return
-			}
-			vt.mu.Unlock()
+// Stop terminates the transcription session
+func (vt *VoiceTranscriber) Stop() {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
 
-			err := vt.stream.Read()
+	if !vt.running {
+		return
+	}
+
+	vt.running = false
+
+	duration := time.Since(vt.startTime).Seconds()
+	if vt.sessionCallback != nil {
+		vt.sessionCallback("stop", map[string]interface{}{
+			"SessionID":    vt.sessionID,
+			"DurationSecs": duration,
+			"Segments":     vt.totalSegments,
+		})
+	}
+
+	logging.Info("AUDIO: Voice transcriber stopped, session %s, duration %.2fs, %d segments",
+		vt.sessionID, duration, vt.totalSegments)
+}
+
+// ProcessAudioChunk processes incoming audio data from WebSocket
+func (vt *VoiceTranscriber) ProcessAudioChunk(pcmData []byte) error {
+	logging.Debug("AUDIO: Received audio chunk: %d bytes", len(pcmData))
+	vt.mu.Lock()
+	if !vt.running {
+		vt.mu.Unlock()
+		logging.Debug("AUDIO: Transcriber not running, ignoring audio chunk")
+		return nil
+	}
+	vt.mu.Unlock()
+
+	// Convert PCM16 to float32
+	logging.Debug("AUDIO: Converting PCM data to float32")
+	samples, err := convertPCM16ToFloat32(pcmData)
+	if err != nil {
+		logging.Error("AUDIO: Failed to convert PCM data: %v", err)
+		return fmt.Errorf("failed to convert PCM data: %w", err)
+	}
+	logging.Debug("AUDIO: Converted to %d float32 samples", len(samples))
+
+	vt.mu.Lock()
+	vt.audioBuffer = append(vt.audioBuffer, samples...)
+	logging.Debug("AUDIO: Buffer now has %d samples (threshold: %d)", len(vt.audioBuffer), vt.bufferThreshold)
+
+	// Process when we have enough audio (1 second for faster testing)
+	if len(vt.audioBuffer) >= vt.bufferThreshold {
+		audioToProcess := make([]float32, len(vt.audioBuffer))
+		copy(audioToProcess, vt.audioBuffer)
+		vt.audioBuffer = vt.audioBuffer[:0] // Clear buffer
+		vt.mu.Unlock()
+
+		logging.Info("AUDIO: Buffer threshold reached (%d samples), starting transcription", len(audioToProcess))
+		// Process in background
+		go vt.transcribeAudio(audioToProcess)
+	} else {
+		vt.mu.Unlock()
+		logging.Debug("AUDIO: Buffer not full yet, continuing to accumulate")
+	}
+
+	return nil
+}
+
+// transcribeAudio performs the actual transcription using go-whisper
+func (vt *VoiceTranscriber) transcribeAudio(audio []float32) {
+	logging.Info("AUDIO: Transcription disabled - skipping %d audio samples (%.2fs)", len(audio), float64(len(audio))/float64(vt.sampleRate))
+
+	// Save audio to file for debugging
+	if err := saveAudioToWav(audio, fmt.Sprintf("debug_audio_%d.wav", time.Now().UnixNano())); err != nil {
+		logging.Info("AUDIO: Failed to save debug audio: %v", err)
+	} else {
+		logging.Debug("AUDIO: Saved debug audio to file")
+	}
+
+	// Whisper is disabled, so just increment segment count and call callback with empty text
+	vt.mu.Lock()
+	vt.totalSegments++
+	vt.mu.Unlock()
+
+	logging.Info("AUDIO: Transcription skipped (whisper disabled), segments: %d", vt.totalSegments)
+	if vt.transcriptionCallback != nil {
+		logging.Debug("AUDIO: Calling transcription callback with empty text")
+		vt.transcriptionCallback("")
+	} else {
+		logging.Info("AUDIO: No transcription callback set")
+	}
+}
+
+// convertPCM16ToFloat32 converts 16-bit PCM bytes to float32 samples
+func convertPCM16ToFloat32(pcmData []byte) ([]float32, error) {
+	if len(pcmData)%2 != 0 {
+		return nil, fmt.Errorf("PCM data length must be even")
+	}
+
+	samples := make([]float32, len(pcmData)/2)
+	for i := 0; i < len(samples); i++ {
+		// Read 16-bit little-endian sample
+		sample := int16(binary.LittleEndian.Uint16(pcmData[i*2:]))
+		// Convert to float32 (-1.0 to 1.0)
+		samples[i] = float32(sample) / 32768.0
+	}
+
+	return samples, nil
+}
+
+// saveAudioToWav saves float32 audio samples to a WAV file for debugging
+func saveAudioToWav(samples []float32, filename string) error {
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// WAV file header
+	sampleRate := uint32(16000)
+	bitsPerSample := uint16(16)
+	numChannels := uint16(1)
+	byteRate := sampleRate * uint32(numChannels) * uint32(bitsPerSample/8)
+	blockAlign := numChannels * bitsPerSample / 8
+	dataSize := uint32(len(samples) * 2) // 2 bytes per sample
+	fileSize := 36 + dataSize
+
+	// Write WAV header
+	header := []byte("RIFF")
+	binary.Write(file, binary.LittleEndian, header)
+	binary.Write(file, binary.LittleEndian, fileSize)
+	header = []byte("WAVE")
+	binary.Write(file, binary.LittleEndian, header)
+	header = []byte("fmt ")
+	binary.Write(file, binary.LittleEndian, header)
+	binary.Write(file, binary.LittleEndian, uint32(16)) // fmt chunk size
+	binary.Write(file, binary.LittleEndian, uint16(1))  // PCM format
+	binary.Write(file, binary.LittleEndian, numChannels)
+	binary.Write(file, binary.LittleEndian, sampleRate)
+	binary.Write(file, binary.LittleEndian, byteRate)
+	binary.Write(file, binary.LittleEndian, blockAlign)
+	binary.Write(file, binary.LittleEndian, bitsPerSample)
+	header = []byte("data")
+	binary.Write(file, binary.LittleEndian, header)
+	binary.Write(file, binary.LittleEndian, dataSize)
+
+	// Write audio data
+	for _, sample := range samples {
+		// Convert float32 to int16
+		intSample := int16(sample * 32767.0)
+		binary.Write(file, binary.LittleEndian, intSample)
+	}
+
+	return nil
+}
+
+// Close cleans up the Whisper instance
+func (vt *VoiceTranscriber) StartCapture(ctx context.Context) error {
+	logging.Info("AUDIO: Starting microphone capture")
+	vt.mu.Lock()
+	if vt.running && vt.captureCancel != nil {
+		vt.mu.Unlock()
+		logging.Info("AUDIO: Capture already running")
+		return nil
+	}
+	vt.mu.Unlock()
+
+	// Open microphone input - using specific Pulse source for USB mic from pactl
+	logging.Info("AUDIO: Opening Pulse USB mic source")
+	input, err := ffmpeg.Open("pulse:alsa_input.usb-K-MIC_NATRIUM_K-MIC_NATRIUM_20190805V001-00.iec958-stereo",
+		ffmpeg.OptInputOpt("sample_rate", "16000"),
+		ffmpeg.OptInputOpt("channels", "1"),
+		ffmpeg.OptInputOpt("format", "s16"),
+		ffmpeg.OptInputOpt("channel_layout", "mono"),
+	)
+	if err != nil {
+		logging.Error("AUDIO: Failed to open USB Pulse source, trying built-in analog: %v", err)
+		// Fallback to built-in analog mic
+		input, err = ffmpeg.Open("pulse:alsa_input.pci-0000_10_00.6.analog-stereo",
+			ffmpeg.OptInputOpt("sample_rate", "16000"),
+			ffmpeg.OptInputOpt("channels", "1"),
+			ffmpeg.OptInputOpt("format", "s16"),
+			ffmpeg.OptInputOpt("channel_layout", "mono"),
+		)
+		if err != nil {
+			logging.Error("AUDIO: Failed to open analog Pulse source, trying ALSA USB: %v", err)
+			// Fallback to ALSA USB mic
+			input, err = ffmpeg.Open("hw:1,0",
+				ffmpeg.OptInputOpt("sample_rate", "16000"),
+				ffmpeg.OptInputOpt("channels", "1"),
+				ffmpeg.OptInputOpt("format", "s16"),
+			)
 			if err != nil {
-				log.Printf("Error reading from audio stream: %v", err)
-				time.Sleep(100 * time.Millisecond)
-				continue
+				logging.Error("AUDIO: Failed to open hw:1,0, trying ALSA default: %v", err)
+				// Final fallback to ALSA default
+				input, err = ffmpeg.Open("alsa:default",
+					ffmpeg.OptInputOpt("sample_rate", "16000"),
+					ffmpeg.OptInputOpt("channels", "1"),
+					ffmpeg.OptInputOpt("format", "s16"),
+				)
+				if err != nil {
+					return fmt.Errorf("failed to open microphone (tried USB Pulse, analog Pulse, hw:1,0, default): %w", err)
+				}
+				logging.Info("AUDIO: Successfully opened alsa:default as final fallback")
+			} else {
+				logging.Info("AUDIO: Successfully opened USB microphone (hw:1,0)")
 			}
-
-			vt.mu.Lock()
-			if vt.running {
-				vt.processAudio(buffer)
-			}
-			vt.mu.Unlock()
-
-			time.Sleep(10 * time.Millisecond)
+		} else {
+			logging.Info("AUDIO: Successfully opened built-in analog microphone (Pulse)")
 		}
+	} else {
+		logging.Info("AUDIO: Successfully opened USB microphone (Pulse source)")
+	}
+
+	// Map function to use input parameters
+	mapfn := func(stream int, par *ffmpeg.Par) (*ffmpeg.Par, error) {
+		return par, nil
+	}
+
+	// Create capture context
+	captureCtx, cancel := context.WithCancel(ctx)
+	vt.mu.Lock()
+	vt.captureCtx = captureCtx
+	vt.captureCancel = cancel
+	vt.mu.Unlock()
+
+	// Start capture goroutine
+	go func() {
+		defer input.Close()
+		defer func() {
+			vt.mu.Lock()
+			vt.captureCtx = nil
+			vt.captureCancel = nil
+			vt.mu.Unlock()
+		}()
+		logging.Info("AUDIO: Started continuous microphone capture goroutine")
+
+		chunkCount := 0
+		for {
+			err := input.Decode(captureCtx, mapfn, func(stream int, frame *ffmpeg.Frame) error {
+				if frame == nil {
+					return nil
+				}
+
+				data := frame.Bytes(0)
+				if len(data) == 0 {
+					return nil
+				}
+
+				logging.Debug("AUDIO: Captured frame with %d bytes", len(data))
+				if err := vt.ProcessAudioChunk(data); err != nil {
+					logging.Error("AUDIO: Failed to process captured chunk: %v", err)
+				}
+				chunkCount++
+
+				return nil
+			})
+			if err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) {
+					logging.Info("AUDIO: Capture stopped (context canceled or EOF)")
+					break
+				}
+				logging.Error("AUDIO: Capture decode error: %v", err)
+				select {
+				case <-captureCtx.Done():
+					return
+				default:
+					time.Sleep(100 * time.Millisecond)
+				}
+			}
+		}
+		logging.Info("AUDIO: Microphone capture goroutine ended. Processed %d chunks", chunkCount)
 	}()
 
 	return nil
 }
 
-// Stop terminates audio recording and transcription
-func (vt *VoiceTranscriber) Stop() {
-	vt.mu.Lock()
-	vt.running = false
-	vt.mu.Unlock()
-
-	if vt.stream != nil {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("Recovered panic in stream.Abort: %v", r)
-				}
-			}()
-			if err := vt.stream.Abort(); err != nil {
-				log.Printf("Error aborting stream: %v", err)
-			}
-		}()
-
-		vt.wg.Wait()
-
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("Recovered panic in stream.Close: %v", r)
-				}
-			}()
-			if err := vt.stream.Close(); err != nil {
-				log.Printf("Error closing stream: %v", err)
-			}
-		}()
-		vt.stream = nil
-	}
-	logging.Trace("Audio stream closed")
-
-	if vt.audioFile != nil {
-		logging.Trace("Updating WAV header...")
-		vt.updateWAVHeader()
-		logging.Trace("Closing audio file...")
-		if err := vt.audioFile.Close(); err != nil {
-			log.Printf("Error closing file: %v", err)
-		}
-		vt.audioFile = nil
-	}
-	logging.Trace("Audio file closed")
-
-	logging.Trace("Terminating transcription process...")
-	if vt.cmd != nil {
-		if err := vt.cmd.Process.Kill(); err != nil {
-			log.Printf("Error killing command: %v", err)
-		}
-		vt.cmd = nil
-	}
-	logging.Trace("Transcription process terminated")
-
-	logging.Trace("Terminating PortAudio...")
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("RECOVERED PANIC in portaudio.Terminate: %v", r)
-			}
-		}()
-		if err := portaudio.Terminate(); err != nil {
-			log.Printf("Error terminating PortAudio: %v", err)
-		}
-	}()
-	logging.Trace("PortAudio terminated")
-
-	duration := time.Since(vt.startTime).Seconds()
-	if vt.sessionCallback != nil {
-		logging.Trace("Dispatching session end callback...")
-		sessionCallback := vt.sessionCallback
-		sessionID := vt.sessionID
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("RECOVERED PANIC in transcriber session callback: %v", r)
-				}
-			}()
-			sessionCallback("stop", map[string]interface{}{
-				"SessionID":    sessionID,
-				"DurationSecs": duration,
-				"SampleCount":  vt.sampleCount,
-			})
-		}()
-		logging.Trace("Session end callback dispatched")
-	}
-
-	vt.mu.Lock()
-	vt.wordHistory = vt.wordHistory[:0]
-	vt.mu.Unlock()
-
-	log.Printf("Audio transcription stopped, processed %d samples", vt.sampleCount)
-}
-
-// processAudio handles audio data processing
-func (vt *VoiceTranscriber) processAudio(in []float32) {
+func (vt *VoiceTranscriber) StopCapture() {
 	vt.mu.Lock()
 	defer vt.mu.Unlock()
-
-	if !vt.running || vt.writer == nil {
-		return
-	}
-
-	vt.audioBuffer = append(vt.audioBuffer, in...)
-	for len(vt.audioBuffer) >= 32000 {
-		chunk := vt.audioBuffer[:32000]
-		vt.audioBuffer = vt.audioBuffer[32000:]
-
-		var pcmData []byte
-		for _, sample := range chunk {
-			sample16 := int16(sample * 32767)
-			pcmData = append(pcmData, byte(sample16&0xFF), byte(sample16>>8))
-		}
-
-		fmt.Fprintf(vt.writer, "%d\n", len(pcmData))
-		if _, err := vt.writer.Write(pcmData); err != nil {
-			log.Printf("Error writing PCM data: %v", err)
-		}
-		vt.writer.WriteByte('\n')
-		if err := vt.writer.Flush(); err != nil {
-			log.Printf("Error flushing writer: %v", err)
-		}
+	if vt.captureCancel != nil {
+		vt.captureCancel()
+		vt.captureCancel = nil
+		vt.captureCtx = nil
+		logging.Info("AUDIO: Stopped microphone capture")
 	}
 }
 
-// processTranscriptions processes transcription output from Python
-func (vt *VoiceTranscriber) processTranscriptions() {
-	for {
-		vt.mu.Lock()
-		if !vt.running || vt.reader == nil {
-			vt.mu.Unlock()
-			return
-		}
-		reader := vt.reader
-		callback := vt.transcriptionCallback
-		vt.mu.Unlock()
-
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			log.Printf("Error reading from Python: %v", err)
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		vt.mu.Lock()
-		if !vt.running {
-			vt.mu.Unlock()
-			return
-		}
-		vt.totalSegments++
-		vt.mu.Unlock()
-
-		if callback != nil {
-			callback(line)
-		}
-	}
-}
-
-// writeWAVHeader writes the initial WAV file header
-func (vt *VoiceTranscriber) writeWAVHeader() {
-	vt.audioFile.WriteString("RIFF")
-	binary.Write(vt.audioFile, binary.LittleEndian, uint32(36))
-	vt.audioFile.WriteString("WAVE")
-	vt.audioFile.WriteString("fmt ")
-	binary.Write(vt.audioFile, binary.LittleEndian, uint32(16))
-	binary.Write(vt.audioFile, binary.LittleEndian, uint16(1))
-	binary.Write(vt.audioFile, binary.LittleEndian, uint16(1))
-	binary.Write(vt.audioFile, binary.LittleEndian, uint32(16000))
-	binary.Write(vt.audioFile, binary.LittleEndian, uint32(16000*2))
-	binary.Write(vt.audioFile, binary.LittleEndian, uint16(2))
-	binary.Write(vt.audioFile, binary.LittleEndian, uint16(16))
-	vt.audioFile.WriteString("data")
-	binary.Write(vt.audioFile, binary.LittleEndian, uint32(0))
-}
-
-// updateWAVHeader updates the WAV header with final sizes
-func (vt *VoiceTranscriber) updateWAVHeader() {
-	currentPos, err := vt.audioFile.Seek(0, 1)
-	if err != nil {
-		log.Printf("Error getting current file position: %v", err)
-		return
-	}
-
-	vt.audioFile.Seek(4, 0)
-	binary.Write(vt.audioFile, binary.LittleEndian, uint32(currentPos-8))
-	vt.audioFile.Seek(40, 0)
-	binary.Write(vt.audioFile, binary.LittleEndian, uint32(currentPos-44))
+func (vt *VoiceTranscriber) Close() error {
+	vt.StopCapture()
+	// if vt.whisper != nil {
+	// 	return vt.whisper.Close()
+	// }
+	return nil
 }

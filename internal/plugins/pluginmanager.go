@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"plugin"
 
+	"mindpalace/internal/plugingenerator"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
 )
@@ -288,4 +289,26 @@ func (pm *PluginManager) LoadNewPlugin(pluginPath string) error {
 		pm.eventProcessor.RegisterCommand(name, handler)
 	}
 	return nil
+}
+
+// GenerateAndLoadPlugin generates a new plugin based on requirements and loads it
+func (pm *PluginManager) GenerateAndLoadPlugin() error {
+	pg := plugingenerator.NewPluginGenerator()
+	req, err := pg.ConductInterview()
+	if err != nil {
+		return fmt.Errorf("failed to conduct interview: %v", err)
+	}
+
+	if err := pg.GeneratePlugin(req); err != nil {
+		return fmt.Errorf("failed to generate plugin: %v", err)
+	}
+
+	// Build and load the plugin
+	pluginDir := filepath.Join("plugins", req.Name)
+	soFile := filepath.Join(pluginDir, req.Name+".so")
+	if err := pm.buildPlugin(pluginDir, soFile); err != nil {
+		return fmt.Errorf("failed to build generated plugin: %v", err)
+	}
+
+	return pm.LoadNewPlugin(soFile)
 }

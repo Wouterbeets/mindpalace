@@ -3,12 +3,15 @@
 # Variables
 GO = go
 GOFLAGS = -v
+CGO_ENABLED = 1
 BINARY_NAME = mindpalace
 PLUGIN_DIR = plugins
 BUILD_DIR = build
 MAIN_SRC = cmd/mindpalace/main.go
 PLUGINS = $(wildcard $(PLUGIN_DIR)/*/plugin.go)
 PLUGIN_OUTPUTS = $(patsubst $(PLUGIN_DIR)/%/plugin.go,$(PLUGIN_DIR)/%/%.so,$(PLUGINS))
+MODELS_DIR = models
+WHISPER_MODEL = $(MODELS_DIR)/ggml-base.en.bin
 
 # Allow passing arguments to run
 RUN_ARGS ?=
@@ -19,7 +22,7 @@ all: build plugins
 
 # Build the main binary
 .PHONY: build
-build: world
+build: world download-model
 	@echo "Building MindPalace binary..."
 	@mkdir -p $(BUILD_DIR)
 	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_SRC)
@@ -62,6 +65,14 @@ run-debug: build plugins
 run-headless: build plugins
 	@echo "Running MindPalace in headless mode..."
 	./$(BUILD_DIR)/$(BINARY_NAME) -headless
+
+# Run for testing with log capture and auto-kill after 10s
+.PHONY: run-test
+run-test: build plugins
+	@echo "Running MindPalace for testing (10s timeout)..."
+	@echo "Starting application..."
+	@timeout 10s bash -c './$(BUILD_DIR)/$(BINARY_NAME) -debug 2>&1 | tee test_run.log' || true
+	@echo "Application stopped after 10 seconds. Logs saved to test_run.log"
 
 # Clean build artifacts
 .PHONY: clean
@@ -119,6 +130,21 @@ dev-verbose:
 	@echo "Starting development with air in verbose mode..."
 	air -c .air.toml -- -v
 
+# Download Whisper model
+.PHONY: download-model
+download-model: $(WHISPER_MODEL)
+
+$(WHISPER_MODEL):
+	@echo "Downloading Whisper model..."
+	@mkdir -p $(MODELS_DIR)
+	curl -L https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin -o $(WHISPER_MODEL)
+
+# Build the Whisper library
+.PHONY: whisper
+whisper:
+	@echo "Building Whisper library..."
+	cd whisper-cpp && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$(shell pwd)/whisper-cpp/build" make build
+
 # Build the Godot world binary
 .PHONY: world
 world:
@@ -139,6 +165,7 @@ help:
 	@echo "  run         : Build and run (use RUN_ARGS='flags' for arguments)"
 	@echo "  run-verbose : Run with verbose logging"
 	@echo "  run-debug   : Run with debug logging"
+	@echo "  run-headless: Run in headless mode"
 	@echo "  clean       : Remove build artifacts"
 	@echo "  deps        : Install dependencies"
 	@echo "  fmt         : Format code"
@@ -149,6 +176,7 @@ help:
 	@echo "  dev         : Start development mode with air"
 	@echo "  dev-verbose : Start development mode in verbose"
 	@echo "  world       : Build the Godot world binary and move to pkg/world"
+	@echo "  whisper     : Build the Whisper library"
 	@echo "  help        : Show this help message"
 	@echo ""
 	@echo "Example: make run RUN_ARGS='-v --events custom_events.json'"

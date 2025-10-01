@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 
+	"context"
+
+	"mindpalace/internal/audio"
 	"mindpalace/internal/godot_ws"
 	"mindpalace/internal/llmprocessor"
 	"mindpalace/internal/orchestration"
@@ -114,10 +119,55 @@ func main() {
 	aggStore.RegisterAggregate("orchestration", orchAgg)
 	aggStore.RebuildState(events)
 
+	// Log registered aggregates
+	allAggs := aggStore.AllAggregates()
+	logging.Info("Registered %d aggregates:", len(allAggs))
+	for _, agg := range allAggs {
+		logging.Info("  - Aggregate: %s", agg.ID())
+	}
+
+	// Initialize voice transcriber with Whisper model
+	modelPath, _ := filepath.Abs("models/ggml-base.en.bin")
+	logging.Info("AUDIO: Initializing voice transcriber with model: %s", modelPath)
+	transcriber, err := audio.NewVoiceTranscriber(modelPath)
+	if err != nil {
+		logging.Error("Failed to initialize voice transcriber: %v", err)
+		os.Exit(1)
+	}
+	defer transcriber.Close()
+
 	// Launch Godot WebSocket server
 	server := godot_ws.NewGodotServer()
 	server.SetDeltaChan(ep.DeltaChan())
 	server.SetAggStore(aggStore)
+
+	// Start the voice transcriber (for processing)
+	err = transcriber.Start(func(text string) {
+		logging.Info("AUDIO: Transcription result: '%s'", text)
+		// Send transcription to Godot for display
+		server.SendTranscription(text)
+	})
+	if err != nil {
+		logging.Error("Failed to start voice transcriber: %v", err)
+		os.Exit(1)
+	}
+
+	// Start audio capture immediately on startup (bypassing Godot signal)
+	logging.Info("AUDIO: Starting audio capture on application startup")
+	if err := transcriber.StartCapture(context.Background()); err != nil {
+		logging.Error("Failed to start audio capture on startup: %v", err)
+	} else {
+		logging.Info("AUDIO: Successfully started audio capture on startup")
+	}
+
+	server.SetAudioCallback(func(audioData []byte) {
+		logging.Debug("AUDIO: Received audio callback with %d bytes", len(audioData))
+		err := transcriber.ProcessAudioChunk(audioData)
+		if err != nil {
+			logging.Error("AUDIO: Failed to process audio chunk: %v", err)
+		}
+	})
+	server.SetTranscriber(transcriber)
 	go server.Start()
 
 	// Launch embedded Godot binary
@@ -128,15 +178,49 @@ func main() {
 	}
 	defer os.Remove(tmpPath)
 	cmd := exec.Command(tmpPath)
+
+	// Capture stdout and stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		logging.Error("Failed to get stdout pipe: %v", err)
+		os.Exit(1)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		logging.Error("Failed to get stderr pipe: %v", err)
+		os.Exit(1)
+	}
+
 	if err := cmd.Start(); err != nil {
 		logging.Error("Failed to start Godot: %v", err)
 		os.Exit(1)
 	}
 	logging.Info("Godot binary launched")
 
+	// Pipe Godot logs to our logging system
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			logging.Info("[Godot] %s", scanner.Text())
+		}
+		if err := scanner.Err(); err != nil {
+			logging.Error("Error reading Godot stdout: %v", err)
+		}
+	}()
+
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			logging.Info("[Godot] %s", scanner.Text())
+		}
+		if err := scanner.Err(); err != nil {
+			logging.Error("Error reading Godot stderr: %v", err)
+		}
+	}()
+
 	// Initialize orchestrator and Fyne app
 	orchestrator := orchestration.NewRequestOrchestrator(llmClient, pluginManager, orchAgg, ep, ep.EventBus)
-	app := ui.NewApp(ep, aggStore, orchestrator, pluginManager.GetLLMPlugins())
+	app := ui.NewApp(ep, aggStore, orchestrator, pluginManager.GetLLMPlugins(), server)
 
 	// Run Fyne UI unless headless
 	if !headlessFlag {

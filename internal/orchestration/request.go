@@ -6,12 +6,32 @@ import (
 	"text/template"
 	"time"
 
-	"mindpalace/internal/llmprocessor"
-	"mindpalace/internal/plugins"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/llmmodels"
 	"mindpalace/pkg/logging"
 )
+
+// Interfaces for testability
+type LLMClientInterface interface {
+	CallLLM(messages []llmmodels.Message, tools []llmmodels.Tool, requestID, model string) (*llmmodels.OllamaResponse, error)
+}
+
+type PluginManagerInterface interface {
+	GetLLMPlugins() []eventsourcing.Plugin
+	GetPlugin(name string) (eventsourcing.Plugin, error)
+	GetPluginByCommand(cmd string) (eventsourcing.Plugin, error)
+}
+
+type EventProcessorInterface interface {
+	RegisterCommand(name string, handler eventsourcing.CommandHandler)
+	ExecuteCommand(name string, data interface{}) error
+}
+
+type EventBusInterface interface {
+	Subscribe(eventType string, handler eventsourcing.EventHandler)
+	Publish(event eventsourcing.Event)
+	SubscribeAll(handler eventsourcing.EventHandler)
+}
 
 const systemPromptTemplate = `You are MindPalace, a friendly AI assistant here to help with various queries and tasks. Provide helpful, accurate, and concise responses, using tools only when they enhance your ability to assist.
 
@@ -38,15 +58,15 @@ Since there are no specialized agents available, respond directly to the user's 
 Your goal is to provide the most helpful and efficient experience.`
 
 type RequestOrchestrator struct {
-	llmClient        *llmprocessor.LLMClient
-	pluginManager    *plugins.PluginManager
+	llmClient        LLMClientInterface
+	pluginManager    PluginManagerInterface
 	agg              *OrchestrationAggregate
-	eventProcessor   *eventsourcing.EventProcessor
-	eventBus         eventsourcing.EventBus
+	eventProcessor   EventProcessorInterface
+	eventBus         EventBusInterface
 	systemPromptTmpl *template.Template // Base template, no plugin specifics here
 }
 
-func NewRequestOrchestrator(llmClient *llmprocessor.LLMClient, pm *plugins.PluginManager, agg *OrchestrationAggregate, ep *eventsourcing.EventProcessor, eb eventsourcing.EventBus) *RequestOrchestrator {
+func NewRequestOrchestrator(llmClient LLMClientInterface, pm PluginManagerInterface, agg *OrchestrationAggregate, ep EventProcessorInterface, eb EventBusInterface) *RequestOrchestrator {
 	tmpl, err := template.New("systemPrompt").Parse(systemPromptTemplate)
 	if err != nil {
 		logging.Error("Failed to parse system prompt template: %v", err)

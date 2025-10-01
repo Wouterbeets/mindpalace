@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"mindpalace/pkg/eventsourcing"
+	"mindpalace/pkg/ui3d"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -840,47 +841,85 @@ func (p *CalendarPlugin) EventHandlers() map[string]eventsourcing.EventHandler {
 }
 
 func (a *CalendarAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourcing.DeltaAction {
-	// For now, no incremental updates
+	a.Mu.RLock()
+	defer a.Mu.RUnlock()
+	theme := ui3d.DefaultTheme()
+	switch e := event.(type) {
+	case *EventCreatedEvent:
+		// Get sorted event IDs to determine position
+		sortedIDs := a.getSortedEventIDs()
+		i := 0
+		for _, id := range sortedIDs {
+			if id == e.EventID {
+				break
+			}
+			i++
+		}
+		pos := ui3d.PositionInGrid(float64(i), 0, 2.0)
+		pos[0] = pos[2] // Move Z spacing to X axis
+		pos[1] = 2.0
+		pos[2] = -8.0
+		return ui3d.CreateCard(fmt.Sprintf("calendar_event_%s", e.EventID), e.Title, pos, theme)
+	case *EventUpdatedEvent:
+		// Get sorted event IDs to determine position
+		sortedIDs := a.getSortedEventIDs()
+		i := 0
+		for _, id := range sortedIDs {
+			if id == e.EventID {
+				break
+			}
+			i++
+		}
+		pos := ui3d.PositionInGrid(float64(i), 0, 2.0)
+		pos[0] = pos[2] // Move Z spacing to X axis
+		pos[1] = 2.0
+		pos[2] = -8.0
+		// Delete old and create new
+		oldActions := []eventsourcing.DeltaAction{
+			{Type: "delete", NodeID: fmt.Sprintf("calendar_event_%s", e.EventID)},
+			{Type: "delete", NodeID: fmt.Sprintf("calendar_event_%s_label", e.EventID)},
+		}
+		newActions := ui3d.CreateCard(fmt.Sprintf("calendar_event_%s", e.EventID), a.Events[e.EventID].Title, pos, theme)
+		return append(oldActions, newActions...)
+	case *EventDeletedEvent:
+		return []eventsourcing.DeltaAction{
+			{Type: "delete", NodeID: fmt.Sprintf("calendar_event_%s", e.EventID)},
+			{Type: "delete", NodeID: fmt.Sprintf("calendar_event_%s_label", e.EventID)},
+		}
+	}
 	return nil
 }
 
 func (a *CalendarAggregate) GetFull3DState() []eventsourcing.DeltaAction {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()
-	actions := []eventsourcing.DeltaAction{{
-		Type:     "create",
-		NodeID:   "calendar_hub",
-		NodeType: "MeshInstance3D",
-		Properties: map[string]interface{}{
-			"mesh":     "sphere",
-			"position": []interface{}{0.0, 0.0, -10.0},    // West, at ground level
-			"color":    []interface{}{0.5, 0.5, 0.5, 1.0}, // Gray for calendar
-		},
-	}}
-	// Add cubes for events
-	i := 0
-	for id, event := range a.Events {
-		actions = append(actions, eventsourcing.DeltaAction{
-			Type:     "create",
-			NodeID:   fmt.Sprintf("calendar_event_%s", id),
-			NodeType: "MeshInstance3D",
-			Properties: map[string]interface{}{
-				"mesh":     "box",
-				"position": []interface{}{float64(i*2 - 5), 2.0, -8.0}, // Near hub, above ground
-				"color":    []interface{}{0.8, 0.8, 0.8, 1.0},          // Light gray
-			},
-		}, eventsourcing.DeltaAction{
-			Type:     "create",
-			NodeID:   fmt.Sprintf("calendar_event_%s_label", id),
-			NodeType: "Label3D",
-			Properties: map[string]interface{}{
-				"text":     event.Title,
-				"position": []interface{}{float64(i*2 - 5), 3.5, -8.0},
-			},
-		})
-		i++
+	theme := ui3d.DefaultTheme()
+	actions := []eventsourcing.DeltaAction{ui3d.CreateSphere("calendar_hub", []float64{0.0, 0.0, -10.0}, theme)}
+	// Add cards for events in sorted order
+	sortedIDs := a.getSortedEventIDs()
+	for i, id := range sortedIDs {
+		event := a.Events[id]
+		pos := ui3d.PositionInGrid(float64(i), 0, 2.0)
+		pos[0] = pos[2] // Move Z spacing to X axis
+		pos[1] = 2.0
+		pos[2] = -8.0
+		actions = append(actions, ui3d.CreateCard(fmt.Sprintf("calendar_event_%s", id), event.Title, pos, theme)...)
 	}
 	return actions
+}
+
+// getSortedEventIDs returns event IDs sorted by start time for consistent positioning
+func (a *CalendarAggregate) getSortedEventIDs() []string {
+	ids := make([]string, 0, len(a.Events))
+	for id := range a.Events {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		eventI := a.Events[ids[i]]
+		eventJ := a.Events[ids[j]]
+		return eventI.StartTime.Before(eventJ.StartTime)
+	})
+	return ids
 }
 
 // Helper functions

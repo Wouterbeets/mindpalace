@@ -1,7 +1,7 @@
 # MindPalace Roadtrip Vision One-Pager
 
 ## Overview
-MindPalace, a local, event-sourced AI assistant, will capture a near-perfect record of a 1.5-year family roadtrip from Canada to Argentina in 2026, with a test run in the Balkans this summer. The goal is to enable homeschooling, connect with people, and break free from the 9-to-5 life, creating a once-in-a-lifetime adventure. To fund the $10,000 hardware setup, MindPalace will be monetized on Steam as a versatile tool for personal projects, with core data capture features and a plugin system for extensibility.
+MindPalace, a local, event-sourced AI assistant, will capture a near-perfect record of a 1.5-year family roadtrip from Canada to Argentina in 2026, with a test run in the Balkans this summer. The goal is to enable homeschooling, connect with people, and break free from the 9-to-5 life, creating a once-in-a-lifetime adventure. At its core, MindPalace emphasizes radical transparency through a 3D Godot world front-end that visualizes LLM reasoning steps, data flows, and user interactions, fostering trust and enabling dynamic organization of thoughts and ambitions in a virtual mindpalace. To fund the $10,000 hardware setup, MindPalace will be monetized on Steam as a versatile tool for personal projects, with core data capture features and a plugin system for extensibility.
 
 ## Roadtrip Setup
 - **Participants**: Family of six (parents and four children).
@@ -11,6 +11,9 @@ MindPalace, a local, event-sourced AI assistant, will capture a near-perfect rec
 
 ## MindPalace Role
 MindPalace will run on a Mac Mini in the trailer, powered by dual lithium-ion batteries, using a 32B parameter LLM (e.g., Llama, Mistral) with tool-calling capabilities. It will integrate microphones, cameras, and GPS to store trip data locally, ensuring privacy. The system will enable interactive reliving of the trip (e.g., querying specific days or generating narratives) via a robust plugin architecture.
+
+### Front-End Visualization
+The backend connects to a 3D Godot world front-end that provides radical transparency by visualizing every step the LLM takes, including reasoning processes, data handling, and tool invocations. This builds user trust by making AI behavior observable and understandable. Additionally, it supports dynamic organization of the user's thoughts and ambitions, creating an interactive mindpalace for managing personal goals and reflections.
 
 ## Hardware Requirements
 - **Trailer Setup**: Drone docking station, touchscreen, dual lithium-ion batteries, and solar panels.
@@ -45,4 +48,4 @@ The trailer version will include a niche `DronePlugin` for:
 - **Personal Build**: Add drone integration and GPS plugins for the trailer version, leveraging MindPalace’s dynamic plugin loading.
 
 ## Vision Statement
-MindPalace empowers users to capture and relive life’s adventures, from epic roadtrips to personal projects, with a local-first AI that’s extensible through user-owned plugins. For the roadtrip, it will preserve every moment in a private, interactive archive, while the Steam version democratizes this power, funding the journey and enabling others to build their own digital legacies.
+MindPalace empowers users to capture and relive life’s adventures, from epic roadtrips to personal projects, with a local-first AI that’s extensible through user-owned plugins and grounded in radical transparency via its 3D Godot visualization front-end. This front-end demystifies LLM operations and dynamically organizes thoughts and ambitions in a virtual mindpalace, fostering trust and self-management. For the roadtrip, it will preserve every moment in a private, interactive archive, while the Steam version democratizes this power, funding the journey and enabling others to build their own digital legacies.

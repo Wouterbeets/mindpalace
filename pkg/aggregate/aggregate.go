@@ -9,13 +9,14 @@ import (
 // AggregateManager acts as a facade to manage multiple plugin aggregates.
 type AggregateManager struct {
 	PluginAggregates map[string]eventsourcing.Aggregate // Map of plugin name to its aggregate
-	SystemAggragate  map[string]eventsourcing.Aggregate
+	SystemAggregate  map[string]eventsourcing.Aggregate
 }
 
 // NewAggregateManager creates a new AggregateManager.
 func NewAggregateManager() *AggregateManager {
 	return &AggregateManager{
 		PluginAggregates: make(map[string]eventsourcing.Aggregate),
+		SystemAggregate:  make(map[string]eventsourcing.Aggregate),
 	}
 }
 
@@ -32,7 +33,7 @@ func (m *AggregateManager) AggregateByName(requestedName string) (eventsourcing.
 			return agg, nil
 		}
 	}
-	for pluginAggName, agg := range m.SystemAggragate {
+	for pluginAggName, agg := range m.SystemAggregate {
 		if requestedName == pluginAggName {
 			return agg, nil
 		}
@@ -44,7 +45,7 @@ func (m *AggregateManager) AllAggregates() (aggs []eventsourcing.Aggregate) {
 	for _, agg := range m.PluginAggregates {
 		aggs = append(aggs, agg)
 	}
-	for _, agg := range m.SystemAggragate {
+	for _, agg := range m.SystemAggregate {
 		aggs = append(aggs, agg)
 	}
 	return aggs
