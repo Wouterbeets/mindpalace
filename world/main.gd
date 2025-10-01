@@ -106,7 +106,7 @@ func _ready():
 	env.background_mode = Environment.BG_COLOR
 	env.background_color = Color(0.1, 0.1, 0.2)  # Dark blue sky
 	env.fog_enabled = true
-	env.fog_color = Color(0.2, 0.2, 0.3)
+	env.fog_light_color = Color(0.2, 0.2, 0.3)
 	env.fog_density = 0.01
 	env.ambient_light_color = Color(0.3, 0.3, 0.5)
 	env.ambient_light_energy = 0.5
@@ -204,22 +204,33 @@ func _process(delta):
 var mouse_pressed = false
 var last_mouse_pos = Vector2()
 
+# Drag functionality
+var dragged_object = null
+var dragged_node_id = ""
+var is_dragging = false
+var drag_plane_normal = Vector3(0, 1, 0)  # Drag along XZ plane
+var drag_offset = Vector3()
+
 func _input(event):
 	if not settings_visible:
 		if event is InputEventMouseButton:
 			if event.button_index == MOUSE_BUTTON_LEFT:
-				mouse_pressed = event.pressed
-				if not event.pressed:
+				if event.pressed:
+					# Mouse button pressed - start drag immediately
+					start_drag(event.position)
+				else:
+					# Mouse button released - end drag
+					if is_dragging:
+						end_drag()
 					info_panel.visible = false
 			elif event.button_index == MOUSE_BUTTON_WHEEL_UP:
 				camera.position.y -= 1
 			elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 				camera.position.y += 1
-		elif event is InputEventMouseMotion and mouse_pressed:
-			var delta = event.relative
-			camera.rotation_degrees.y -= delta.x * 0.5
-			camera.rotation_degrees.x -= delta.y * 0.5
-			camera.rotation_degrees.x = clamp(camera.rotation_degrees.x, -90, 90)
+		elif event is InputEventMouseMotion:
+			if is_dragging:
+				# Continue dragging
+				update_drag_position(event.position)
 
 		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT and not mouse_pressed:
 			var mouse_pos = event.position
@@ -269,14 +280,17 @@ func send_ready_signal():
 
 func process_event_message(data: Dictionary):
 	if not data or typeof(data) != TYPE_DICTIONARY:
-	
 		return
 	if not data.has("type") or data["type"] != "delta":
-	
 		return
 	if not data.has("actions") or typeof(data["actions"]) != TYPE_ARRAY:
-	
 		return
+
+	# Check if this is a full state reload
+	var is_full_state = data.has("event_id") and data["event_id"] == "full_state"
+	if is_full_state and is_dragging:
+		# Reset drag state when full state is reloaded
+		end_drag()
 
 	# Handle DeltaEnvelope
 	for action in data["actions"]:
@@ -350,9 +364,25 @@ func handle_menu_keypresses(key_string: String):
 			# Close menu
 			toggle_settings_menu()
 
+func send_position_update(node_id: String, position: Vector3):
+	if websocket.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		return
+	var update_msg = {
+		"type": "delta",
+		"actions": [{
+			"type": "update",
+			"node_id": node_id,
+			"properties": {
+				"position": [position.x, position.y, position.z]
+			}
+		}]
+	}
+	var json_string = JSON.stringify(update_msg)
+	var err = websocket.send_text(json_string)
+
 func send_state_update():
 	if websocket.get_ready_state() != WebSocketPeer.STATE_OPEN:
-	
+
 		return
 	var state_msg = {
 		"type": "state_update",
@@ -364,6 +394,101 @@ func send_state_update():
 	}
 	var json_string = JSON.stringify(state_msg)
 	var err = websocket.send_text(json_string)
+
+func handle_click(mouse_pos: Vector2):
+	# Handle click (not drag) - show info panel
+	var ray_origin = camera.project_ray_origin(mouse_pos)
+	var ray_dir = camera.project_ray_normal(mouse_pos)
+	var ray_length = 1000.0
+
+	var space_state = get_world_3d().direct_space_state
+	var query = PhysicsRayQueryParameters3D.create(ray_origin, ray_origin + ray_dir * ray_length)
+	var result = space_state.intersect_ray(query)
+
+	if result:
+		var clicked_node = result.collider
+		while clicked_node and not (clicked_node in event_cubes.values()):
+			clicked_node = clicked_node.get_parent()
+		if clicked_node:
+			show_info_panel(clicked_node)
+
+func start_drag(mouse_pos: Vector2):
+	# Try to find object to drag
+	var ray_origin = camera.project_ray_origin(mouse_pos)
+	var ray_dir = camera.project_ray_normal(mouse_pos)
+	var ray_length = 1000.0
+
+	var space_state = get_world_3d().direct_space_state
+	var query = PhysicsRayQueryParameters3D.create(ray_origin, ray_origin + ray_dir * ray_length)
+	var result = space_state.intersect_ray(query)
+
+	if result:
+		var clicked_node = result.collider
+
+		while clicked_node and not (clicked_node in event_cubes.values()):
+			clicked_node = clicked_node.get_parent()
+
+		if clicked_node:
+			dragged_object = clicked_node
+			# Find the node_id
+			for id in event_cubes:
+				if event_cubes[id] == clicked_node:
+					dragged_node_id = id
+					break
+			is_dragging = true
+
+			# Calculate drag offset using a fixed plane at Y=0
+			var object_pos = dragged_object.position
+			var plane = Plane(drag_plane_normal, 0.0)  # Fixed plane at Y=0
+			var intersection = plane.intersects_ray(ray_origin, ray_dir)
+			if intersection:
+				# Project the intersection point to the object's Y level
+				intersection.y = object_pos.y
+				drag_offset = object_pos - intersection
+
+			# Visual feedback - make object semi-transparent while dragging
+			if dragged_object is MeshInstance3D:
+				var material = dragged_object.material_override
+				if material and material is StandardMaterial3D:
+					material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+					material.albedo_color.a = 0.7
+
+func update_drag_position(mouse_pos: Vector2):
+	if not dragged_object or not is_dragging:
+		return
+
+	# Cast ray and find intersection with drag plane
+	var ray_origin = camera.project_ray_origin(mouse_pos)
+	var ray_dir = camera.project_ray_normal(mouse_pos)
+
+	var plane = Plane(drag_plane_normal, 0.0)  # Fixed plane at Y=0
+	var intersection = plane.intersects_ray(ray_origin, ray_dir)
+
+	if intersection:
+		# Project to the dragged object's Y level and apply offset
+		intersection.y = dragged_object.position.y
+		var new_pos = intersection + drag_offset
+		new_pos.x = clamp(new_pos.x, -50.0, 50.0)  # Reasonable bounds
+		new_pos.y = clamp(new_pos.y, -10.0, 20.0)
+		new_pos.z = clamp(new_pos.z, -50.0, 50.0)
+		dragged_object.position = new_pos
+
+func end_drag():
+	if dragged_object and is_dragging:
+		# Send position update to backend
+		if dragged_node_id != "":
+			send_position_update(dragged_node_id, dragged_object.position)
+
+		# Restore visual appearance
+		if dragged_object is MeshInstance3D:
+			var material = dragged_object.material_override
+			if material and material is StandardMaterial3D:
+				material.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
+				material.albedo_color.a = 1.0
+
+		dragged_object = null
+		dragged_node_id = ""
+		is_dragging = false
 
 func handle_action(action: Dictionary):
 	if typeof(action) != TYPE_DICTIONARY:
@@ -778,6 +903,8 @@ func populate_mic_devices():
 
 
 func toggle_settings_menu():
+	if not settings_panel:
+		return
 	settings_visible = !settings_visible
 	settings_panel.visible = settings_visible
 
@@ -786,7 +913,7 @@ func toggle_settings_menu():
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE  # Release mouse for GUI interaction
 	else:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED  # Capture mouse for camera control
-	
+
 	send_state_update()
 
 
