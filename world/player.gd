@@ -5,19 +5,20 @@ extends CharacterBody3D
 @export var mouse_sensitivity: float = 0.002
 
 var gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity")
+var movement_disabled = false
 
 func _ready():
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED  # Capture mouse for looking
 
 func _input(event):
-	if event is InputEventMouseMotion and get_parent().settings_visible == false:
+	if event is InputEventMouseMotion and not get_parent().settings_visible and not get_parent().birdview_active:
 		rotate_y(-event.relative.x * mouse_sensitivity)
 		$Camera.rotate_x(-event.relative.y * mouse_sensitivity)
 		$Camera.rotation.x = clamp($Camera.rotation.x, -deg_to_rad(70), deg_to_rad(70))
 
 func _physics_process(delta):
-	if get_parent().settings_visible:
-		return  # Disable movement when settings menu is open
+	if get_parent().settings_visible or movement_disabled:
+		return  # Disable movement when settings menu is open or birdview active
 
 	# Remove gravity for floating
 	# if not is_on_floor():
