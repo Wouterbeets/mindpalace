@@ -800,6 +800,8 @@ func (p *CalendarPlugin) SystemPrompt() string {
 	// Construct the full dynamic prompt
 	prompt := `You are CalendarMaster, a specialized AI for managing calendar events in MindPalace.
 
+The user input will be a JSON object containing the arguments for the command to execute. Parse the JSON and call the appropriate command with the parsed values.
+
 Your job is to interpret user requests about calendar events and execute the right commands (CreateEvent, UpdateEvent, DeleteEvent, ListEvents) based on the current event state.
 
 ` + eventList.String() + `
@@ -859,7 +861,14 @@ func (a *CalendarAggregate) Broadcast3DDelta(event eventsourcing.Event) []events
 		pos[0] = pos[2] // Move Z spacing to X axis
 		pos[1] = 2.0
 		pos[2] = -8.0
-		return ui3d.CreateCard(fmt.Sprintf("calendar_event_%s", e.EventID), e.Title, pos, theme)
+		actions := ui3d.CreateCard(fmt.Sprintf("calendar_event_%s", e.EventID), e.Title, pos, theme)
+		for j := range actions {
+			if actions[j].Properties == nil {
+				actions[j].Properties = make(map[string]interface{})
+			}
+			actions[j].Properties["event_type"] = "calendar_event_created"
+		}
+		return actions
 	case *EventUpdatedEvent:
 		// Get sorted event IDs to determine position
 		sortedIDs := a.getSortedEventIDs()
@@ -880,6 +889,12 @@ func (a *CalendarAggregate) Broadcast3DDelta(event eventsourcing.Event) []events
 			{Type: "delete", NodeID: fmt.Sprintf("calendar_event_%s_label", e.EventID)},
 		}
 		newActions := ui3d.CreateCard(fmt.Sprintf("calendar_event_%s", e.EventID), a.Events[e.EventID].Title, pos, theme)
+		for j := range newActions {
+			if newActions[j].Properties == nil {
+				newActions[j].Properties = make(map[string]interface{})
+			}
+			newActions[j].Properties["event_type"] = "calendar_event_updated"
+		}
 		return append(oldActions, newActions...)
 	case *EventDeletedEvent:
 		return []eventsourcing.DeltaAction{
@@ -903,7 +918,14 @@ func (a *CalendarAggregate) GetFull3DState() []eventsourcing.DeltaAction {
 		pos[0] = pos[2] // Move Z spacing to X axis
 		pos[1] = 2.0
 		pos[2] = -8.0
-		actions = append(actions, ui3d.CreateCard(fmt.Sprintf("calendar_event_%s", id), event.Title, pos, theme)...)
+		cards := ui3d.CreateCard(fmt.Sprintf("calendar_event_%s", id), event.Title, pos, theme)
+		for j := range cards {
+			if cards[j].Properties == nil {
+				cards[j].Properties = make(map[string]interface{})
+			}
+			cards[j].Properties["event_type"] = "calendar_event"
+		}
+		actions = append(actions, cards...)
 	}
 	return actions
 }

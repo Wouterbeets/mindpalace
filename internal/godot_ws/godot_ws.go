@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"mindpalace/internal/audio"
+	"mindpalace/internal/orchestration"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
 )
@@ -24,6 +26,9 @@ type GodotServer struct {
 	transcriber       *audio.VoiceTranscriber
 	settingsVisible   bool
 	selectedMicDevice string
+	eventBus          eventsourcing.EventBus
+	pendingKeypresses map[string]chan map[string]interface{}
+	pendingMu         sync.RWMutex
 }
 
 type ClientState struct {
@@ -32,13 +37,35 @@ type ClientState struct {
 	lastReady time.Time
 }
 
+type TaskPositionUpdatedEvent struct {
+	EventType string  `json:"event_type"`
+	TaskID    string  `json:"task_id"`
+	PositionX float64 `json:"position_x"`
+	PositionY float64 `json:"position_y"`
+	PositionZ float64 `json:"position_z"`
+}
+
+func (e *TaskPositionUpdatedEvent) Type() string {
+	return "taskmanager_TaskPositionUpdated"
+}
+
+func (e *TaskPositionUpdatedEvent) Marshal() ([]byte, error) {
+	e.EventType = e.Type()
+	return json.Marshal(e)
+}
+
+func (e *TaskPositionUpdatedEvent) Unmarshal(data []byte) error {
+	return json.Unmarshal(data, e)
+}
+
 func NewGodotServer() *GodotServer {
 	return &GodotServer{
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true }, // Allow all origins for testing
 		},
-		clients:   make(map[*websocket.Conn]*ClientState),
-		deltaChan: make(chan eventsourcing.DeltaEnvelope, 100),
+		clients:           make(map[*websocket.Conn]*ClientState),
+		deltaChan:         make(chan eventsourcing.DeltaEnvelope, 100),
+		pendingKeypresses: make(map[string]chan map[string]interface{}),
 	}
 }
 
@@ -56,6 +83,10 @@ func (s *GodotServer) SetAudioCallback(callback func([]byte)) {
 
 func (s *GodotServer) SetTranscriber(t *audio.VoiceTranscriber) {
 	s.transcriber = t
+}
+
+func (s *GodotServer) SetEventBus(eb eventsourcing.EventBus) {
+	s.eventBus = eb
 }
 
 func (s *GodotServer) SendTranscription(text string) {
@@ -88,6 +119,16 @@ func (s *GodotServer) SendKeypresses(keyString string) {
 	s.broadcastJSON(msg)
 }
 
+func (s *GodotServer) SendKeypressesWithID(keyString, correlationID string) {
+	logging.Debug("Sending keypresses to Godot: keys='%s', correlation_id='%s'", keyString, correlationID)
+	msg := map[string]interface{}{
+		"type":           "keypresses",
+		"keys":           keyString,
+		"correlation_id": correlationID,
+	}
+	s.broadcastJSON(msg)
+}
+
 func (s *GodotServer) handleTextMessage(conn *websocket.Conn, message []byte) {
 	logging.Trace("Handling text message from Godot")
 	var msg map[string]interface{}
@@ -110,6 +151,12 @@ func (s *GodotServer) handleTextMessage(conn *websocket.Conn, message []byte) {
 		s.handleAudioChunk(msg)
 	case "state_update":
 		s.handleStateUpdate(msg)
+	case "request":
+		s.handleRequestMessage(msg)
+	case "delta":
+		s.handleDeltaMessage(msg)
+	case "keypress_ack":
+		s.handleKeypressAck(msg)
 		// case "start_audio_capture":
 		// 	logging.Info("Received start_audio_capture signal from Godot")
 		// 	if s.transcriber != nil {
@@ -169,6 +216,96 @@ func (s *GodotServer) handleStateUpdate(msg map[string]interface{}) {
 	if mic, ok := msg["selected_mic_device"].(string); ok {
 		s.selectedMicDevice = mic
 	}
+}
+
+func (s *GodotServer) handleRequestMessage(msg map[string]interface{}) {
+	logging.Debug("Handling request from Godot: %v", msg)
+	text, ok := msg["text"].(string)
+	if !ok {
+		logging.Error("Request message missing text")
+		return
+	}
+
+	event := &orchestration.UserRequestReceivedEvent{
+		RequestID:   fmt.Sprintf("godot_req_%d", time.Now().UnixNano()),
+		RequestText: text,
+		Timestamp:   eventsourcing.ISOTimestamp(),
+	}
+
+	if s.eventBus != nil {
+		s.eventBus.Publish(event)
+	} else {
+		logging.Error("EventBus not set")
+	}
+}
+
+func (s *GodotServer) handleDeltaMessage(msg map[string]interface{}) {
+	logging.Debug("Handling delta from Godot: %v", msg)
+	actions, ok := msg["actions"].([]interface{})
+	if !ok {
+		logging.Error("Delta message missing actions")
+		return
+	}
+
+	for _, a := range actions {
+		action, ok := a.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if action["type"] == "update" {
+			if props, ok := action["properties"].(map[string]interface{}); ok {
+				if pos, ok := props["position"].([]interface{}); ok && len(pos) >= 3 {
+					x, _ := pos[0].(float64)
+					y, _ := pos[1].(float64)
+					z, _ := pos[2].(float64)
+					if nodeID, ok := action["node_id"].(string); ok && strings.HasPrefix(nodeID, "task_") {
+						event := &TaskPositionUpdatedEvent{
+							TaskID:    nodeID,
+							PositionX: x,
+							PositionY: y,
+							PositionZ: z,
+						}
+						if s.eventBus != nil {
+							s.eventBus.Publish(event)
+						} else {
+							logging.Error("EventBus not set")
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func (s *GodotServer) handleKeypressAck(msg map[string]interface{}) {
+	logging.Debug("Handling keypress ACK from Godot: %v", msg)
+	correlationID, ok := msg["correlation_id"].(string)
+	if !ok || correlationID == "" {
+		logging.Error("Keypress ACK missing correlation_id")
+		return
+	}
+
+	s.pendingMu.RLock()
+	ch, exists := s.pendingKeypresses[correlationID]
+	s.pendingMu.RUnlock()
+
+	if !exists {
+		logging.Info("Received ACK for unknown correlation_id: %s", correlationID)
+		return
+	}
+
+	// Send the result back through the channel
+	select {
+	case ch <- msg:
+		logging.Debug("Sent keypress ACK result for correlation_id: %s", correlationID)
+	default:
+		logging.Info("Channel full for correlation_id: %s", correlationID)
+	}
+
+	// Clean up the pending request
+	s.pendingMu.Lock()
+	delete(s.pendingKeypresses, correlationID)
+	s.pendingMu.Unlock()
 }
 
 func (s *GodotServer) handleReadyMessage(conn *websocket.Conn, msg map[string]interface{}) {
@@ -301,16 +438,59 @@ func (s *GodotServer) HandleKeypresses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	keyString := r.URL.Query().Get("keys")
-	if keyString == "" {
-		http.Error(w, "Missing 'keys' query parameter", http.StatusBadRequest)
+	var req struct {
+		Keys          string `json:"keys"`
+		CorrelationID string `json:"correlation_id,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
 		return
 	}
 
-	logging.Info("Received keypress request: %s", keyString)
-	s.SendKeypresses(keyString)
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Keypresses sent"))
+	if req.Keys == "" {
+		http.Error(w, "Missing 'keys' field in request body", http.StatusBadRequest)
+		return
+	}
+
+	// Generate correlation ID if not provided
+	if req.CorrelationID == "" {
+		req.CorrelationID = fmt.Sprintf("keypress_%d", time.Now().UnixNano())
+	}
+
+	logging.Info("Received keypress request: keys='%s', correlation_id='%s'", req.Keys, req.CorrelationID)
+
+	// Create a channel to wait for ACK
+	ch := make(chan map[string]interface{}, 1)
+
+	s.pendingMu.Lock()
+	s.pendingKeypresses[req.CorrelationID] = ch
+	s.pendingMu.Unlock()
+
+	// Send keypresses with correlation ID
+	s.SendKeypressesWithID(req.Keys, req.CorrelationID)
+
+	// Wait for ACK with timeout
+	timeout := time.After(5 * time.Second)
+	select {
+	case result := <-ch:
+		// Got ACK
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	case <-timeout:
+		// Timeout - clean up
+		s.pendingMu.Lock()
+		delete(s.pendingKeypresses, req.CorrelationID)
+		s.pendingMu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusGatewayTimeout)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":          "timeout",
+			"correlation_id": req.CorrelationID,
+			"message":        "No response from Godot frontend within 5 seconds",
+		})
+	}
 }
 
 func (s *GodotServer) Start() {

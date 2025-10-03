@@ -789,14 +789,29 @@ func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourc
 		}
 		pos := ui3d.PositionInCircle(i, 6.0+float64(i)*0.5, 2.0)
 		color := priorityColor(e.Priority)
-		box := ui3d.CreateBox(e.TaskID, pos, theme)
-		box.Properties["material_override"].(map[string]interface{})["albedo_color"] = color
-		box.Metadata = map[string]interface{}{
-			"title":  e.Title,
-			"status": e.Status,
+		actions := ui3d.CreateStandardObject(ui3d.StandardObject{
+			ID:       e.TaskID,
+			MeshType: "box",
+			Position: pos,
+			Label:    &ui3d.LabelConfig{Text: e.Title},
+			Theme:    theme,
+			Extra: map[string]interface{}{
+				"event_type": "task_created",
+				"material_override": map[string]interface{}{
+					"albedo_color": color,
+				},
+			},
+		})
+		if len(actions) > 0 {
+			actions[0].Metadata = map[string]interface{}{
+				"title":  e.Title,
+				"status": e.Status,
+			}
 		}
-		label := ui3d.CreateLabel(e.TaskID+"_label", e.Title, []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
-		return []eventsourcing.DeltaAction{box, label}
+		if len(actions) > 1 {
+			actions[1].Properties["event_type"] = "task_created"
+		}
+		return actions
 	case *TaskUpdatedEvent:
 		// For updates, recreate the task at the correct position
 		sortedIDs := a.getSortedTaskIDs()
@@ -809,10 +824,7 @@ func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourc
 		}
 		pos := ui3d.PositionInCircle(i, 6.0+float64(i)*0.5, 2.0)
 		color := priorityColor(a.Tasks[e.TaskID].Priority)
-		box := ui3d.CreateBox(e.TaskID, pos, theme)
-		box.Properties["material_override"].(map[string]interface{})["albedo_color"] = color
-		label := ui3d.CreateLabel(e.TaskID+"_label", a.Tasks[e.TaskID].Title, []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
-		// Delete old and create new
+		// Delete old
 		oldActions := []eventsourcing.DeltaAction{{
 			Type:   "delete",
 			NodeID: e.TaskID,
@@ -820,7 +832,23 @@ func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourc
 			Type:   "delete",
 			NodeID: e.TaskID + "_label",
 		}}
-		newActions := []eventsourcing.DeltaAction{box, label}
+		// Create new
+		newActions := ui3d.CreateStandardObject(ui3d.StandardObject{
+			ID:       e.TaskID,
+			MeshType: "box",
+			Position: pos,
+			Label:    &ui3d.LabelConfig{Text: a.Tasks[e.TaskID].Title},
+			Theme:    theme,
+			Extra: map[string]interface{}{
+				"event_type": "task_updated",
+				"material_override": map[string]interface{}{
+					"albedo_color": color,
+				},
+			},
+		})
+		if len(newActions) > 1 {
+			newActions[1].Properties["event_type"] = "task_updated"
+		}
 		return append(oldActions, newActions...)
 	case *TaskCompletedEvent:
 		return []eventsourcing.DeltaAction{{
@@ -854,14 +882,29 @@ func (a *TaskAggregate) GetFull3DState() []eventsourcing.DeltaAction {
 		return sortedTasks[i].task.CreatedAt.Before(sortedTasks[j].task.CreatedAt)
 	})
 
-	for i, taskItem := range sortedTasks {
-		pos := ui3d.PositionInCircle(i, 6.0+float64(i)*0.5, 2.0)
+	lm := ui3d.LayoutManager{Type: "circle", Spacing: 6.0, Counter: 0}
+	for _, taskItem := range sortedTasks {
+		pos := lm.NextPosition()
+		pos[1] = 2.0 // Fixed height
 		color := priorityColor(taskItem.task.Priority)
-		// Use themed box but override color for priority
-		box := ui3d.CreateBox(taskItem.id, pos, theme)
-		box.Properties["material_override"].(map[string]interface{})["albedo_color"] = color
-		label := ui3d.CreateLabel(taskItem.id+"_label", taskItem.task.Title, []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
-		actions = append(actions, box, label)
+		// Use StandardObject
+		taskActions := ui3d.CreateStandardObject(ui3d.StandardObject{
+			ID:       taskItem.id,
+			MeshType: "box",
+			Position: pos,
+			Label:    &ui3d.LabelConfig{Text: taskItem.task.Title},
+			Theme:    theme,
+			Extra: map[string]interface{}{
+				"event_type": "task",
+				"material_override": map[string]interface{}{
+					"albedo_color": color,
+				},
+			},
+		})
+		if len(taskActions) > 1 {
+			taskActions[1].Properties["event_type"] = "task"
+		}
+		actions = append(actions, taskActions...)
 	}
 	return actions
 }
@@ -1017,6 +1060,8 @@ func (p *TaskPlugin) SystemPrompt() string {
 
 	// Construct the full dynamic prompt
 	prompt := `You are TaskMaster, a specialized AI for managing tasks in MindPalace.
+
+The user input will be a JSON object containing the arguments for the command to execute. Parse the JSON and call the appropriate command with the parsed values.
 
 Your job is to interpret user requests about tasks and execute the right commands (CreateTask, UpdateTask, CompleteTask, DeleteTask, ListTasks) based on the current task state.
 

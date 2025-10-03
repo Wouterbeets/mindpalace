@@ -23,6 +23,7 @@ type OrchestrationAggregate struct {
 	ToolCallStates   map[string]*ToolCallState
 	AgentStates      map[string]*AgentState
 	RequestIDs       []string
+	DisplayInfos     map[string]*DisplayInfo
 }
 
 func NewOrchestrationAggregate() *OrchestrationAggregate {
@@ -34,6 +35,7 @@ func NewOrchestrationAggregate() *OrchestrationAggregate {
 		ToolCallStates:   make(map[string]*ToolCallState),
 		AgentStates:      make(map[string]*AgentState),
 		RequestIDs:       make([]string, 0),
+		DisplayInfos:     make(map[string]*DisplayInfo),
 	}
 }
 
@@ -60,6 +62,12 @@ type ToolCallState struct {
 	Status      string // "requested", "started", "completed"
 	Results     map[string]interface{}
 	LastUpdated string // Timestamp for sorting or debugging
+}
+
+type DisplayInfo struct {
+	Title       string                 `json:"title"`
+	Description string                 `json:"description"`
+	Details     map[string]interface{} `json:"details"`
 }
 
 func (a *OrchestrationAggregate) AgentName(requestID string) string {
@@ -92,10 +100,18 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 
 		// Add toolcall id to agent tool calls
 		a.AgentStates[e.RequestID].ToolCallIDs = append(a.AgentStates[e.RequestID].ToolCallIDs, e.ToolCallID)
+		a.DisplayInfos[fmt.Sprintf("tool_call_%s", e.ToolCallID)] = &DisplayInfo{
+			Title:       fmt.Sprintf("Tool: %s", e.Function),
+			Description: "Tool call requested",
+			Details:     map[string]interface{}{"type": "tool_call_started", "function": e.Function, "timestamp": e.Timestamp},
+		}
 
 	case "orchestration_ToolCallStarted":
 		e := event.(*ToolCallStarted)
 		a.chatManager.AddMessage(chat.RoleSystem, fmt.Sprintf("Tool Call started'%s'", e.Function), e.RequestID, a.AgentStates[e.RequestID].AgentName, nil)
+		if displayInfo, exists := a.DisplayInfos[fmt.Sprintf("tool_call_%s", e.ToolCallID)]; exists {
+			displayInfo.Details["type"] = "tool_call_started"
+		}
 
 	case "orchestration_ToolCallCompleted":
 		e := event.(*ToolCallCompleted)
@@ -114,6 +130,10 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 				delete(a.PendingToolCalls, e.RequestID)
 			}
 		}
+		if displayInfo, exists := a.DisplayInfos[fmt.Sprintf("tool_call_%s", e.ToolCallID)]; exists {
+			displayInfo.Details["type"] = "tool_call_completed"
+			displayInfo.Description = "Tool call completed"
+		}
 		agentName := a.AgentName(e.RequestID)
 		a.chatManager.AddMessage(chat.RoleTool, string(bytes), e.RequestID, agentName, map[string]interface{}{
 			"function": e.Function,
@@ -128,6 +148,10 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 			if len(a.PendingToolCalls[e.RequestID]) == 0 {
 				delete(a.PendingToolCalls, e.RequestID)
 			}
+		}
+		if displayInfo, exists := a.DisplayInfos[fmt.Sprintf("tool_call_%s", e.ToolCallID)]; exists {
+			displayInfo.Details["type"] = "tool_call_failed"
+			displayInfo.Description = fmt.Sprintf("Tool call failed: %s", e.ErrorMsg)
 		}
 
 		if agentState, exists := a.AgentStates[e.RequestID]; exists {
@@ -148,6 +172,11 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 			Model:         e.Model,
 		}
 		a.chatManager.AddMessage(chat.RoleSystem, fmt.Sprintf("Calling agent '%s'...", e.AgentName), e.RequestID, e.AgentName, nil)
+		a.DisplayInfos[fmt.Sprintf("agent_%s", e.RequestID)] = &DisplayInfo{
+			Title:       fmt.Sprintf("Agent: %s", e.AgentName),
+			Description: "Agent called for request",
+			Details:     map[string]interface{}{"type": "agent_call_decided", "agent": e.AgentName, "model": e.Model, "timestamp": e.Timestamp},
+		}
 
 	case "orchestration_AgentExecutionFailed":
 		e := event.(*AgentExecutionFailedEvent)
@@ -155,6 +184,10 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 			agentState.Status = "failed"
 			agentState.Summary = fmt.Sprintf("Agent execution failed: %s", e.ErrorMsg)
 			agentState.LastUpdated = e.Timestamp
+		}
+		if displayInfo, exists := a.DisplayInfos[fmt.Sprintf("agent_%s", e.RequestID)]; exists {
+			displayInfo.Details["type"] = "agent_execution_failed"
+			displayInfo.Description = fmt.Sprintf("Agent execution failed: %s", e.ErrorMsg)
 		}
 		agentName := a.AgentName(e.RequestID)
 		a.chatManager.AddMessage(chat.RoleMindPalace, fmt.Sprintf("Error %s", e.ErrorMsg), e.RequestID, agentName, nil)
@@ -164,6 +197,11 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 		agentName := a.AgentName(e.RequestID)
 		a.chatManager.AddMessage(chat.RoleUser, e.RequestText, e.RequestID, agentName, nil)
 		a.RequestIDs = append(a.RequestIDs, e.RequestID)
+		a.DisplayInfos[fmt.Sprintf("request_%s", e.RequestID)] = &DisplayInfo{
+			Title:       "User Request",
+			Description: e.RequestText,
+			Details:     map[string]interface{}{"type": "user_request_received", "timestamp": e.Timestamp},
+		}
 
 	case "orchestration_RequestCompleted":
 		e := event.(*RequestCompletedEvent)
@@ -179,6 +217,11 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 		if agentState, exists := a.AgentStates[e.RequestID]; exists {
 			agentState.Status = "completed"
 			agentState.LastUpdated = eventsourcing.ISOTimestamp()
+		}
+		a.DisplayInfos[fmt.Sprintf("completed_%s", e.RequestID)] = &DisplayInfo{
+			Title:       "Request Completed",
+			Description: regular,
+			Details:     map[string]interface{}{"type": "request_completed", "timestamp": e.CompletedAt},
 		}
 	}
 	return nil
@@ -682,11 +725,125 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []e
 			pos[0] = pos[2] // Move Z spacing to X axis
 			pos[1] = -1.0   // Underground
 			pos[2] = 0.0
-			return ui3d.CreateCard(fmt.Sprintf("request_%s", e.RequestID), "User Request", pos, theme)
+			actions := ui3d.CreateCard(fmt.Sprintf("request_%s", e.RequestID), "User Request", pos, theme)
+			for i := range actions {
+				if actions[i].Properties == nil {
+					actions[i].Properties = make(map[string]interface{})
+				}
+				actions[i].Properties["event_type"] = "user_request_received"
+				if displayInfo, exists := a.DisplayInfos[actions[i].NodeID]; exists {
+					actions[i].Properties["display_info"] = map[string]interface{}{
+						"title":       displayInfo.Title,
+						"description": displayInfo.Description,
+						"details":     displayInfo.Details,
+					}
+				}
+			}
+			return actions
 		}
+	case *AgentCallDecidedEvent:
+		pos := []float64{0, 1, 0} // Near orchestrator
+		sphere := ui3d.CreateSphere(fmt.Sprintf("agent_%s", e.RequestID), pos, theme)
+		sphere.Properties["event_type"] = "agent_call_decided"
+		if displayInfo, exists := a.DisplayInfos[sphere.NodeID]; exists {
+			sphere.Properties["display_info"] = map[string]interface{}{
+				"title":       displayInfo.Title,
+				"description": displayInfo.Description,
+				"details":     displayInfo.Details,
+			}
+		}
+		label := ui3d.CreateLabel(fmt.Sprintf("agent_%s_label", e.RequestID), fmt.Sprintf("Agent: %s", e.AgentName), []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
+		label.Properties["event_type"] = "agent_call_decided"
+		if displayInfo, exists := a.DisplayInfos[label.NodeID]; exists {
+			label.Properties["display_info"] = map[string]interface{}{
+				"title":       displayInfo.Title,
+				"description": displayInfo.Description,
+				"details":     displayInfo.Details,
+			}
+		}
+		return []eventsourcing.DeltaAction{sphere, label}
 	case *ToolCallRequestPlaced:
-		return []eventsourcing.DeltaAction{ui3d.CreateLabel(fmt.Sprintf("thinking_%s", e.ToolCallID), "Thinking...", []float64{0, 2, 0}, theme)}
-		// ... e.g., chat messages as speech bubbles
+		pos := []float64{2, 0, 0} // Side
+		box := ui3d.CreateBox(fmt.Sprintf("tool_call_%s", e.ToolCallID), pos, theme)
+		box.Properties["event_type"] = "tool_call_started"
+		if displayInfo, exists := a.DisplayInfos[box.NodeID]; exists {
+			box.Properties["display_info"] = map[string]interface{}{
+				"title":       displayInfo.Title,
+				"description": displayInfo.Description,
+				"details":     displayInfo.Details,
+			}
+		}
+		label := ui3d.CreateLabel(fmt.Sprintf("tool_call_%s_label", e.ToolCallID), fmt.Sprintf("Tool: %s", e.Function), []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
+		label.Properties["event_type"] = "tool_call_started"
+		if displayInfo, exists := a.DisplayInfos[label.NodeID]; exists {
+			label.Properties["display_info"] = map[string]interface{}{
+				"title":       displayInfo.Title,
+				"description": displayInfo.Description,
+				"details":     displayInfo.Details,
+			}
+		}
+		return []eventsourcing.DeltaAction{box, label}
+	case *ToolCallStarted:
+		// Update existing tool call
+		return []eventsourcing.DeltaAction{{
+			Type:   "update",
+			NodeID: fmt.Sprintf("tool_call_%s_label", e.ToolCallID),
+			Properties: map[string]interface{}{
+				"text":       fmt.Sprintf("Tool: %s (Started)", e.Function),
+				"event_type": "tool_call_started",
+			},
+		}}
+	case *ToolCallCompleted:
+		// Update to completed
+		return []eventsourcing.DeltaAction{{
+			Type:   "update",
+			NodeID: fmt.Sprintf("tool_call_%s_label", e.ToolCallID),
+			Properties: map[string]interface{}{
+				"text":       fmt.Sprintf("Tool: %s (Completed)", e.Function),
+				"event_type": "tool_call_completed",
+			},
+		}}
+	case *ToolCallFailedEvent:
+		// Update to failed
+		return []eventsourcing.DeltaAction{{
+			Type:   "update",
+			NodeID: fmt.Sprintf("tool_call_%s_label", e.ToolCallID),
+			Properties: map[string]interface{}{
+				"text":       fmt.Sprintf("Tool: %s (Failed)", e.Function),
+				"event_type": "tool_call_failed",
+			},
+		}}
+	case *AgentExecutionFailedEvent:
+		// Update agent
+		return []eventsourcing.DeltaAction{{
+			Type:   "update",
+			NodeID: fmt.Sprintf("agent_%s_label", e.RequestID),
+			Properties: map[string]interface{}{
+				"text":       fmt.Sprintf("Agent: %s (Failed)", a.AgentStates[e.RequestID].AgentName),
+				"event_type": "agent_execution_failed",
+			},
+		}}
+	case *RequestCompletedEvent:
+		pos := []float64{4, -1, 0} // Underground completed
+		box := ui3d.CreateBox(fmt.Sprintf("completed_%s", e.RequestID), pos, theme)
+		box.Properties["event_type"] = "request_completed"
+		if displayInfo, exists := a.DisplayInfos[box.NodeID]; exists {
+			box.Properties["display_info"] = map[string]interface{}{
+				"title":       displayInfo.Title,
+				"description": displayInfo.Description,
+				"details":     displayInfo.Details,
+			}
+		}
+		label := ui3d.CreateLabel(fmt.Sprintf("completed_%s_label", e.RequestID), "Request Completed", []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
+		label.Properties["event_type"] = "request_completed"
+		if displayInfo, exists := a.DisplayInfos[label.NodeID]; exists {
+			label.Properties["display_info"] = map[string]interface{}{
+				"title":       displayInfo.Title,
+				"description": displayInfo.Description,
+				"details":     displayInfo.Details,
+			}
+		}
+		return []eventsourcing.DeltaAction{box, label}
 	}
 	return nil
 }
@@ -703,6 +860,7 @@ func (a *OrchestrationAggregate) GetFull3DState() []eventsourcing.DeltaAction {
 			"position":       []interface{}{0.0, 5.0, 0.0},
 			"emissive_color": []interface{}{1.0, 0.8, 0.4, 1.0}, // Warm golden glow
 			"particles":      true,                              // For gassy smoke effect
+			"event_type":     "orchestrator_ai",
 		},
 	}}
 	// Create a card for each user request
@@ -711,7 +869,21 @@ func (a *OrchestrationAggregate) GetFull3DState() []eventsourcing.DeltaAction {
 		pos[0] = pos[2]                                // Move Z spacing to X axis
 		pos[1] = -1.0                                  // Underground
 		pos[2] = 0.0
-		actions = append(actions, ui3d.CreateCard(fmt.Sprintf("request_%s", requestID), "User Request", pos, theme)...)
+		cards := ui3d.CreateCard(fmt.Sprintf("request_%s", requestID), "User Request", pos, theme)
+		for j := range cards {
+			if cards[j].Properties == nil {
+				cards[j].Properties = make(map[string]interface{})
+			}
+			cards[j].Properties["event_type"] = "user_request_received"
+			if displayInfo, exists := a.DisplayInfos[cards[j].NodeID]; exists {
+				cards[j].Properties["display_info"] = map[string]interface{}{
+					"title":       displayInfo.Title,
+					"description": displayInfo.Description,
+					"details":     displayInfo.Details,
+				}
+			}
+		}
+		actions = append(actions, cards...)
 	}
 	return actions
 }

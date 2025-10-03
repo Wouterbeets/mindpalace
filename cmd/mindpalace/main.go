@@ -140,6 +140,7 @@ func main() {
 	server := godot_ws.NewGodotServer()
 	server.SetDeltaChan(ep.DeltaChan())
 	server.SetAggStore(aggStore)
+	server.SetEventBus(eb)
 
 	// Start the voice transcriber (for processing)
 	err = transcriber.Start(func(text string) {

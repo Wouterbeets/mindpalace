@@ -113,10 +113,11 @@ func (ro *RequestOrchestrator) DecideAgentCallCommand(event *UserRequestReceived
 			if err != nil {
 				return nil, fmt.Errorf("requested plugin does not exist: %w", err)
 			}
-			query := ""
-			for argName, argVal := range call.Function.Arguments {
-				query += argName + ":" + argVal.(string)
+			queryBytes, err := json.Marshal(call.Function.Arguments)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal tool call arguments: %v", err)
 			}
+			query := string(queryBytes)
 			agentCallEvent := &AgentCallDecidedEvent{
 				RequestID: event.RequestID,
 				AgentName: plug.Name(),
