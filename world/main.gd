@@ -208,18 +208,7 @@ func create_zone_separators():
         var color = colors[i]
         var zone_pos = PLUGIN_ZONES.get(zone_name, Vector3.ZERO)
         
-        # Vertical wall separator (thin box)
-        var wall = MeshInstance3D.new()
-        var box_mesh = BoxMesh.new()
-        box_mesh.size = Vector3(0.2, 5.0, 20.0)  # Thin, tall, wide
-        wall.mesh = box_mesh
-        var wall_material = StandardMaterial3D.new()
-        wall_material.albedo_color = color * 0.5  # Semi-transparent
-        wall_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-        wall_material.albedo_color.a = 0.3
-        wall.material_override = wall_material
-        wall.position = zone_pos + Vector3(0, 2.5, 0)  # Centered height
-        add_child(wall)
+        
         
         # Zone label
         var label = Label3D.new()

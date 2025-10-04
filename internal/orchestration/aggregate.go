@@ -18,7 +18,7 @@ import (
 )
 
 type OrchestrationAggregate struct {
-	chatManager      *chat.ChatManager
+	chatState        *ChatState
 	PendingToolCalls map[string]map[string]struct{}
 	ToolCallStates   map[string]*ToolCallState
 	AgentStates      map[string]*AgentState
@@ -29,8 +29,10 @@ type OrchestrationAggregate struct {
 func NewOrchestrationAggregate() *OrchestrationAggregate {
 	// Initialize ChatManager with a base system prompt and context size
 	basePrompt := "You are MindPalace, a friendly AI assistant here to help with various queries and tasks."
+	chatManager := chat.NewChatManager(100000, basePrompt) // 100K tokens max for LLM context
+	chatState := NewChatState(chatManager)
 	return &OrchestrationAggregate{
-		chatManager:      chat.NewChatManager(100000, basePrompt), // 100K tokens max for LLM context
+		chatState:        chatState,
 		PendingToolCalls: make(map[string]map[string]struct{}),
 		ToolCallStates:   make(map[string]*ToolCallState),
 		AgentStates:      make(map[string]*AgentState),
@@ -80,6 +82,11 @@ func (a *OrchestrationAggregate) AgentName(requestID string) string {
 }
 
 func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
+	// Apply chat-related events first
+	if err := a.chatState.ApplyEvent(event); err != nil {
+		return err
+	}
+
 	switch event.Type() {
 	case "orchestration_ToolCallRequestPlaced":
 		e := event.(*ToolCallRequestPlaced)
@@ -108,14 +115,13 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 
 	case "orchestration_ToolCallStarted":
 		e := event.(*ToolCallStarted)
-		a.chatManager.AddMessage(chat.RoleSystem, fmt.Sprintf("Tool Call started'%s'", e.Function), e.RequestID, a.AgentStates[e.RequestID].AgentName, nil)
+		// Chat handled by chatState.ApplyEvent
 		if displayInfo, exists := a.DisplayInfos[fmt.Sprintf("tool_call_%s", e.ToolCallID)]; exists {
 			displayInfo.Details["type"] = "tool_call_started"
 		}
 
 	case "orchestration_ToolCallCompleted":
 		e := event.(*ToolCallCompleted)
-		bytes, _ := json.Marshal(e.Results)
 		if agentState, exists := a.AgentStates[e.RequestID]; exists {
 			agentState.ExecutionData[e.ToolCallID] = e.Results
 			agentState.LastUpdated = eventsourcing.ISOTimestamp()
@@ -134,10 +140,7 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 			displayInfo.Details["type"] = "tool_call_completed"
 			displayInfo.Description = "Tool call completed"
 		}
-		agentName := a.AgentName(e.RequestID)
-		a.chatManager.AddMessage(chat.RoleTool, string(bytes), e.RequestID, agentName, map[string]interface{}{
-			"function": e.Function,
-		})
+		// Chat handled by chatState.ApplyEvent
 	case "orchestration_ToolCallFailed":
 		e := event.(*ToolCallFailedEvent)
 		if state, exists := a.ToolCallStates[e.ToolCallID]; exists {
@@ -157,8 +160,7 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 		if agentState, exists := a.AgentStates[e.RequestID]; exists {
 			agentState.LastUpdated = eventsourcing.ISOTimestamp()
 		}
-		agentName := a.AgentName(e.RequestID)
-		a.chatManager.AddMessage(chat.RoleSystem, fmt.Sprintf("Tool Call failed '%s'", e.ErrorMsg), e.RequestID, agentName, nil)
+		// Chat handled by chatState.ApplyEvent
 
 	case "orchestration_AgentCallDecided":
 		e := event.(*AgentCallDecidedEvent)
@@ -171,7 +173,7 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 			LastUpdated:   e.Timestamp,
 			Model:         e.Model,
 		}
-		a.chatManager.AddMessage(chat.RoleSystem, fmt.Sprintf("Calling agent '%s'...", e.AgentName), e.RequestID, e.AgentName, nil)
+		// Chat handled by chatState.ApplyEvent
 		a.DisplayInfos[fmt.Sprintf("agent_%s", e.RequestID)] = &DisplayInfo{
 			Title:       fmt.Sprintf("Agent: %s", e.AgentName),
 			Description: "Agent called for request",
@@ -189,13 +191,10 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 			displayInfo.Details["type"] = "agent_execution_failed"
 			displayInfo.Description = fmt.Sprintf("Agent execution failed: %s", e.ErrorMsg)
 		}
-		agentName := a.AgentName(e.RequestID)
-		a.chatManager.AddMessage(chat.RoleMindPalace, fmt.Sprintf("Error %s", e.ErrorMsg), e.RequestID, agentName, nil)
+		// Chat handled by chatState.ApplyEvent
 
 	case "orchestration_UserRequestReceived":
 		e := event.(*UserRequestReceivedEvent)
-		agentName := a.AgentName(e.RequestID)
-		a.chatManager.AddMessage(chat.RoleUser, e.RequestText, e.RequestID, agentName, nil)
 		a.RequestIDs = append(a.RequestIDs, e.RequestID)
 		a.DisplayInfos[fmt.Sprintf("request_%s", e.RequestID)] = &DisplayInfo{
 			Title:       "User Request",
@@ -205,15 +204,8 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 
 	case "orchestration_RequestCompleted":
 		e := event.(*RequestCompletedEvent)
-		thinks, regular := parseResponseText(e.ResponseText)
+		_, regular := parseResponseText(e.ResponseText)
 
-		agentName := a.AgentName(e.RequestID)
-		for _, think := range thinks {
-			a.chatManager.AddMessage(chat.RoleHidden, think, e.RequestID, agentName, nil)
-		}
-		if regular != "" {
-			a.chatManager.AddMessage(chat.RoleMindPalace, regular, e.RequestID, agentName, nil)
-		}
 		if agentState, exists := a.AgentStates[e.RequestID]; exists {
 			agentState.Status = "completed"
 			agentState.LastUpdated = eventsourcing.ISOTimestamp()
@@ -229,9 +221,9 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 
 func (a *OrchestrationAggregate) GetCustomUI() fyne.CanvasObject {
 	var chatUIList []fyne.CanvasObject
-	messages := a.chatManager.GetUIMessages()
+	messages := a.chatState.GetChatManager().GetUIMessages()
 
-	tokenLabel := widget.NewLabel(fmt.Sprintf("Total Tokens Used: %d", a.chatManager.GetTotalTokens()))
+	tokenLabel := widget.NewLabel(fmt.Sprintf("Total Tokens Used: %d", a.chatState.GetChatManager().GetTotalTokens()))
 	tokenLabel.TextStyle = fyne.TextStyle{Bold: true}
 	chatUIList = append(chatUIList, tokenLabel, widget.NewSeparator())
 
@@ -889,5 +881,5 @@ func (a *OrchestrationAggregate) GetFull3DState() []eventsourcing.DeltaAction {
 }
 
 func (a *OrchestrationAggregate) GetChatManager() *chat.ChatManager {
-	return a.chatManager
+	return a.chatState.GetChatManager()
 }

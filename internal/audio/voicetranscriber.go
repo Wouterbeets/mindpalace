@@ -7,20 +7,22 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/mutablelogic/go-media/pkg/ffmpeg"
-	// "github.com/mutablelogic/go-whisper"
-	// "github.com/mutablelogic/go-whisper/pkg/schema"
-	// "github.com/mutablelogic/go-whisper/pkg/task"
+	"github.com/mutablelogic/go-whisper"
+	"github.com/mutablelogic/go-whisper/pkg/schema"
+	"github.com/mutablelogic/go-whisper/pkg/task"
 	"mindpalace/pkg/logging"
 )
 
 // VoiceTranscriber manages audio recording and real-time transcription using go-whisper
 type VoiceTranscriber struct {
-	// whisper               *whisper.Whisper
-	// model                 *schema.Model
+	whisper               *whisper.Whisper
+	model                 *schema.Model
+	task                  *task.Context
 	mu                    sync.Mutex
 	transcriptionCallback func(string)
 	sessionCallback       func(eventType string, data map[string]interface{})
@@ -37,14 +39,31 @@ type VoiceTranscriber struct {
 
 // NewVoiceTranscriber initializes a new VoiceTranscriber instance with go-whisper
 func NewVoiceTranscriber(modelPath string) (*VoiceTranscriber, error) {
-	// Whisper disabled for now
-	logging.Info("AUDIO: Whisper transcription disabled")
-
+	dir := filepath.Dir(modelPath)
+	filename := filepath.Base(modelPath)
+	var err error
 	vt := &VoiceTranscriber{
 		sampleRate:      16000,
-		bufferThreshold: 16000 * 1,                    // 1 second of audio for faster testing
-		audioBuffer:     make([]float32, 0, 16000*10), // Pre-allocate for 10 seconds
+		bufferThreshold: 16000 * 1,
+		audioBuffer:     make([]float32, 0, 16000*10),
 	}
+	vt.whisper, err = whisper.New(dir)
+	if err != nil {
+		return nil, err
+	}
+	vt.model = vt.whisper.GetModelById(filename)
+	if vt.model == nil {
+		logging.Info("AUDIO: Downloading model %s", filename)
+		vt.model, err = vt.whisper.DownloadModel(context.Background(), filename, nil)
+		if err != nil {
+			return nil, err
+		}
+	}
+	vt.task = task.New()
+	if err = vt.task.Init(dir, vt.model, 0); err != nil {
+		return nil, err
+	}
+	logging.Info("AUDIO: Whisper transcription enabled with model %s", vt.model.Id)
 
 	return vt, nil
 }
@@ -146,26 +165,31 @@ func (vt *VoiceTranscriber) ProcessAudioChunk(pcmData []byte) error {
 
 // transcribeAudio performs the actual transcription using go-whisper
 func (vt *VoiceTranscriber) transcribeAudio(audio []float32) {
-	logging.Info("AUDIO: Transcription disabled - skipping %d audio samples (%.2fs)", len(audio), float64(len(audio))/float64(vt.sampleRate))
+	logging.Info("AUDIO: Transcribing %d audio samples (%.2fs)", len(audio), float64(len(audio))/float64(vt.sampleRate))
 
 	// Save audio to file for debugging
 	if err := saveAudioToWav(audio, fmt.Sprintf("debug_audio_%d.wav", time.Now().UnixNano())); err != nil {
-		logging.Info("AUDIO: Failed to save debug audio: %v", err)
+		logging.Error("AUDIO: Failed to save debug audio: %v", err)
 	} else {
 		logging.Debug("AUDIO: Saved debug audio to file")
 	}
 
-	// Whisper is disabled, so just increment segment count and call callback with empty text
-	vt.mu.Lock()
-	vt.totalSegments++
-	vt.mu.Unlock()
-
-	logging.Info("AUDIO: Transcription skipped (whisper disabled), segments: %d", vt.totalSegments)
-	if vt.transcriptionCallback != nil {
-		logging.Debug("AUDIO: Calling transcription callback with empty text")
-		vt.transcriptionCallback("")
-	} else {
-		logging.Info("AUDIO: No transcription callback set")
+	vt.task.CopyParams()
+	vt.task.SetLanguage("auto")
+	vt.task.SetTranslate(false)
+	ts := time.Since(vt.startTime)
+	err := vt.task.Transcribe(context.Background(), ts, audio, func(seg *schema.Segment) {
+		vt.mu.Lock()
+		vt.totalSegments++
+		vt.mu.Unlock()
+		logging.Debug("AUDIO: New segment: %s", seg.Text)
+		if vt.transcriptionCallback != nil {
+			vt.transcriptionCallback(seg.Text)
+		}
+	})
+	if err != nil {
+		logging.Error("AUDIO: Transcription error: %v", err)
+		return
 	}
 }
 
@@ -366,8 +390,13 @@ func (vt *VoiceTranscriber) StopCapture() {
 
 func (vt *VoiceTranscriber) Close() error {
 	vt.StopCapture()
-	// if vt.whisper != nil {
-	// 	return vt.whisper.Close()
-	// }
+	if vt.task != nil {
+		if err := vt.task.Close(); err != nil {
+			return err
+		}
+	}
+	if vt.whisper != nil {
+		return vt.whisper.Close()
+	}
 	return nil
 }
