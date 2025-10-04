@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
@@ -11,6 +12,43 @@ import (
 	"mindpalace/pkg/llmmodels"
 	"mindpalace/pkg/logging"
 )
+
+// Event interfaces for chat to apply without circular imports
+type UserRequestReceivedEvent struct {
+	RequestID   string
+	RequestText string
+}
+
+type ToolCallCompleted struct {
+	RequestID string
+	Function  string
+	Results   map[string]interface{}
+}
+
+type ToolCallFailedEvent struct {
+	RequestID string
+	ErrorMsg  string
+}
+
+type AgentCallDecidedEvent struct {
+	RequestID string
+	AgentName string
+}
+
+type AgentExecutionFailedEvent struct {
+	RequestID string
+	ErrorMsg  string
+}
+
+type RequestCompletedEvent struct {
+	RequestID    string
+	ResponseText string
+}
+
+type ToolCallStarted struct {
+	RequestID string
+	Function  string
+}
 
 // Role defines the explicit roles a message can have
 type Role struct {
@@ -131,7 +169,7 @@ func (cm *ChatManager) GetLLMContext(activeAgents []string) []llmmodels.Message 
 	for i := len(mergedMessages) - 1; i >= 0; i-- {
 		msg := mergedMessages[i]
 		msgTokens := len(cm.tokenizer.Encode(msg.Content, nil, nil))
-		if totalTokens + msgTokens <= cm.maxTokens {
+		if totalTokens+msgTokens <= cm.maxTokens {
 			trimmedMessages = append([]Message{msg}, trimmedMessages...)
 			totalTokens += msgTokens
 		} else {
@@ -150,10 +188,11 @@ func (cm *ChatManager) GetLLMContext(activeAgents []string) []llmmodels.Message 
 	logging.Info("LLM context prepared with %d messages", len(result))
 	return result
 }
+
 // GetLLMContextWithTags builds context with tag-based prioritization
 func (cm *ChatManager) GetLLMContextWithTags(activeAgents []string, relevantTags []string) []llmmodels.Message {
 	logging.Info("Building LLM context for active agents: %v with relevant tags: %v", activeAgents, relevantTags)
-	
+
 	// Build dynamic system prompt
 	var systemContent strings.Builder
 	systemContent.WriteString(cm.systemPrompt)
@@ -188,7 +227,7 @@ func (cm *ChatManager) GetLLMContextWithTags(activeAgents []string, relevantTags
 	sort.Slice(mergedMessages, func(i, j int) bool {
 		iHasRelevantTag := cm.hasRelevantTag(mergedMessages[i], relevantTags)
 		jHasRelevantTag := cm.hasRelevantTag(mergedMessages[j], relevantTags)
-		
+
 		if iHasRelevantTag != jHasRelevantTag {
 			return iHasRelevantTag // Relevant messages first
 		}
@@ -202,7 +241,7 @@ func (cm *ChatManager) GetLLMContextWithTags(activeAgents []string, relevantTags
 	var trimmedMessages []Message
 	for _, msg := range mergedMessages {
 		msgTokens := len(cm.tokenizer.Encode(msg.Content, nil, nil))
-		if totalTokens + msgTokens <= cm.maxTokens {
+		if totalTokens+msgTokens <= cm.maxTokens {
 			trimmedMessages = append(trimmedMessages, msg)
 			totalTokens += msgTokens
 		} else {
@@ -290,4 +329,40 @@ func ParseResponseText(responseText string) (thinks []string, regular string) {
 // ResetPluginPrompts clears all plugin-specific prompts
 func (cm *ChatManager) ResetPluginPrompts() {
 	cm.pluginPrompts = make(map[string]string)
+}
+
+// ApplyChatEvent applies chat-related events to the ChatManager
+func (cm *ChatManager) ApplyChatEvent(event interface{}) error {
+	switch e := event.(type) {
+	case *UserRequestReceivedEvent:
+		cm.AddMessage(RoleUser, e.RequestText, e.RequestID, "", nil)
+	case *ToolCallCompleted:
+		bytes, _ := json.Marshal(e.Results)
+		agentName := "" // Will be set by caller if needed
+		cm.AddMessage(RoleTool, string(bytes), e.RequestID, agentName, map[string]interface{}{
+			"function": e.Function,
+		})
+	case *ToolCallFailedEvent:
+		agentName := "" // Will be set by caller if needed
+		cm.AddMessage(RoleSystem, fmt.Sprintf("Tool Call failed '%s'", e.ErrorMsg), e.RequestID, agentName, nil)
+	case *AgentCallDecidedEvent:
+		cm.AddMessage(RoleSystem, fmt.Sprintf("Calling agent '%s'...", e.AgentName), e.RequestID, e.AgentName, nil)
+	case *AgentExecutionFailedEvent:
+		agentName := "" // Will be set by caller if needed
+		cm.AddMessage(RoleMindPalace, fmt.Sprintf("Error %s", e.ErrorMsg), e.RequestID, agentName, nil)
+	case *RequestCompletedEvent:
+		thinks, regular := ParseResponseText(e.ResponseText)
+		agentName := "" // Will be set by caller if needed
+		for _, think := range thinks {
+			cm.AddMessage(RoleHidden, think, e.RequestID, agentName, nil)
+		}
+		if regular != "" {
+			cm.AddMessage(RoleMindPalace, regular, e.RequestID, agentName, nil)
+		}
+	case *ToolCallStarted:
+		cm.AddMessage(RoleSystem, fmt.Sprintf("Tool Call started'%s'", e.Function), e.RequestID, "", nil)
+	default:
+		return fmt.Errorf("unsupported event type: %T", event)
+	}
+	return nil
 }

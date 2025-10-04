@@ -94,13 +94,13 @@ func (ro *RequestOrchestrator) DecideAgentCallCommand(event *UserRequestReceived
 	}
 
 	// Reset and populate plugin prompts in ChatManager for this call
-	ro.agg.chatManager.ResetPluginPrompts() // Add this method to ChatManager
+	ro.agg.chatState.GetChatManager().ResetPluginPrompts() // Add this method to ChatManager
 	for _, plugin := range plugins {
-		ro.agg.chatManager.SetPluginPrompt(plugin.Name(), plugin.SystemPrompt())
+		ro.agg.chatState.GetChatManager().SetPluginPrompt(plugin.Name(), plugin.SystemPrompt())
 	}
 
 	// Get LLM context with fresh plugin data
-	messages := ro.agg.chatManager.GetLLMContext(pluginNames)
+	messages := ro.agg.chatState.GetChatManager().GetLLMContext(pluginNames)
 	resp, err := ro.llmClient.CallLLM(messages, ro.gatherAgentTools(), event.RequestID, "")
 	if err != nil {
 		return nil, fmt.Errorf("LLM call failed: %v", err)
@@ -523,7 +523,7 @@ func (ro *RequestOrchestrator) CompleteRequestCommand(event *ToolCallCompleted) 
 	}
 	// Use tag-based context selection for better relevance
 	relevantTags := []string{"task", "completion", "response"} // Basic tags for completion context
-	messages := ro.agg.chatManager.GetLLMContextWithTags(nil, relevantTags)
+	messages := ro.agg.chatState.GetChatManager().GetLLMContextWithTags(nil, relevantTags)
 	resp, err := ro.llmClient.CallLLM(messages, nil, requestID, model)
 	if err != nil {
 		return nil, fmt.Errorf("error calling llm client: %w", err)
