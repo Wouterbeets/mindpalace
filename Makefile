@@ -8,8 +8,8 @@ BINARY_NAME = mindpalace
 PLUGIN_DIR = plugins
 BUILD_DIR = build
 MAIN_SRC = cmd/mindpalace/main.go
-PLUGINS = $(wildcard $(PLUGIN_DIR)/*/plugin.go)
-PLUGIN_OUTPUTS = $(patsubst $(PLUGIN_DIR)/%/plugin.go,$(PLUGIN_DIR)/%/%.so,$(PLUGINS))
+PLUGIN_NAMES = calendar notes plugingenerator taskmanager
+PLUGIN_OUTPUTS = $(foreach name, $(PLUGIN_NAMES), $(PLUGIN_DIR)/$(name)/$(name).so)
 MODELS_DIR = models
 WHISPER_MODEL = $(MODELS_DIR)/ggml-base.en.bin
 
@@ -18,14 +18,14 @@ RUN_ARGS ?=
 
 # Default target
 .PHONY: all
-all: build plugins
+all: whisper build plugins
 
 # Build the main binary
 .PHONY: build
-build: world download-model
+build: whisper world download-model
 	@echo "Building MindPalace binary..."
 	@mkdir -p $(BUILD_DIR)
-	PKG_CONFIG_PATH=/home/mindpalace/mindpalace/whisper-cpp/build/lib/pkgconfig:$PKG_CONFIG_PATH $(GO) build $(GOFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_SRC)
+	PKG_CONFIG_PATH=$(shell pwd)/whisper-cpp/build/lib/pkgconfig:$(PKG_CONFIG_PATH) CGO_LDFLAGS="-Wl,-rpath,$(shell pwd)/whisper-cpp/build/lib" $(GO) build $(GOFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_SRC)
 
 # Generate templ files (once at root)
 .PHONY: templ
@@ -37,16 +37,28 @@ templ:
 .PHONY: plugins
 plugins: templ $(PLUGIN_OUTPUTS)
 
-# Generic rule for building plugins
-$(PLUGIN_DIR)/%/%.so: $(PLUGIN_DIR)/%/plugin.go
+# Build plugins
+$(PLUGIN_DIR)/calendar/calendar.so: $(PLUGIN_DIR)/calendar/plugin.go
 	@echo "Building plugin: $@"
-	cd $(dir $<) && PKG_CONFIG_PATH=/home/mindpalace/mindpalace/whisper-cpp/build/lib/pkgconfig:$PKG_CONFIG_PATH $(GO) build $(GOFLAGS) -buildmode=plugin -o $(notdir $@) ./*.go
+	cd $(dir $<) && $(GO) build $(GOFLAGS) -buildmode=plugin -o calendar.so ./*.go
+
+$(PLUGIN_DIR)/notes/notes.so: $(PLUGIN_DIR)/notes/plugin.go
+	@echo "Building plugin: $@"
+	cd $(dir $<) && $(GO) build $(GOFLAGS) -buildmode=plugin -o notes.so ./*.go
+
+$(PLUGIN_DIR)/plugingenerator/plugingenerator.so: $(PLUGIN_DIR)/plugingenerator/plugin.go
+	@echo "Building plugin: $@"
+	cd $(dir $<) && $(GO) build $(GOFLAGS) -buildmode=plugin -o plugingenerator.so ./*.go
+
+$(PLUGIN_DIR)/taskmanager/taskmanager.so: $(PLUGIN_DIR)/taskmanager/plugin.go
+	@echo "Building plugin: $@"
+	cd $(dir $<) && $(GO) build $(GOFLAGS) -buildmode=plugin -o taskmanager.so ./*.go
 
 # Run the application with optional arguments
 .PHONY: run
 run: build plugins
 	@echo "Running MindPalace with args: $(RUN_ARGS)"
-	LD_LIBRARY_PATH=/home/mindpalace/mindpalace/whisper-cpp/build/src:$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) $(RUN_ARGS)
+	LD_LIBRARY_PATH=/home/mindpalace/mindpalace/whisper-cpp/build/lib:$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) $(RUN_ARGS)
 
 # Run with verbose logging
 .PHONY: run-verbose
@@ -58,7 +70,7 @@ run-verbose: build plugins
 .PHONY: run-debug
 run-debug: build plugins
 	@echo "Running MindPalace in debug mode..."
-        LD_LIBRARY_PATH=/home/mindpalace/mindpalace/whisper-cpp/build/lib:$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) -debug
+	LD_LIBRARY_PATH=/home/mindpalace/mindpalace/whisper-cpp/build/lib:$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) -debug
 
 # Run in headless mode
 .PHONY: run-headless
@@ -80,6 +92,12 @@ clean:
 	@echo "Cleaning up..."
 	rm -rf $(BUILD_DIR)
 	find $(PLUGIN_DIR) -name "*.so" -type f -delete
+
+# Clean everything including dependencies
+.PHONY: clean-all
+clean-all: clean
+	@echo "Cleaning all dependencies..."
+	rm -rf whisper-cpp
 
 # Install dependencies
 .PHONY: deps
@@ -139,11 +157,21 @@ $(WHISPER_MODEL):
 	@mkdir -p $(MODELS_DIR)
 	curl -L https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin -o $(WHISPER_MODEL)
 
+# Clone Whisper repository
+whisper-cpp:
+	@echo "Cloning Whisper repository..."
+	git clone https://github.com/ggerganov/whisper.cpp.git whisper-cpp
+
 # Build the Whisper library
 .PHONY: whisper
-whisper:
+whisper: whisper-cpp
 	@echo "Building Whisper library..."
-	cd whisper-cpp && CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=$(shell pwd)/whisper-cpp/build" make build
+	cd whisper-cpp && cmake -B build -DCMAKE_INSTALL_PREFIX=$(shell pwd)/whisper-cpp/build
+	cd whisper-cpp && cmake --build build --config Release
+	@echo "Installing Whisper library (ignoring bin install errors)..."
+	-cd whisper-cpp && cmake --install build || echo "Install completed with warnings (bins may not be installed)"
+	@echo "Setting up pkgconfig files..."
+	cd whisper-cpp/build/lib/pkgconfig && cp whisper.pc libwhisper.pc && cp whisper.pc libwhisper-linux.pc
 
 # Build the Godot world binary
 .PHONY: world
@@ -167,6 +195,7 @@ help:
 	@echo "  run-debug   : Run with debug logging"
 	@echo "  run-headless: Run in headless mode"
 	@echo "  clean       : Remove build artifacts"
+	@echo "  clean-all   : Remove all build artifacts and dependencies"
 	@echo "  deps        : Install dependencies"
 	@echo "  fmt         : Format code"
 	@echo "  test        : Run tests"
@@ -176,7 +205,7 @@ help:
 	@echo "  dev         : Start development mode with air"
 	@echo "  dev-verbose : Start development mode in verbose"
 	@echo "  world       : Build the Godot world binary and move to pkg/world"
-	@echo "  whisper     : Build the Whisper library"
+	@echo "  whisper     : Clone and build the Whisper library"
 	@echo "  help        : Show this help message"
 	@echo ""
 	@echo "Example: make run RUN_ARGS='-v --events custom_events.json'"

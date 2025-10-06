@@ -225,3 +225,37 @@ func TestTaskAggregate_Broadcast3DDelta_TaskCompleted(t *testing.T) {
 		t.Errorf("Expected delete action for 'task1_label', got %v", actions[1])
 	}
 }
+
+func TestTaskAggregate_GetCurrent3DState(t *testing.T) {
+	agg := NewTaskAggregate()
+
+	// Create a task
+	createEvent := &TaskCreatedEvent{
+		EventType: "taskmanager_TaskCreated",
+		TaskID:    "task1",
+		Title:     "Test Task",
+		Status:    StatusPending,
+		Priority:  PriorityMedium,
+	}
+	err := agg.ApplyEvent(createEvent)
+	if err != nil {
+		t.Fatalf("ApplyEvent failed: %v", err)
+	}
+
+	actions := agg.GetCurrent3DState()
+
+	// Should have 2 actions: create box and create label
+	if len(actions) != 2 {
+		t.Errorf("Expected 2 actions, got %d", len(actions))
+	}
+
+	boxAction := actions[0]
+	if boxAction.Type != "create" || boxAction.NodeID != "task1" {
+		t.Errorf("Expected create action for 'task1', got %v", boxAction)
+	}
+
+	labelAction := actions[1]
+	if labelAction.Type != "create" || labelAction.NodeID != "task1_label" {
+		t.Errorf("Expected create action for 'task1_label', got %v", labelAction)
+	}
+}

@@ -171,9 +171,10 @@ type FullStateEnvelope struct {
 	Actions   []DeltaAction `json:"actions"`
 }
 
-// ThreeDUIBroadcaster allows aggregates to emit 3D deltas on events.
+// ThreeDUIBroadcaster allows aggregates to emit 3D signals on events.
 // Implement if the aggregate wants 3D UI (e.g., tasks as cubes).
 type ThreeDUIBroadcaster interface {
 	Broadcast3DDelta(event Event) []DeltaAction // Returns actions for this event (empty if irrelevant).
+	GetCurrent3DState() []DeltaAction           // Returns actions to create all current 3D objects.
 	Clone() Aggregate                           // Returns a fresh copy for replaying events.
 }

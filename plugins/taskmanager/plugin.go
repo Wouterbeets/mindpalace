@@ -793,6 +793,41 @@ func (ta *TaskAggregate) GetCustomUI() fyne.CanvasObject {
 	return container.NewHScroll(board)
 }
 
+func (a *TaskAggregate) GetCurrent3DState() []eventsourcing.DeltaAction {
+	a.Mu.RLock()
+	defer a.Mu.RUnlock()
+	theme := ui3d.DefaultTheme()
+	var actions []eventsourcing.DeltaAction
+
+	sortedIDs := a.getSortedTaskIDs()
+	for i, taskID := range sortedIDs {
+		task, exists := a.Tasks[taskID]
+		if !exists {
+			continue
+		}
+		pos := ui3d.PositionInCircle(i, 6.0+float64(i)*0.5, 2.0)
+		pos[0] += 0
+		pos[1] += 0
+		pos[2] += 20
+		color := priorityColor(task.Priority)
+		action := ui3d.CreateStandardObject(ui3d.StandardObject{
+			ID:       taskID,
+			MeshType: "box",
+			Position: pos,
+			Label:    &ui3d.LabelConfig{Text: task.Title},
+			Theme:    theme,
+			Extra: map[string]interface{}{
+				"event_type": "task",
+				"material_override": map[string]interface{}{
+					"albedo_color": color,
+				},
+			},
+		})
+		actions = append(actions, action...)
+	}
+	return actions
+}
+
 func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourcing.DeltaAction {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()

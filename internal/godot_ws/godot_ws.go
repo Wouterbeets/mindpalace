@@ -1,6 +1,7 @@
 package godot_ws
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"mindpalace/internal/audio"
 	"mindpalace/internal/orchestration"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
@@ -25,6 +27,7 @@ type GodotServer struct {
 	eventBus          eventsourcing.EventBus
 	pendingKeypresses map[string]chan map[string]interface{}
 	pendingMu         sync.RWMutex
+	transcriber       *audio.VoiceTranscriber
 }
 
 type ClientState struct {
@@ -79,6 +82,10 @@ func (s *GodotServer) SetEventBus(eb eventsourcing.EventBus) {
 
 func (s *GodotServer) SetEventStore(es eventsourcing.EventStore) {
 	s.eventStore = es
+}
+
+func (s *GodotServer) SetTranscriber(vt *audio.VoiceTranscriber) {
+	s.transcriber = vt
 }
 
 func (s *GodotServer) SendTranscription(text string) {
@@ -150,6 +157,8 @@ func (s *GodotServer) handleTextMessage(conn *websocket.Conn, message []byte) {
 		s.handlePosition3DObjectEvent(msg)
 	case "keypress_ack":
 		s.handleKeypressAck(msg)
+	case "toggle_mic":
+		s.handleToggleMic(msg)
 
 	default:
 		logging.Info("Unknown message type from Godot: %s", msgType)
@@ -277,6 +286,25 @@ func (s *GodotServer) handleKeypressAck(msg map[string]interface{}) {
 	s.pendingMu.Lock()
 	delete(s.pendingKeypresses, correlationID)
 	s.pendingMu.Unlock()
+}
+
+func (s *GodotServer) handleToggleMic(msg map[string]interface{}) {
+	logging.Info("Handling toggle mic from Godot")
+	if s.transcriber == nil {
+		logging.Error("Transcriber not set")
+		return
+	}
+
+	// Check if capture is currently running
+	if s.transcriber.IsCaptureRunning() {
+		logging.Info("Stopping microphone capture")
+		s.transcriber.StopCapture()
+	} else {
+		logging.Info("Starting microphone capture")
+		if err := s.transcriber.StartCapture(context.Background()); err != nil {
+			logging.Error("Failed to start microphone capture: %v", err)
+		}
+	}
 }
 
 func (s *GodotServer) handleReadyMessage(conn *websocket.Conn, msg map[string]interface{}) {

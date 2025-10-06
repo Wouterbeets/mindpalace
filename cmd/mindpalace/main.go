@@ -8,8 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"context"
-
 	"mindpalace/internal/audio"
 	"mindpalace/internal/godot_ws"
 	"mindpalace/internal/llmprocessor"
@@ -82,7 +80,11 @@ func main() {
 	})
 
 	// Basic setup
-	store, _ := eventsourcing.NewSQLiteEventStore(storagePath)
+	store, err := eventsourcing.NewSQLiteEventStore(storagePath)
+	if err != nil {
+		logging.Error("Failed to create event store: %v", err)
+		os.Exit(1)
+	}
 	defer store.Close()
 	aggStore := aggregate.NewAggregateManager()
 	ep := eventsourcing.NewEventProcessor(store, nil)
@@ -151,8 +153,9 @@ func main() {
 	server.SetAggStore(aggStore)
 	server.SetEventStore(store)
 	server.SetEventBus(eb)
+	server.SetTranscriber(transcriber)
 
-	// Start the voice transcriber (for processing)
+	// Start the voice transcriber (for processing, without auto-capture)
 	err = transcriber.Start(func(text string) {
 		logging.Info("AUDIO: Transcription result: '%s'", text)
 		// Send transcription to Godot for display
@@ -161,14 +164,6 @@ func main() {
 	if err != nil {
 		logging.Error("Failed to start voice transcriber: %v", err)
 		os.Exit(1)
-	}
-
-	// Start audio capture immediately on startup (bypassing Godot signal)
-	logging.Info("AUDIO: Starting audio capture on application startup")
-	if err := transcriber.StartCapture(context.Background()); err != nil {
-		logging.Error("Failed to start audio capture on startup: %v", err)
-	} else {
-		logging.Info("AUDIO: Successfully started audio capture on startup")
 	}
 
 	go server.Start()

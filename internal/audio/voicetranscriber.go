@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -34,6 +33,10 @@ type VoiceTranscriber struct {
 	captureCancel         context.CancelFunc
 	stream                *portaudio.Stream
 	fullTranscription     string
+	chunkChan             chan []float32
+	transcriptionCtx      context.Context
+	transcriptionCancel   context.CancelFunc
+	lastProcessedEnd      float64 // Tracks end time of last processed segment for overlap deduplication
 }
 
 // NewVoiceTranscriber initializes a new VoiceTranscriber instance with go-whisper
@@ -73,6 +76,21 @@ func (vt *VoiceTranscriber) SetSessionEventCallback(callback func(eventType stri
 	vt.sessionCallback = callback
 }
 
+// transcriptionWorker processes chunks asynchronously
+func (vt *VoiceTranscriber) transcriptionWorker() {
+	for {
+		select {
+		case chunk, ok := <-vt.chunkChan:
+			if !ok {
+				return // channel closed
+			}
+			vt.transcribeAudio(chunk)
+		case <-vt.transcriptionCtx.Done():
+			return
+		}
+	}
+}
+
 // Start initializes the transcriber for receiving audio chunks
 func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 	logging.Debug("AUDIO: Starting voice transcriber")
@@ -89,7 +107,13 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 	vt.startTime = time.Now()
 	vt.totalSegments = 0
 	vt.fullTranscription = ""
+	vt.lastProcessedEnd = 0.0
 	vt.running = true
+	vt.chunkChan = make(chan []float32, 10) // buffer for chunks
+	vt.transcriptionCtx, vt.transcriptionCancel = context.WithCancel(context.Background())
+
+	// Start transcription goroutine
+	go vt.transcriptionWorker()
 
 	logging.Info("AUDIO: Voice transcriber started with session %s", vt.sessionID)
 	return nil
@@ -105,6 +129,10 @@ func (vt *VoiceTranscriber) Stop() {
 	}
 
 	vt.running = false
+	if vt.transcriptionCancel != nil {
+		vt.transcriptionCancel()
+	}
+	close(vt.chunkChan)
 
 	duration := time.Since(vt.startTime).Seconds()
 	if vt.sessionCallback != nil {
@@ -142,16 +170,18 @@ func (vt *VoiceTranscriber) ProcessAudioChunk(pcmData []byte) error {
 	vt.mu.Lock()
 	vt.streamProcessor.AddSamples(samples)
 
-	// Process any available chunks
+	// Send any available chunks to the transcription worker
 	for {
 		chunk, ok := vt.streamProcessor.GetNextChunk()
 		if !ok {
 			break
 		}
-		vt.mu.Unlock()
-		logging.Info("AUDIO: Processing overlapped chunk of %d samples (%.1fs)", len(chunk), float64(len(chunk))/float64(vt.sampleRate))
-		vt.transcribeAudio(chunk)
-		vt.mu.Lock()
+		select {
+		case vt.chunkChan <- chunk:
+			logging.Info("AUDIO: Sent overlapped chunk of %d samples (%.1fs) to transcription worker", len(chunk), float64(len(chunk))/float64(vt.sampleRate))
+		default:
+			logging.Info("AUDIO: Chunk channel full, dropping chunk")
+		}
 	}
 	vt.mu.Unlock()
 
@@ -162,24 +192,28 @@ func (vt *VoiceTranscriber) ProcessAudioChunk(pcmData []byte) error {
 func (vt *VoiceTranscriber) transcribeAudio(audio []float32) {
 	logging.Info("AUDIO: Transcribing %d audio samples (%.1fs)", len(audio), float64(len(audio))/float64(vt.sampleRate))
 
-	// Save audio to file for debugging
-	if err := saveAudioToWav(audio, fmt.Sprintf("debug_audio_%d.wav", time.Now().UnixNano())); err != nil {
-		logging.Error("AUDIO: Failed to save debug audio: %v", err)
-	} else {
-		logging.Debug("AUDIO: Saved debug audio to file")
-	}
-
 	vt.task.CopyParams()
 	vt.task.SetLanguage("auto")
 	vt.task.SetTranslate(false)
 	ts := time.Since(vt.startTime)
 	err := vt.task.Transcribe(context.Background(), ts, audio, func(seg *schema.Segment) {
 		vt.mu.Lock()
+		// Calculate absolute timestamps: chunk start time + relative segment time
+		absStartSec := float64(ts+time.Duration(seg.Start)) / 1e9
+		absEndSec := float64(ts+time.Duration(seg.End)) / 1e9
+		// Skip segments that overlap with previously processed audio
+		if absStartSec < vt.lastProcessedEnd {
+			vt.mu.Unlock()
+			logging.Debug("AUDIO: Skipping overlapping segment: absStart=%.2f, lastEnd=%.2f", absStartSec, vt.lastProcessedEnd)
+			return
+		}
 		vt.totalSegments++
+		vt.fullTranscription += seg.Text + " "
+		vt.lastProcessedEnd = absEndSec
 		vt.mu.Unlock()
-		logging.Debug("AUDIO: New segment: %s", seg.Text)
+		logging.Debug("AUDIO: New segment: %s (absStart=%.2f, absEnd=%.2f)", seg.Text, absStartSec, absEndSec)
 		if vt.transcriptionCallback != nil {
-			vt.transcriptionCallback(seg.Text)
+			vt.transcriptionCallback(vt.fullTranscription)
 		}
 	})
 	if err != nil {
@@ -203,52 +237,6 @@ func convertPCM16ToFloat32(pcmData []byte) ([]float32, error) {
 	}
 
 	return samples, nil
-}
-
-// saveAudioToWav saves float32 audio samples to a WAV file for debugging
-func saveAudioToWav(samples []float32, filename string) error {
-	file, err := os.Create(filename)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	// WAV file header
-	sampleRate := uint32(16000)
-	bitsPerSample := uint16(16)
-	numChannels := uint16(1)
-	byteRate := sampleRate * uint32(numChannels) * uint32(bitsPerSample/8)
-	blockAlign := numChannels * bitsPerSample / 8
-	dataSize := uint32(len(samples) * 2) // 2 bytes per sample
-	fileSize := 36 + dataSize
-
-	// Write WAV header
-	header := []byte("RIFF")
-	binary.Write(file, binary.LittleEndian, header)
-	binary.Write(file, binary.LittleEndian, fileSize)
-	header = []byte("WAVE")
-	binary.Write(file, binary.LittleEndian, header)
-	header = []byte("fmt ")
-	binary.Write(file, binary.LittleEndian, header)
-	binary.Write(file, binary.LittleEndian, uint32(16)) // fmt chunk size
-	binary.Write(file, binary.LittleEndian, uint16(1))  // PCM format
-	binary.Write(file, binary.LittleEndian, numChannels)
-	binary.Write(file, binary.LittleEndian, sampleRate)
-	binary.Write(file, binary.LittleEndian, byteRate)
-	binary.Write(file, binary.LittleEndian, blockAlign)
-	binary.Write(file, binary.LittleEndian, bitsPerSample)
-	header = []byte("data")
-	binary.Write(file, binary.LittleEndian, header)
-	binary.Write(file, binary.LittleEndian, dataSize)
-
-	// Write audio data
-	for _, sample := range samples {
-		// Convert float32 to int16
-		intSample := int16(sample * 32767.0)
-		binary.Write(file, binary.LittleEndian, intSample)
-	}
-
-	return nil
 }
 
 // StartCapture starts microphone capture using PortAudio
@@ -346,7 +334,14 @@ func (vt *VoiceTranscriber) StopCapture() {
 	}
 }
 
+func (vt *VoiceTranscriber) IsCaptureRunning() bool {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
+	return vt.captureCtx != nil
+}
+
 func (vt *VoiceTranscriber) Close() error {
+	vt.Stop()
 	vt.StopCapture()
 	if vt.task != nil {
 		if err := vt.task.Close(); err != nil {

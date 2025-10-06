@@ -88,17 +88,7 @@ func (pm *PluginManager) LoadPlugins(pluginDir string) {
 		plugin, err := pm.loadPlugin(soFile)
 		if err != nil {
 			logging.Error("Failed to load plugin %s: %v", soFile, err)
-			// Attempt to rebuild the plugin if loading failed
-			if err := pm.buildPlugin(dir, soFile); err != nil {
-				logging.Error("Failed to rebuild plugin %s: %v", dir, err)
-				continue
-			}
-			// Try loading again after rebuilding
-			plugin, err = pm.loadPlugin(soFile)
-			if err != nil {
-				logging.Error("Failed to load plugin after rebuild %s: %v", soFile, err)
-				continue
-			}
+			continue
 		}
 
 		if plugin != nil {
@@ -207,6 +197,12 @@ func (pm *PluginManager) buildPlugin(dir, soFile string) error {
 	cmd := exec.Command("go", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+
+	// Set environment variables needed for CGO builds (same as Makefile)
+	cmd.Env = append(os.Environ(),
+		"PKG_CONFIG_PATH="+os.Getenv("PKG_CONFIG_PATH"),
+		"CGO_LDFLAGS="+os.Getenv("CGO_LDFLAGS"),
+	)
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("build command failed: %w", err)
