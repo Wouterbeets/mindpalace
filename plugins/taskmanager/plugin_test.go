@@ -184,7 +184,8 @@ func TestTaskAggregate_Broadcast3DDelta_TaskCreated(t *testing.T) {
 	// Apply the event first to add to aggregate
 	agg.ApplyEvent(event)
 
-	actions := agg.Broadcast3DDelta(event)
+	signal := agg.Broadcast3DDelta(event)
+	actions := signal.Actions
 
 	// Should have 2 actions: box and label
 	if len(actions) != 2 {
@@ -210,7 +211,8 @@ func TestTaskAggregate_Broadcast3DDelta_TaskCompleted(t *testing.T) {
 		TaskID:    "task1",
 	}
 
-	actions := agg.Broadcast3DDelta(event)
+	signal := agg.Broadcast3DDelta(event)
+	actions := signal.Actions
 
 	// Should have 2 actions: delete box and delete label
 	if len(actions) != 2 {
@@ -242,20 +244,29 @@ func TestTaskAggregate_GetCurrent3DState(t *testing.T) {
 		t.Fatalf("ApplyEvent failed: %v", err)
 	}
 
-	actions := agg.GetCurrent3DState()
+	signal := agg.GetCurrent3DState()
 
 	// Should have 2 actions: create box and create label
-	if len(actions) != 2 {
-		t.Errorf("Expected 2 actions, got %d", len(actions))
+	if len(signal.Actions) != 2 {
+		t.Errorf("Expected 2 actions, got %d", len(signal.Actions))
 	}
 
-	boxAction := actions[0]
+	boxAction := signal.Actions[0]
 	if boxAction.Type != "create" || boxAction.NodeID != "task1" {
 		t.Errorf("Expected create action for 'task1', got %v", boxAction)
 	}
 
-	labelAction := actions[1]
+	labelAction := signal.Actions[1]
 	if labelAction.Type != "create" || labelAction.NodeID != "task1_label" {
 		t.Errorf("Expected create action for 'task1_label', got %v", labelAction)
+	}
+
+	// Check state summary
+	if signal.StateSummary == nil {
+		t.Error("Expected state summary, got nil")
+	}
+	tasks, ok := signal.StateSummary["tasks"].([]map[string]interface{})
+	if !ok || len(tasks) != 1 {
+		t.Errorf("Expected 1 task in summary, got %v", signal.StateSummary)
 	}
 }

@@ -793,13 +793,15 @@ func (ta *TaskAggregate) GetCustomUI() fyne.CanvasObject {
 	return container.NewHScroll(board)
 }
 
-func (a *TaskAggregate) GetCurrent3DState() []eventsourcing.DeltaAction {
+func (a *TaskAggregate) GetCurrent3DState() eventsourcing.Signal {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()
 	theme := ui3d.DefaultTheme()
 	var actions []eventsourcing.DeltaAction
+	var stateSummary = make(map[string]interface{})
 
 	sortedIDs := a.getSortedTaskIDs()
+	taskSummaries := []map[string]interface{}{}
 	for i, taskID := range sortedIDs {
 		task, exists := a.Tasks[taskID]
 		if !exists {
@@ -824,11 +826,20 @@ func (a *TaskAggregate) GetCurrent3DState() []eventsourcing.DeltaAction {
 			},
 		})
 		actions = append(actions, action...)
+		taskSummaries = append(taskSummaries, map[string]interface{}{
+			"id":       taskID,
+			"position": pos,
+			"color":    color,
+		})
 	}
-	return actions
+	stateSummary["tasks"] = taskSummaries
+	return eventsourcing.Signal{
+		Actions:      actions,
+		StateSummary: stateSummary,
+	}
 }
 
-func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourcing.DeltaAction {
+func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) eventsourcing.Signal {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()
 	theme := ui3d.DefaultTheme()
@@ -871,7 +882,7 @@ func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourc
 		if len(actions) > 1 {
 			actions[1].Properties["event_type"] = "task_created"
 		}
-		return actions
+		return eventsourcing.Signal{Actions: actions}
 	case *TaskUpdatedEvent:
 		// For updates, recreate the task at the correct position
 		sortedIDs := a.getSortedTaskIDs()
@@ -913,18 +924,18 @@ func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourc
 		if len(newActions) > 1 {
 			newActions[1].Properties["event_type"] = "task_updated"
 		}
-		return append(oldActions, newActions...)
+		return eventsourcing.Signal{Actions: append(oldActions, newActions...)}
 	case *TaskCompletedEvent:
-		return []eventsourcing.DeltaAction{{
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{{
 			Type:   "delete",
 			NodeID: e.TaskID,
 		}, {
 			Type:   "delete",
 			NodeID: e.TaskID + "_label",
-		}}
+		}}}
 		// ... similar for Update/Delete
 	}
-	return nil
+	return eventsourcing.Signal{}
 }
 
 func (a *TaskAggregate) Clone() eventsourcing.Aggregate {

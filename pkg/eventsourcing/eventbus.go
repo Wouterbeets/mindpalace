@@ -54,18 +54,19 @@ func (eb *SimpleEventBus) Publish(event Event) {
 		}
 	}
 
-	// Emit 3D deltas
+	// Emit 3D signals
 	for _, agg := range eb.aggStore.AllAggregates() {
 		if broadcaster, ok := agg.(ThreeDUIBroadcaster); ok {
-			actions := broadcaster.Broadcast3DDelta(event)
-			if len(actions) > 0 {
+			signal := broadcaster.Broadcast3DDelta(event)
+			if len(signal.Actions) > 0 {
 				select {
 				case eb.deltaChan <- DeltaEnvelope{
-					Type:      "delta",
-					Aggregate: agg.ID(),
-					EventID:   ISOTimestamp(),
-					Timestamp: ISOTimestamp(),
-					Actions:   actions,
+					Type:         "signal",
+					Aggregate:    agg.ID(),
+					EventID:      ISOTimestamp(),
+					Timestamp:    ISOTimestamp(),
+					StateSummary: signal.StateSummary,
+					Actions:      signal.Actions,
 				}:
 				default: // Drop silently to avoid blocking
 				}

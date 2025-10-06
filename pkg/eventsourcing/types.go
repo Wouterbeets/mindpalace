@@ -157,11 +157,19 @@ type AnimationSpec struct {
 
 // DeltaEnvelope wraps actions for broadcast (includes context for Godot parsing).
 type DeltaEnvelope struct {
-	Type      string        `json:"type"`      // Always "delta"
-	Aggregate string        `json:"aggregate"` // e.g., "taskmanager"
-	EventID   string        `json:"event_id"`  // For ordering/resync
-	Timestamp string        `json:"timestamp"` // ISO for sorting
-	Actions   []DeltaAction `json:"actions"`
+	Type         string                 `json:"type"`                    // "delta" or "signal"
+	Aggregate    string                 `json:"aggregate"`               // e.g., "taskmanager"
+	EventID      string                 `json:"event_id"`                // For ordering/resync
+	Timestamp    string                 `json:"timestamp"`               // ISO for sorting
+	IsFullState  bool                   `json:"is_full_state,omitempty"` // True for full snapshots
+	StateSummary map[string]interface{} `json:"state_summary,omitempty"` // Current state summary
+	Actions      []DeltaAction          `json:"actions"`
+}
+
+// Signal for Godot: actions to execute + current state summary.
+type Signal struct {
+	Actions      []DeltaAction          `json:"actions"`
+	StateSummary map[string]interface{} `json:"state_summary"`
 }
 
 // FullStateEnvelope for initial syncs/queries.
@@ -174,7 +182,7 @@ type FullStateEnvelope struct {
 // ThreeDUIBroadcaster allows aggregates to emit 3D signals on events.
 // Implement if the aggregate wants 3D UI (e.g., tasks as cubes).
 type ThreeDUIBroadcaster interface {
-	Broadcast3DDelta(event Event) []DeltaAction // Returns actions for this event (empty if irrelevant).
-	GetCurrent3DState() []DeltaAction           // Returns actions to create all current 3D objects.
-	Clone() Aggregate                           // Returns a fresh copy for replaying events.
+	Broadcast3DDelta(event Event) Signal // Returns signal for this event.
+	GetCurrent3DState() Signal           // Returns signal for full current state.
+	Clone() Aggregate                    // Returns a fresh copy for replaying events.
 }

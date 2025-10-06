@@ -327,8 +327,7 @@ func (s *GodotServer) sendFullState(conn *websocket.Conn) {
 		return
 	}
 
-	logging.Info("Replaying event history to Godot client")
-	events := s.eventStore.GetEvents()
+	logging.Info("Sending full state to Godot client")
 	totalActions := 0
 
 	// Send zones first
@@ -343,52 +342,26 @@ func (s *GodotServer) sendFullState(conn *websocket.Conn) {
 	}
 	conn.WriteJSON(zonesMsg)
 
-	// Group aggregates by ID for replay
-	replayAggs := make(map[string]eventsourcing.ThreeDUIBroadcaster)
+	// For each aggregate, get current state
 	for _, agg := range s.aggStore.AllAggregates() {
 		if broadcaster, ok := agg.(eventsourcing.ThreeDUIBroadcaster); ok {
-			replayAggs[agg.ID()] = broadcaster
-		}
-	}
-
-	// For each aggregate, create a clone and replay events
-	for aggID, originalBroadcaster := range replayAggs {
-		replayAgg := originalBroadcaster.Clone()
-		if replayAgg == nil {
-			logging.Error("Clone returned nil for aggregate %s", aggID)
-			continue
-		}
-		replayBroadcaster, ok := replayAgg.(eventsourcing.ThreeDUIBroadcaster)
-		if !ok {
-			logging.Error("Cloned aggregate %s does not implement ThreeDUIBroadcaster", aggID)
-			continue
-		}
-
-		actions := []eventsourcing.DeltaAction{}
-		for _, event := range events {
-			eventActions := replayBroadcaster.Broadcast3DDelta(event)
-			actions = append(actions, eventActions...)
-		}
-
-		logging.Info("Aggregate %s replayed %d events, sending %d actions", aggID, len(events), len(actions))
-		totalActions += len(actions)
-		if len(actions) > 0 {
-			// Send actions one by one with delay to see the process unfold
-			for i, action := range actions {
+			signal := broadcaster.GetCurrent3DState()
+			logging.Info("Aggregate %s sending %d actions for full state", agg.ID(), len(signal.Actions))
+			totalActions += len(signal.Actions)
+			if len(signal.Actions) > 0 {
+				// Send all actions instantly for full state
 				env := eventsourcing.DeltaEnvelope{
-					Type:      "delta",
-					Aggregate: aggID,
-					EventID:   fmt.Sprintf("replay-%d", i+1),
-					Timestamp: eventsourcing.ISOTimestamp(),
-					Actions:   []eventsourcing.DeltaAction{action},
+					Type:         "signal",
+					IsFullState:  true,
+					Aggregate:    agg.ID(),
+					StateSummary: signal.StateSummary,
+					Actions:      signal.Actions,
 				}
 				err := conn.WriteJSON(env)
 				if err != nil {
-					logging.Error("Error sending replay action to Godot: %v", err)
+					logging.Error("Error sending full state to Godot: %v", err)
 					return
 				}
-				// Delay to allow Godot to process each action
-				time.Sleep(40 * time.Millisecond)
 			}
 		}
 	}
