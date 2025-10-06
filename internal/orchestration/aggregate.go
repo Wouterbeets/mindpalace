@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"math"
 	"regexp"
 	"strings"
 
@@ -24,6 +25,7 @@ type OrchestrationAggregate struct {
 	AgentStates      map[string]*AgentState
 	RequestIDs       []string
 	DisplayInfos     map[string]*DisplayInfo
+	PositionIndex    int
 }
 
 func NewOrchestrationAggregate() *OrchestrationAggregate {
@@ -38,6 +40,7 @@ func NewOrchestrationAggregate() *OrchestrationAggregate {
 		AgentStates:      make(map[string]*AgentState),
 		RequestIDs:       make([]string, 0),
 		DisplayInfos:     make(map[string]*DisplayInfo),
+		PositionIndex:    0,
 	}
 }
 
@@ -700,45 +703,54 @@ func init() {
 	eventsourcing.RegisterEvent("orchestration_RequestCompleted", func() eventsourcing.Event { return &RequestCompletedEvent{} })
 }
 
+func (a *OrchestrationAggregate) nextPosition() []float64 {
+	radius := 6.0
+	height := -1.0 - float64(a.PositionIndex)*0.25
+	angle := 2 * math.Pi * float64(a.PositionIndex) / 64
+	x := radius * math.Cos(angle)
+	z := radius * math.Sin(angle)
+	a.PositionIndex++
+	return []float64{x, height, z}
+}
+
 func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourcing.DeltaAction {
 	theme := ui3d.DefaultTheme()
 	switch e := event.(type) {
+	// Orchestration events
 	case *UserRequestReceivedEvent:
-		// Find the index of this request in RequestIDs
-		requestIndex := -1
-		for i, id := range a.RequestIDs {
-			if id == e.RequestID {
-				requestIndex = i
-				break
+		pos := a.nextPosition()
+		box := ui3d.CreateBox(fmt.Sprintf("request_%s", e.RequestID), pos, theme)
+		box.Properties["event_type"] = "user_request_received"
+		box.Properties["material_override"] = map[string]interface{}{
+			"albedo_color": []float64{0, 1, 0, 1}, // Green for user request
+		}
+		if displayInfo, exists := a.DisplayInfos[box.NodeID]; exists {
+			box.Properties["display_info"] = map[string]interface{}{
+				"title":       displayInfo.Title,
+				"description": displayInfo.Description,
+				"details":     displayInfo.Details,
 			}
 		}
-		if requestIndex >= 0 {
-			pos := ui3d.PositionInGrid(float64(requestIndex), 0, 2.0)
-			pos[0] = pos[2] // Move Z spacing to X axis
-			pos[1] = -1.0   // Underground
-			pos[2] = 0.0
-			actions := ui3d.CreateCard(fmt.Sprintf("request_%s", e.RequestID), "User Request", pos, theme)
-			for i := range actions {
-				if actions[i].Properties == nil {
-					actions[i].Properties = make(map[string]interface{})
-				}
-				actions[i].Properties["event_type"] = "user_request_received"
-				if displayInfo, exists := a.DisplayInfos[actions[i].NodeID]; exists {
-					actions[i].Properties["display_info"] = map[string]interface{}{
-						"title":       displayInfo.Title,
-						"description": displayInfo.Description,
-						"details":     displayInfo.Details,
-					}
-				}
+		label := ui3d.CreateLabel(fmt.Sprintf("request_%s_label", e.RequestID), "User Request", []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
+		label.Properties["event_type"] = "user_request_received"
+		if displayInfo, exists := a.DisplayInfos[label.NodeID]; exists {
+			label.Properties["display_info"] = map[string]interface{}{
+				"title":       displayInfo.Title,
+				"description": displayInfo.Description,
+				"details":     displayInfo.Details,
 			}
-			return actions
 		}
+		return []eventsourcing.DeltaAction{box, label}
 	case *AgentCallDecidedEvent:
-		pos := []float64{0, 1, 0} // Near orchestrator
-		sphere := ui3d.CreateSphere(fmt.Sprintf("agent_%s", e.RequestID), pos, theme)
-		sphere.Properties["event_type"] = "agent_call_decided"
-		if displayInfo, exists := a.DisplayInfos[sphere.NodeID]; exists {
-			sphere.Properties["display_info"] = map[string]interface{}{
+		pos := a.nextPosition()
+		box := ui3d.CreateBox(fmt.Sprintf("agent_%s", e.RequestID), pos, theme)
+		box.Properties["event_type"] = "agent_call_decided"
+		// Color the block based on the agent (blue for agents)
+		box.Properties["material_override"] = map[string]interface{}{
+			"albedo_color": []float64{0, 0, 1, 1}, // Blue for agent
+		}
+		if displayInfo, exists := a.DisplayInfos[box.NodeID]; exists {
+			box.Properties["display_info"] = map[string]interface{}{
 				"title":       displayInfo.Title,
 				"description": displayInfo.Description,
 				"details":     displayInfo.Details,
@@ -753,11 +765,14 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []e
 				"details":     displayInfo.Details,
 			}
 		}
-		return []eventsourcing.DeltaAction{sphere, label}
+		return []eventsourcing.DeltaAction{box, label}
 	case *ToolCallRequestPlaced:
-		pos := []float64{2, 0, 0} // Side
+		pos := a.nextPosition()
 		box := ui3d.CreateBox(fmt.Sprintf("tool_call_%s", e.ToolCallID), pos, theme)
 		box.Properties["event_type"] = "tool_call_started"
+		box.Properties["material_override"] = map[string]interface{}{
+			"albedo_color": []float64{1, 1, 0, 1}, // Yellow for tool call
+		}
 		if displayInfo, exists := a.DisplayInfos[box.NodeID]; exists {
 			box.Properties["display_info"] = map[string]interface{}{
 				"title":       displayInfo.Title,
@@ -776,49 +791,44 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []e
 		}
 		return []eventsourcing.DeltaAction{box, label}
 	case *ToolCallStarted:
-		// Update existing tool call
-		return []eventsourcing.DeltaAction{{
-			Type:   "update",
-			NodeID: fmt.Sprintf("tool_call_%s_label", e.ToolCallID),
-			Properties: map[string]interface{}{
-				"text":       fmt.Sprintf("Tool: %s (Started)", e.Function),
-				"event_type": "tool_call_started",
-			},
-		}}
+		pos := a.nextPosition()
+		box := ui3d.CreateBox(fmt.Sprintf("tool_call_started_%s", e.ToolCallID), pos, theme)
+		box.Properties["event_type"] = "tool_call_started"
+		box.Properties["material_override"] = map[string]interface{}{
+			"albedo_color": []float64{1, 0.5, 0, 1}, // Orange for tool call started
+		}
+		return []eventsourcing.DeltaAction{box}
 	case *ToolCallCompleted:
-		// Update to completed
-		return []eventsourcing.DeltaAction{{
-			Type:   "update",
-			NodeID: fmt.Sprintf("tool_call_%s_label", e.ToolCallID),
-			Properties: map[string]interface{}{
-				"text":       fmt.Sprintf("Tool: %s (Completed)", e.Function),
-				"event_type": "tool_call_completed",
-			},
-		}}
+		pos := a.nextPosition()
+		box := ui3d.CreateBox(fmt.Sprintf("tool_call_completed_%s", e.ToolCallID), pos, theme)
+		box.Properties["event_type"] = "tool_call_completed"
+		box.Properties["material_override"] = map[string]interface{}{
+			"albedo_color": []float64{0, 1, 0, 1}, // Green for completed
+		}
+		return []eventsourcing.DeltaAction{box}
 	case *ToolCallFailedEvent:
-		// Update to failed
-		return []eventsourcing.DeltaAction{{
-			Type:   "update",
-			NodeID: fmt.Sprintf("tool_call_%s_label", e.ToolCallID),
-			Properties: map[string]interface{}{
-				"text":       fmt.Sprintf("Tool: %s (Failed)", e.Function),
-				"event_type": "tool_call_failed",
-			},
-		}}
+		pos := a.nextPosition()
+		box := ui3d.CreateBox(fmt.Sprintf("tool_call_failed_%s", e.ToolCallID), pos, theme)
+		box.Properties["event_type"] = "tool_call_failed"
+		box.Properties["material_override"] = map[string]interface{}{
+			"albedo_color": []float64{1, 0, 0, 1}, // Red for failed
+		}
+		return []eventsourcing.DeltaAction{box}
 	case *AgentExecutionFailedEvent:
-		// Update agent
-		return []eventsourcing.DeltaAction{{
-			Type:   "update",
-			NodeID: fmt.Sprintf("agent_%s_label", e.RequestID),
-			Properties: map[string]interface{}{
-				"text":       fmt.Sprintf("Agent: %s (Failed)", a.AgentStates[e.RequestID].AgentName),
-				"event_type": "agent_execution_failed",
-			},
-		}}
+		pos := a.nextPosition()
+		box := ui3d.CreateBox(fmt.Sprintf("agent_failed_%s", e.RequestID), pos, theme)
+		box.Properties["event_type"] = "agent_execution_failed"
+		box.Properties["material_override"] = map[string]interface{}{
+			"albedo_color": []float64{1, 0, 0, 1}, // Red for failed
+		}
+		return []eventsourcing.DeltaAction{box}
 	case *RequestCompletedEvent:
-		pos := []float64{4, -1, 0} // Underground completed
+		pos := a.nextPosition()
 		box := ui3d.CreateBox(fmt.Sprintf("completed_%s", e.RequestID), pos, theme)
 		box.Properties["event_type"] = "request_completed"
+		box.Properties["material_override"] = map[string]interface{}{
+			"albedo_color": []float64{0, 1, 0, 1}, // Green for completed
+		}
 		if displayInfo, exists := a.DisplayInfos[box.NodeID]; exists {
 			box.Properties["display_info"] = map[string]interface{}{
 				"title":       displayInfo.Title,
@@ -836,48 +846,61 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []e
 			}
 		}
 		return []eventsourcing.DeltaAction{box, label}
+
+	// Task events
+	case *eventsourcing.InitiatePluginCreationEvent:
+		pos := []float64{-2, -2, 0} // Underground
+		box := ui3d.CreateBox(fmt.Sprintf("plugin_%s", e.PluginName), pos, theme)
+		box.Properties["event_type"] = "plugin_generated"
+		label := ui3d.CreateLabel(fmt.Sprintf("plugin_%s_label", e.PluginName), fmt.Sprintf("Plugin: %s", e.PluginName), []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
+		label.Properties["event_type"] = "plugin_generated"
+		return []eventsourcing.DeltaAction{box, label}
+
+	// Add more event types as needed, e.g., task events, calendar events, etc.
+	// For now, handle a few key ones to visualize event history
+	default:
+		// For any other event, place in the underground spiral
+		pos := a.nextPosition()
+		box := ui3d.CreateBox(fmt.Sprintf("external_%s_%d", event.Type(), a.PositionIndex-1), pos, theme)
+		box.Properties["event_type"] = event.Type()
+		label := ui3d.CreateLabel(fmt.Sprintf("external_%s_%d_label", event.Type(), a.PositionIndex-1), event.Type(), []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
+		label.Properties["event_type"] = event.Type()
+		return []eventsourcing.DeltaAction{box, label}
 	}
 	return nil
 }
 
-func (a *OrchestrationAggregate) GetFull3DState() []eventsourcing.DeltaAction {
-	theme := ui3d.DefaultTheme()
-	// Replay chat history to create user avatar + recent bubbles
-	actions := []eventsourcing.DeltaAction{{
-		Type:     "create",
-		NodeType: "MeshInstance3D",
-		NodeID:   "orchestrator_ai",
-		Properties: map[string]interface{}{
-			"mesh":           "sphere",
-			"position":       []interface{}{0.0, 5.0, 0.0},
-			"emissive_color": []interface{}{1.0, 0.8, 0.4, 1.0}, // Warm golden glow
-			"particles":      true,                              // For gassy smoke effect
-			"event_type":     "orchestrator_ai",
-		},
-	}}
-	// Create a card for each user request
-	for i, requestID := range a.RequestIDs {
-		pos := ui3d.PositionInGrid(float64(i), 0, 2.0) // Grid layout for requests
-		pos[0] = pos[2]                                // Move Z spacing to X axis
-		pos[1] = -1.0                                  // Underground
-		pos[2] = 0.0
-		cards := ui3d.CreateCard(fmt.Sprintf("request_%s", requestID), "User Request", pos, theme)
-		for j := range cards {
-			if cards[j].Properties == nil {
-				cards[j].Properties = make(map[string]interface{})
-			}
-			cards[j].Properties["event_type"] = "user_request_received"
-			if displayInfo, exists := a.DisplayInfos[cards[j].NodeID]; exists {
-				cards[j].Properties["display_info"] = map[string]interface{}{
-					"title":       displayInfo.Title,
-					"description": displayInfo.Description,
-					"details":     displayInfo.Details,
-				}
-			}
+func (a *OrchestrationAggregate) Clone() eventsourcing.Aggregate {
+	// Create a new aggregate with copied state
+	newAgg := NewOrchestrationAggregate()
+	// Copy chat state
+	newAgg.chatState = a.chatState // Assuming chatState has its own copy if needed
+	// Copy other fields
+	newAgg.PendingToolCalls = make(map[string]map[string]struct{})
+	for k, v := range a.PendingToolCalls {
+		newAgg.PendingToolCalls[k] = make(map[string]struct{})
+		for kk := range v {
+			newAgg.PendingToolCalls[k][kk] = struct{}{}
 		}
-		actions = append(actions, cards...)
 	}
-	return actions
+	newAgg.ToolCallStates = make(map[string]*ToolCallState)
+	for k, v := range a.ToolCallStates {
+		newToolCall := *v // Shallow copy
+		newAgg.ToolCallStates[k] = &newToolCall
+	}
+	newAgg.AgentStates = make(map[string]*AgentState)
+	for k, v := range a.AgentStates {
+		newAgent := *v // Shallow copy
+		newAgg.AgentStates[k] = &newAgent
+	}
+	newAgg.RequestIDs = make([]string, len(a.RequestIDs))
+	copy(newAgg.RequestIDs, a.RequestIDs)
+	newAgg.DisplayInfos = make(map[string]*DisplayInfo)
+	for k, v := range a.DisplayInfos {
+		newDisplay := *v // Shallow copy
+		newAgg.DisplayInfos[k] = &newDisplay
+	}
+	return newAgg
 }
 
 func (a *OrchestrationAggregate) GetChatManager() *chat.ChatManager {

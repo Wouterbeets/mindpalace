@@ -111,12 +111,21 @@ func main() {
 	events := store.GetEvents()
 	logging.Info("Loaded %d events", len(events))
 
+	// Register 3D UI events
+	eventsourcing.RegisterEvent("ui_Create3DObject", func() eventsourcing.Event { return &eventsourcing.Create3DObjectEvent{} })
+	eventsourcing.RegisterEvent("ui_Update3DObject", func() eventsourcing.Event { return &eventsourcing.Update3DObjectEvent{} })
+	eventsourcing.RegisterEvent("ui_Delete3DObject", func() eventsourcing.Event { return &eventsourcing.Delete3DObjectEvent{} })
+	eventsourcing.RegisterEvent("ui_Position3DObject", func() eventsourcing.Event { return &eventsourcing.Position3DObjectEvent{} })
+
 	// Register aggregates
 	for _, plug := range pluginManager.GetLLMPlugins() {
 		aggStore.RegisterAggregate(plug.Name(), plug.Aggregate())
 	}
 	orchAgg := orchestration.NewOrchestrationAggregate()
 	aggStore.RegisterAggregate("orchestration", orchAgg)
+	uiAgg := aggregate.NewThreeDUIManagerAggregate()
+	uiAgg.SetEventBus(eb)
+	aggStore.RegisterAggregate("ui_manager", uiAgg)
 	aggStore.RebuildState(events)
 
 	// Log registered aggregates
@@ -140,6 +149,7 @@ func main() {
 	server := godot_ws.NewGodotServer()
 	server.SetDeltaChan(ep.DeltaChan())
 	server.SetAggStore(aggStore)
+	server.SetEventStore(store)
 	server.SetEventBus(eb)
 
 	// Start the voice transcriber (for processing)
@@ -161,14 +171,6 @@ func main() {
 		logging.Info("AUDIO: Successfully started audio capture on startup")
 	}
 
-	server.SetAudioCallback(func(audioData []byte) {
-		logging.Debug("AUDIO: Received audio callback with %d bytes", len(audioData))
-		err := transcriber.ProcessAudioChunk(audioData)
-		if err != nil {
-			logging.Error("AUDIO: Failed to process audio chunk: %v", err)
-		}
-	})
-	server.SetTranscriber(transcriber)
 	go server.Start()
 
 	// Launch embedded Godot binary

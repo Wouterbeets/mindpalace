@@ -142,7 +142,7 @@ func TestTaskAggregate_ApplyEvent_TaskDeleted(t *testing.T) {
 	}
 }
 
-func TestTaskAggregate_GetFull3DState(t *testing.T) {
+func TestTaskAggregate_Clone(t *testing.T) {
 	agg := NewTaskAggregate()
 
 	// Create a task
@@ -154,31 +154,20 @@ func TestTaskAggregate_GetFull3DState(t *testing.T) {
 	}
 	agg.ApplyEvent(createEvent)
 
-	actions := agg.GetFull3DState()
-
-	// Should have 2 actions: box and label
-	if len(actions) != 2 {
-		t.Errorf("Expected 2 actions, got %d", len(actions))
+	cloned := agg.Clone()
+	if cloned == nil {
+		t.Fatal("Clone returned nil")
 	}
-
-	// Check box action
-	boxAction := actions[0]
-	if boxAction.NodeID != "task1" {
-		t.Errorf("Expected NodeID 'task1', got '%s'", boxAction.NodeID)
+	if cloned.ID() != agg.ID() {
+		t.Errorf("Cloned ID mismatch")
 	}
-
-	if boxAction.NodeType != "MeshInstance3D" {
-		t.Errorf("Expected NodeType 'MeshInstance3D', got '%s'", boxAction.NodeType)
+	// Check that tasks are copied
+	clonedAgg, ok := cloned.(*TaskAggregate)
+	if !ok {
+		t.Fatal("Clone not *TaskAggregate")
 	}
-
-	// Check label action
-	labelAction := actions[1]
-	if labelAction.NodeID != "task1_label" {
-		t.Errorf("Expected NodeID 'task1_label', got '%s'", labelAction.NodeID)
-	}
-
-	if labelAction.NodeType != "Label3D" {
-		t.Errorf("Expected NodeType 'Label3D', got '%s'", labelAction.NodeType)
+	if len(clonedAgg.Tasks) != 1 {
+		t.Errorf("Expected 1 task in clone, got %d", len(clonedAgg.Tasks))
 	}
 }
 

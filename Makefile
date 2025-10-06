@@ -58,7 +58,7 @@ run-verbose: build plugins
 .PHONY: run-debug
 run-debug: build plugins
 	@echo "Running MindPalace in debug mode..."
-LD_LIBRARY_PATH=/home/mindpalace/mindpalace/whisper-cpp/build/lib:$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) -debug
+        LD_LIBRARY_PATH=/home/mindpalace/mindpalace/whisper-cpp/build/lib:$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) -debug
 
 # Run in headless mode
 .PHONY: run-headless

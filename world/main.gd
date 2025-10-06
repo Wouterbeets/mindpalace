@@ -9,19 +9,7 @@ var connected = false
 var sent_start_signal = false
 
 var event_count = 0
-const CUBE_SPACING = 5.0
-
-# Per-plugin counters for grid positioning
-var plugin_counters = {}
-
-# Plugin zones for spatial separation
-const PLUGIN_ZONES = {
-    "task": Vector3(0, 0, 20),
-    "note": Vector3(-20, 0, 0),
-    "calendar": Vector3(20, 0, 0),
-    "orchestrator": Vector3(0, 0, 0),
-    "default": Vector3(0, 5, 0)
-}
+# Removed zone and spacing logic - positions come from server
 
 # Mapping of event types to colors
 const EVENT_COLORS = {
@@ -62,13 +50,15 @@ var targeting_hud_label: Label
 var targeted_object = null
 var targeting_reticle: ColorRect
 
-# Audio capture removed - backend handles it
 
-# Microphone settings menu (simplified - no audio level since backend captures)
+
+# Microphone settings menu
 var settings_panel: Panel
 var settings_label: Label
 
 var settings_visible: bool = false
+var dark_mode: bool = true  # Start in dark mode
+var dark_mode_button: Button
 
 # User request input
 var user_request_input: LineEdit
@@ -95,13 +85,12 @@ var ambient_particles = null
 func _ready():
     mesh_instance.extra_cull_margin = 2.0
 
-    # Create visual zone separators
-    create_zone_separators()
+    # Removed zone separators - pure renderer
 
     # Create game log HUD
     create_game_log()
 
-    # Audio capture handled by backend - signal sent on connect
+
 
     # Set up info panel
     var canvas_layer = CanvasLayer.new()
@@ -150,6 +139,7 @@ func _ready():
     get_viewport().size_changed.connect(_on_viewport_size_changed)
 
     # Use existing WorldEnvironment from scene
+    env = $WorldEnvironment.environment
 
     # Add directional light
     var dir_light = DirectionalLight3D.new()
@@ -184,7 +174,7 @@ func _ready():
     # Create settings menu
     create_settings_menu()
 
-    # No local audio level monitoring
+
 
     # Set up WebSocket connection
     var err = websocket.connect_to_url(WS_URL)
@@ -197,28 +187,7 @@ func _ready():
     # Position camera to see objects
     $Player.position.z = 10
     $Player/Camera.rotation_degrees.x = -45
-
-func create_zone_separators():
-    # Central divider walls between zones
-    var zones = ["task", "note", "calendar"]
-    var colors = [Color.BLUE, Color.GREEN, Color.RED]
-    
-    for i in range(zones.size()):
-        var zone_name = zones[i]
-        var color = colors[i]
-        var zone_pos = PLUGIN_ZONES.get(zone_name, Vector3.ZERO)
-        
-        
-        
-        # Zone label
-        var label = Label3D.new()
-        label.text = zone_name.capitalize() + " Zone"
-        label.position = zone_pos + Vector3(0, 6, 0)
-        label.add_theme_font_size_override("font_size", 48)
-        label.modulate = color
-        label.outline_size = 2
-        label.outline_modulate = Color.BLACK
-        add_child(label)
+# Removed create_zone_separators - pure renderer
 
 func _process(delta):
   # Handle WebSocket connection and messages
@@ -231,18 +200,7 @@ func _process(delta):
       
       send_ready_signal()
     
-    # if connected and not sent_start_signal:
-    #   var start_msg = {
-    #     "type": "start_audio_capture"
-    #   }
-    #   var json_string = JSON.stringify(start_msg)
-    #   var err = websocket.send_text(json_string)
-    #   if err == OK:
-    #     sent_start_signal = true
-    #     print("Sent start audio capture signal to backend")
-    #   else:
-    #     print("Failed to send start signal: ", err)
-    # Audio capture starts on Go backend startup - no signal needed
+
 
     # Process all available messages
     while websocket.get_available_packet_count() > 0:
@@ -303,7 +261,7 @@ func _input(event):
 
       if result:
         var clicked_node = result.collider
-        while clicked_node and not event_cubes.values().any(func(v): return v["node"] == clicked_node):
+        while clicked_node and not event_cubes.values().any(func(v): return v.get("node", null) == clicked_node):
           clicked_node = clicked_node.get_parent()
         if clicked_node:
           show_info_panel(clicked_node)
@@ -424,20 +382,15 @@ func handle_menu_keypresses(key_string: String):
       # Close menu
       toggle_settings_menu()
 
-func send_position_update(node_id: String, position: Vector3):
+func send_position_update_event(node_id: String, position: Vector3):
   if websocket.get_ready_state() != WebSocketPeer.STATE_OPEN:
     return
-  var update_msg = {
-    "type": "delta",
-    "actions": [{
-      "type": "update",
-      "node_id": node_id,
-      "properties": {
-        "position": [position.x, position.y, position.z]
-      }
-    }]
+  var event_msg = {
+    "type": "ui_Position3DObject",
+    "object_id": node_id,
+    "position": [position.x, position.y, position.z]
   }
-  var json_string = JSON.stringify(update_msg)
+  var json_string = JSON.stringify(event_msg)
   var err = websocket.send_text(json_string)
 
 func send_state_update():
@@ -514,7 +467,7 @@ func start_drag(mouse_pos: Vector2):
       dragged_object = clicked_node
       # Find the node_id
       for id in event_cubes:
-        if event_cubes[id]["node"] == clicked_node:
+        if event_cubes[id].get("node", null) == clicked_node:
           dragged_node_id = id
           break
       is_dragging = true
@@ -557,18 +510,18 @@ func update_drag_position(mouse_pos: Vector2):
     dragged_object.position = new_pos
 
 func end_drag():
-  if dragged_object and is_dragging:
-    # Send position update to backend
-    if dragged_node_id != "":
-      send_position_update(dragged_node_id, dragged_object.position)
-      log_message("Ended dragging " + dragged_node_id + " at " + str(dragged_object.position))
+    if dragged_object and is_dragging:
+        # Send position update event to backend
+        if dragged_node_id != "":
+            send_position_update_event(dragged_node_id, dragged_object.position)
+            log_message("Ended dragging " + dragged_node_id + " at " + str(dragged_object.position))
 
     # Restore visual appearance
     if dragged_object is MeshInstance3D:
-      var material = dragged_object.material_override
-      if material and material is StandardMaterial3D:
-        material.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
-        material.albedo_color.a = 1.0
+        var material = dragged_object.material_override
+        if material and material is StandardMaterial3D:
+            material.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
+            material.albedo_color.a = 1.0
 
     dragged_object = null
     dragged_node_id = ""
@@ -605,31 +558,7 @@ func handle_action(action: Dictionary):
     _:
       pass
 
-func get_plugin_type(node_id: String, properties: Dictionary) -> String:
-    # For labels, use the base node_id (strip _label)
-    var base_id = node_id
-    if node_id.ends_with("_label"):
-        base_id = node_id.substr(0, node_id.length() - 6)  # Remove "_label"
-
-    if base_id.begins_with("task_"):
-        return "task"
-    elif base_id.begins_with("note_"):
-        return "note"
-    elif base_id.begins_with("calendar_") or base_id.begins_with("event_"):
-        return "calendar"
-    elif base_id == "orchestrator_ai":
-        return "orchestrator"
-    else:
-        return "default"
-
-func calculate_grid_position(idx: int) -> Vector3:
-    var cols = 4  # 4 columns per row for better spread
-    var row = idx / cols
-    var col = idx % cols
-    # Offset for grid
-    var x_offset = col * CUBE_SPACING
-    var z_offset = row * CUBE_SPACING
-    return Vector3(x_offset, 0, z_offset)
+# Removed plugin type and grid position logic - pure renderer
 
 func create_node(node_id: String, node_type: String, properties: Dictionary):
     if event_cubes.has(node_id):
@@ -637,6 +566,13 @@ func create_node(node_id: String, node_type: String, properties: Dictionary):
     var node
     if node_type == "MeshInstance3D":
         node = MeshInstance3D.new()
+    elif node_type == "CharacterBody3D":
+        node = CharacterBody3D.new()
+    elif node_type == "Label3D":
+        node = Label3D.new()
+    else:
+        return
+    if node_type == "MeshInstance3D":
         if properties.has("mesh"):
           if properties["mesh"] == "box":
             node.mesh = BoxMesh.new()
@@ -657,25 +593,10 @@ func create_node(node_id: String, node_type: String, properties: Dictionary):
             node.mesh = CapsuleMesh.new()
             node.mesh.radius = 0.3
             node.mesh.height = 1.0
-        elif node_type == "CharacterBody3D":
-          node = CharacterBody3D.new()
-        elif node_type == "Label3D":
-          node = Label3D.new()
         else:
-          return
+            return
       
-        # Override position with plugin-based zoning for better layout separation
-        # Skip grid positioning for child nodes (they use local position)
-        if not properties.has("parent_id"):
-          var plugin_type = get_plugin_type(node_id, properties)
-          if not plugin_counters.has(plugin_type):
-            plugin_counters[plugin_type] = 0
-          var counter = plugin_counters[plugin_type]
-          var zone = PLUGIN_ZONES.get(plugin_type, Vector3.ZERO)
-          var grid_pos = calculate_grid_position(counter)
-          node.position = zone + grid_pos
-          print("Creating node ", node_id, " at position ", node.position, " plugin_type ", plugin_type, " counter ", counter)
-          plugin_counters[plugin_type] += 1
+        # Position comes from server properties
   
     # Set default mesh if not set
     if node is MeshInstance3D and not node.mesh:
@@ -685,7 +606,9 @@ func create_node(node_id: String, node_type: String, properties: Dictionary):
     # If backend provides a specific position, use Y only and add to computed XZ (for height variations)
     if properties.has("position") and properties["position"] is Array and properties["position"].size() >= 3:
       var backend_pos = properties["position"]
+      node.position.x = clamp(float(backend_pos[0]), -1000.0, 1000.0)
       node.position.y = clamp(float(backend_pos[1]), -1000.0, 1000.0)
+      node.position.z = clamp(float(backend_pos[2]), -1000.0, 1000.0)
     if properties.has("scale"):
       var scl = properties["scale"]
       if scl is Array and scl.size() >= 3:
@@ -790,7 +713,7 @@ func create_node(node_id: String, node_type: String, properties: Dictionary):
       node.add_child(body)
 
     add_child(node)
-    event_cubes[node_id] = node
+    event_cubes[node_id] = {"node": node}
     node.set_meta("display_info", properties.get("display_info", {}))
   
     # Handle parenting if specified
@@ -819,7 +742,7 @@ func create_node(node_id: String, node_type: String, properties: Dictionary):
       else:
         push_warning("Parent node " + parent_id + " not found for " + node_id)
     else:
-      log_message("Created node " + node_id + " at " + str(node.position) + " (plugin: " + get_plugin_type(node_id, properties) + ")")
+      log_message("Created node " + node_id + " at " + str(node.position))
 
 func update_node(node_id: String, properties: Dictionary):
     var node = event_cubes.get(node_id, {}).get("node", null)
@@ -827,7 +750,7 @@ func update_node(node_id: String, properties: Dictionary):
         # Special handling for transcription display
         var transcription_node = get_node_or_null("transcription_display")
         if transcription_node and properties.has("text"):
-            transcription_node.text = properties["text"]
+            transcription_node.text += properties["text"]
             # Ensure readability
             if not transcription_node.has_theme_override("font_size"):
                 transcription_node.add_theme_font_size_override("font_size", 64)
@@ -836,8 +759,6 @@ func update_node(node_id: String, properties: Dictionary):
 
         return
     if node:
-        var plugin_type = get_plugin_type(node_id, properties)
-        var zone = PLUGIN_ZONES.get(plugin_type, Vector3.ZERO)
         if node is Label3D:
             if properties.has("text"):
                 node.text = properties["text"]
@@ -890,29 +811,20 @@ func delete_node(node_id: String):
     # Also remove any child nodes from event_cubes
     for child in node.get_children():
       for id in event_cubes:
-        if event_cubes[id]["node"] == child:
+        if event_cubes[id].get("node", null) == child:
           event_cubes.erase(id)
           break
     node.queue_free()
     event_cubes.erase(node_id)
 
 func show_info_panel(node: Node):
-  info_panel.visible = true
-  var node_id = ""
-  for id in event_cubes:
-    if event_cubes[id]["node"] == node:
-      node_id = id
-      break
-  info_label.text = "Node ID: " + node_id + "\nType: " + node.get_class() + "\nPosition: " + str(node.position)
-  # Add metadata if available (from properties, but since not stored, basic info)
-  if node_id.begins_with("task_"):
-    info_label.text += "\nCategory: Task"
-  elif node_id.begins_with("request_"):
-    info_label.text += "\nCategory: User Request"
-  elif node_id.begins_with("calendar_"):
-    info_label.text += "\nCategory: Calendar Event"
-  elif node_id == "orchestrator_ai":
-    info_label.text += "\nCategory: AI Orchestrator"
+    info_panel.visible = true
+    var node_id = ""
+    for id in event_cubes:
+        if event_cubes[id].get("node", null) == node:
+            node_id = id
+            break
+    info_label.text = "Node ID: " + node_id + "\nType: " + node.get_class() + "\nPosition: " + str(node.position)
 
 
 # Targeting HUD functions
@@ -977,7 +889,7 @@ func get_event_id_from_object(obj: Node) -> String:
   var current = obj
   while current:
     for event_id in event_cubes:
-      if event_cubes[event_id]["node"] == current:
+      if event_cubes[event_id].get("node", null) == current:
         return event_id
     current = current.get_parent()
   return ""
@@ -1007,13 +919,8 @@ func get_object_details(event_id: String, obj: Node) -> String:
     var distance = camera.global_position.distance_to(obj.global_position)
     details += "Distance: %.1f units\n\n" % distance
 
-    # Determine plugin zone
-    var plugin_type = get_plugin_type(event_id, {})
-    var zone_name = PLUGIN_ZONES.get(plugin_type, Vector3.ZERO)
-    details += "Zone: %s (at %.1f, %.1f, %.1f)\n\n" % [plugin_type.capitalize(), zone_name.x, zone_name.y, zone_name.z]
-
     # Get display_info
-    var node = event_cubes.get(event_id, null)
+    var node = event_cubes.get(event_id, {}).get("node", null)
     var display_info = node.get_meta("display_info", {}) if node else {}
     if display_info.has("title"):
         details += "[b]Title:[/b] %s\n" % display_info["title"]
@@ -1025,22 +932,6 @@ func get_object_details(event_id: String, obj: Node) -> String:
         for key in det.keys():
             details += "- %s: %s\n" % [key.capitalize(), str(det[key])]
         details += "\n"
-
-    # Add event-specific details
-    if event_id.begins_with("task_"):
-        details += "📋 Category: Task\n"
-        details += "Status: Active\n"
-    elif event_id.begins_with("request_"):
-        details += "💬 Category: User Request\n"
-        details += "Status: Processing\n"
-    elif event_id.begins_with("calendar_"):
-        details += "📅 Category: Calendar Event\n"
-        details += "Status: Scheduled\n"
-    elif event_id == "orchestrator_ai":
-        details += "🤖 Category: AI Orchestrator\n"
-        details += "Status: Active\n"
-    else:
-        details += "📦 Category: Event Object\n"
 
     # Add visual properties
     if obj is MeshInstance3D and obj.material_override:
@@ -1185,7 +1076,14 @@ func create_settings_menu():
   light_hbox.add_child(light_slider)
   container.add_child(light_hbox)
 
-  # Actions Section
+  # Dark Mode Toggle
+  dark_mode_button = Button.new()
+  dark_mode_button.text = "🌙 Toggle Dark Mode"
+  dark_mode_button.size = Vector2(200, 40)
+  dark_mode_button.connect("pressed", Callable(self, "_on_toggle_dark_mode"))
+  container.add_child(dark_mode_button)
+
+   # Actions Section
   var actions_label = Label.new()
   actions_label.text = "⚡ Quick Actions"
   actions_label.add_theme_font_size_override("font_size", 18)
@@ -1342,8 +1240,27 @@ func _on_ambient_light_changed(value: float):
     env.ambient_light_energy = value
 
 func _on_toggle_particles():
-  if ambient_particles:
-    ambient_particles.visible = !ambient_particles.visible
+   if ambient_particles:
+     ambient_particles.visible = !ambient_particles.visible
+
+func _on_toggle_dark_mode():
+   dark_mode = !dark_mode
+   if dark_mode_button:
+     dark_mode_button.text = "🌙 Toggle Dark Mode" if dark_mode else "☀️ Toggle Light Mode"
+   if env:
+     if dark_mode:
+       # Spooky shadow realm
+       env.background_energy_multiplier = 0.4
+       env.fog_enabled = true
+       env.fog_density = 0.1
+       env.fog_color = Color(1, 1, 1, 1)
+       env.background_mode = 2  # Sky
+     else:
+       # Matrix construct vibes - very bright
+       env.background_energy_multiplier = 1.5
+       env.fog_enabled = false
+       env.background_mode = 1  # Solid color
+       env.background_color = Color(0.8, 0.9, 1.0, 1)  # Bright sky blue
 
 func _on_create_task():
   send_request("Create a new task titled 'New Task from Control Panel'")
@@ -1373,9 +1290,3 @@ func send_request(text: String):
     push_error("Failed to send request: ", err)
 
 
-# Removed _update_audio_level - no local audio monitoring
-
-
-# Removed create_wav_header - no local audio processing
-
-# Removed _send_audio_chunk - backend handles capture

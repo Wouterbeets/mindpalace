@@ -281,23 +281,22 @@ func TestGetCustomUI(t *testing.T) {
 	// Further testing would require Fyne mocking, which is complex
 }
 
-func TestGetFull3DState(t *testing.T) {
+func TestClone(t *testing.T) {
 	agg := NewOrchestrationAggregate()
 	agg.RequestIDs = []string{"req1", "req2"}
-	actions := agg.GetFull3DState()
-	if len(actions) == 0 {
-		t.Error("GetFull3DState returned no actions")
+	cloned := agg.Clone()
+	if cloned == nil {
+		t.Fatal("Clone returned nil")
 	}
-	// Check for orchestrator_ai node
-	found := false
-	for _, a := range actions {
-		if a.NodeID == "orchestrator_ai" {
-			found = true
-			break
-		}
+	if cloned.ID() != agg.ID() {
+		t.Errorf("Cloned ID mismatch")
 	}
-	if !found {
-		t.Error("orchestrator_ai node not found")
+	clonedAgg, ok := cloned.(*OrchestrationAggregate)
+	if !ok {
+		t.Fatal("Clone not *OrchestrationAggregate")
+	}
+	if len(clonedAgg.RequestIDs) != 2 {
+		t.Errorf("RequestIDs not copied")
 	}
 }
 

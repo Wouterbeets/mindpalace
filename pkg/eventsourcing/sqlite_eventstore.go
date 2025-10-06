@@ -10,10 +10,10 @@ import (
 
 // SQLiteEventStore manages the persistence and retrieval of events using SQLite
 type SQLiteEventStore struct {
-	mu       sync.Mutex
-	events   []Event
-	db       *sql.DB
-	dbPath   string
+	mu     sync.Mutex
+	events []Event
+	db     *sql.DB
+	dbPath string
 }
 
 func NewSQLiteEventStore(dbPath string) (*SQLiteEventStore, error) {

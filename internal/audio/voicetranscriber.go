@@ -3,15 +3,13 @@ package audio
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
-	"github.com/mutablelogic/go-media/pkg/ffmpeg"
+	"github.com/gordonklaus/portaudio"
 	"github.com/mutablelogic/go-whisper"
 	"github.com/mutablelogic/go-whisper/pkg/schema"
 	"github.com/mutablelogic/go-whisper/pkg/task"
@@ -35,6 +33,7 @@ type VoiceTranscriber struct {
 	running               bool
 	captureCtx            context.Context
 	captureCancel         context.CancelFunc
+	stream                *portaudio.Stream
 }
 
 // NewVoiceTranscriber initializes a new VoiceTranscriber instance with go-whisper
@@ -44,7 +43,7 @@ func NewVoiceTranscriber(modelPath string) (*VoiceTranscriber, error) {
 	var err error
 	vt := &VoiceTranscriber{
 		sampleRate:      16000,
-		bufferThreshold: 16000 * 1,
+		bufferThreshold: 16000 * 10, // 10 seconds
 		audioBuffer:     make([]float32, 0, 16000*10),
 	}
 	vt.whisper, err = whisper.New(dir)
@@ -145,7 +144,7 @@ func (vt *VoiceTranscriber) ProcessAudioChunk(pcmData []byte) error {
 	vt.audioBuffer = append(vt.audioBuffer, samples...)
 	logging.Debug("AUDIO: Buffer now has %d samples (threshold: %d)", len(vt.audioBuffer), vt.bufferThreshold)
 
-	// Process when we have enough audio (1 second for faster testing)
+	// Process when we have enough audio (10 seconds)
 	if len(vt.audioBuffer) >= vt.bufferThreshold {
 		audioToProcess := make([]float32, len(vt.audioBuffer))
 		copy(audioToProcess, vt.audioBuffer)
@@ -267,56 +266,35 @@ func (vt *VoiceTranscriber) StartCapture(ctx context.Context) error {
 	}
 	vt.mu.Unlock()
 
-	// Open microphone input - using specific Pulse source for USB mic from pactl
-	logging.Info("AUDIO: Opening Pulse USB mic source")
-	input, err := ffmpeg.Open("pulse:alsa_input.usb-K-MIC_NATRIUM_K-MIC_NATRIUM_20190805V001-00.iec958-stereo",
-		ffmpeg.OptInputOpt("sample_rate", "16000"),
-		ffmpeg.OptInputOpt("channels", "1"),
-		ffmpeg.OptInputOpt("format", "s16"),
-		ffmpeg.OptInputOpt("channel_layout", "mono"),
-	)
-	if err != nil {
-		logging.Error("AUDIO: Failed to open USB Pulse source, trying built-in analog: %v", err)
-		// Fallback to built-in analog mic
-		input, err = ffmpeg.Open("pulse:alsa_input.pci-0000_10_00.6.analog-stereo",
-			ffmpeg.OptInputOpt("sample_rate", "16000"),
-			ffmpeg.OptInputOpt("channels", "1"),
-			ffmpeg.OptInputOpt("format", "s16"),
-			ffmpeg.OptInputOpt("channel_layout", "mono"),
-		)
-		if err != nil {
-			logging.Error("AUDIO: Failed to open analog Pulse source, trying ALSA USB: %v", err)
-			// Fallback to ALSA USB mic
-			input, err = ffmpeg.Open("hw:1,0",
-				ffmpeg.OptInputOpt("sample_rate", "16000"),
-				ffmpeg.OptInputOpt("channels", "1"),
-				ffmpeg.OptInputOpt("format", "s16"),
-			)
-			if err != nil {
-				logging.Error("AUDIO: Failed to open hw:1,0, trying ALSA default: %v", err)
-				// Final fallback to ALSA default
-				input, err = ffmpeg.Open("alsa:default",
-					ffmpeg.OptInputOpt("sample_rate", "16000"),
-					ffmpeg.OptInputOpt("channels", "1"),
-					ffmpeg.OptInputOpt("format", "s16"),
-				)
-				if err != nil {
-					return fmt.Errorf("failed to open microphone (tried USB Pulse, analog Pulse, hw:1,0, default): %w", err)
-				}
-				logging.Info("AUDIO: Successfully opened alsa:default as final fallback")
-			} else {
-				logging.Info("AUDIO: Successfully opened USB microphone (hw:1,0)")
-			}
-		} else {
-			logging.Info("AUDIO: Successfully opened built-in analog microphone (Pulse)")
-		}
-	} else {
-		logging.Info("AUDIO: Successfully opened USB microphone (Pulse source)")
+	// Initialize PortAudio
+	if err := portaudio.Initialize(); err != nil {
+		return fmt.Errorf("failed to initialize PortAudio: %w", err)
 	}
 
-	// Map function to use input parameters
-	mapfn := func(stream int, par *ffmpeg.Par) (*ffmpeg.Par, error) {
-		return par, nil
+	// Open default input stream
+	bufferSize := 1024
+	stream, err := portaudio.OpenDefaultStream(1, 0, float64(vt.sampleRate), bufferSize, func(in []int16) {
+		if len(in) == 0 {
+			return
+		}
+		// Convert int16 to float32
+		samples := make([]float32, len(in))
+		for i, sample := range in {
+			samples[i] = float32(sample) / 32768.0
+		}
+		// Convert to PCM bytes for ProcessAudioChunk
+		pcmData := make([]byte, len(samples)*2)
+		for i, sample := range samples {
+			intSample := int16(sample * 32767.0)
+			binary.LittleEndian.PutUint16(pcmData[i*2:], uint16(intSample))
+		}
+		if err := vt.ProcessAudioChunk(pcmData); err != nil {
+			logging.Error("AUDIO: Failed to process captured chunk: %v", err)
+		}
+	})
+	if err != nil {
+		portaudio.Terminate()
+		return fmt.Errorf("failed to open audio stream: %w", err)
 	}
 
 	// Create capture context
@@ -324,54 +302,38 @@ func (vt *VoiceTranscriber) StartCapture(ctx context.Context) error {
 	vt.mu.Lock()
 	vt.captureCtx = captureCtx
 	vt.captureCancel = cancel
+	vt.stream = stream
 	vt.mu.Unlock()
 
-	// Start capture goroutine
+	// Start the stream
+	if err := stream.Start(); err != nil {
+		stream.Close()
+		portaudio.Terminate()
+		vt.mu.Lock()
+		vt.captureCtx = nil
+		vt.captureCancel = nil
+		vt.stream = nil
+		vt.mu.Unlock()
+		return fmt.Errorf("failed to start audio stream: %w", err)
+	}
+
+	logging.Info("AUDIO: Successfully started PortAudio microphone capture")
+
+	// Start a goroutine to handle stopping
 	go func() {
-		defer input.Close()
-		defer func() {
-			vt.mu.Lock()
-			vt.captureCtx = nil
-			vt.captureCancel = nil
-			vt.mu.Unlock()
-		}()
-		logging.Info("AUDIO: Started continuous microphone capture goroutine")
-
-		chunkCount := 0
-		for {
-			err := input.Decode(captureCtx, mapfn, func(stream int, frame *ffmpeg.Frame) error {
-				if frame == nil {
-					return nil
-				}
-
-				data := frame.Bytes(0)
-				if len(data) == 0 {
-					return nil
-				}
-
-				logging.Debug("AUDIO: Captured frame with %d bytes", len(data))
-				if err := vt.ProcessAudioChunk(data); err != nil {
-					logging.Error("AUDIO: Failed to process captured chunk: %v", err)
-				}
-				chunkCount++
-
-				return nil
-			})
-			if err != nil {
-				if errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) {
-					logging.Info("AUDIO: Capture stopped (context canceled or EOF)")
-					break
-				}
-				logging.Error("AUDIO: Capture decode error: %v", err)
-				select {
-				case <-captureCtx.Done():
-					return
-				default:
-					time.Sleep(100 * time.Millisecond)
-				}
-			}
+		<-captureCtx.Done()
+		logging.Info("AUDIO: Stopping microphone capture")
+		if err := stream.Stop(); err != nil {
+			logging.Error("AUDIO: Error stopping stream: %v", err)
 		}
-		logging.Info("AUDIO: Microphone capture goroutine ended. Processed %d chunks", chunkCount)
+		stream.Close()
+		portaudio.Terminate()
+		vt.mu.Lock()
+		vt.captureCtx = nil
+		vt.captureCancel = nil
+		vt.stream = nil
+		vt.mu.Unlock()
+		logging.Info("AUDIO: Microphone capture stopped")
 	}()
 
 	return nil

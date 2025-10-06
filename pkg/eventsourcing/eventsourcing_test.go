@@ -58,8 +58,12 @@ func (m *mockThreeDUIBroadcaster) Broadcast3DDelta(event Event) []DeltaAction {
 	return m.deltas
 }
 
-func (m *mockThreeDUIBroadcaster) GetFull3DState() []DeltaAction {
-	return m.deltas
+func (m *mockThreeDUIBroadcaster) Clone() Aggregate {
+	newMock := &mockThreeDUIBroadcaster{}
+	newMock.id = m.id
+	newMock.deltas = make([]DeltaAction, len(m.deltas))
+	copy(newMock.deltas, m.deltas)
+	return newMock
 }
 
 // Test event marshaling and unmarshaling

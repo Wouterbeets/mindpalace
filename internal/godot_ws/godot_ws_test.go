@@ -22,6 +22,24 @@ func (m *mockAggregateStore) AllAggregates() []eventsourcing.Aggregate {
 	return m.aggregates
 }
 
+// MockEventStore for testing
+type mockEventStore struct {
+	events []eventsourcing.Event
+}
+
+func (m *mockEventStore) Append(events ...eventsourcing.Event) error {
+	m.events = append(m.events, events...)
+	return nil
+}
+
+func (m *mockEventStore) GetEvents() []eventsourcing.Event {
+	return m.events
+}
+
+func (m *mockEventStore) Load() error {
+	return nil
+}
+
 // MockAggregate for testing
 type mockAggregate struct {
 	id string
@@ -53,8 +71,12 @@ func (m *mockThreeDUIBroadcaster) Broadcast3DDelta(event eventsourcing.Event) []
 	return m.deltas
 }
 
-func (m *mockThreeDUIBroadcaster) GetFull3DState() []eventsourcing.DeltaAction {
-	return m.deltas
+func (m *mockThreeDUIBroadcaster) Clone() eventsourcing.Aggregate {
+	newMock := &mockThreeDUIBroadcaster{}
+	newMock.id = m.id
+	newMock.deltas = make([]eventsourcing.DeltaAction, len(m.deltas))
+	copy(newMock.deltas, m.deltas)
+	return newMock
 }
 
 func TestNewGodotServer(t *testing.T) {
@@ -213,7 +235,7 @@ func TestGodotServer_broadcast(t *testing.T) {
 	}
 }
 
-func TestGodotServer_HandleWebSocket_FullState(t *testing.T) {
+func TestGodotServer_HandleWebSocket_Replay(t *testing.T) {
 	server := NewGodotServer()
 	mockBroadcaster := &mockThreeDUIBroadcaster{
 		mockAggregate: mockAggregate{id: "test"},
@@ -224,7 +246,12 @@ func TestGodotServer_HandleWebSocket_FullState(t *testing.T) {
 	aggStore := &mockAggregateStore{
 		aggregates: []eventsourcing.Aggregate{mockBroadcaster},
 	}
+	// Mock event store with one event
+	mockEventStore := &mockEventStore{
+		events: []eventsourcing.Event{&eventsourcing.InitiatePluginCreationEvent{}},
+	}
 	server.SetAggStore(aggStore)
+	server.SetEventStore(mockEventStore)
 
 	httpServer := httptest.NewServer(http.HandlerFunc(server.HandleWebSocket))
 	defer httpServer.Close()
@@ -242,7 +269,7 @@ func TestGodotServer_HandleWebSocket_FullState(t *testing.T) {
 	}
 	conn.WriteJSON(readyMsg)
 
-	// Should receive full state
+	// Should receive replay
 	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 	var received eventsourcing.DeltaEnvelope
 	err = conn.ReadJSON(&received)
@@ -251,6 +278,9 @@ func TestGodotServer_HandleWebSocket_FullState(t *testing.T) {
 	}
 	if received.Type != "delta" {
 		t.Errorf("Expected type 'delta', got %s", received.Type)
+	}
+	if received.EventID != "replay" {
+		t.Errorf("Expected event_id 'replay', got %s", received.EventID)
 	}
 	if len(received.Actions) != 1 {
 		t.Errorf("Expected 1 action, got %d", len(received.Actions))

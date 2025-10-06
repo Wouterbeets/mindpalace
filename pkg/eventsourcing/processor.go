@@ -33,18 +33,18 @@ func (c Command[T]) Execute(data any) ([]Event, error) {
 }
 
 type EventProcessor struct {
-	store    EventStore
-	commands map[string]CommandHandler
-	EventBus EventBus // Changed from unexported to exported
+	store     EventStore
+	commands  map[string]CommandHandler
+	EventBus  EventBus // Changed from unexported to exported
 	deltaChan chan DeltaEnvelope
 }
 
 func NewEventProcessor(store EventStore, eventBus EventBus) *EventProcessor {
 	ep := &EventProcessor{
-		store:    store,
-		commands: make(map[string]CommandHandler),
-		EventBus: eventBus,
-		deltaChan: make(chan DeltaEnvelope, 100),
+		store:     store,
+		commands:  make(map[string]CommandHandler),
+		EventBus:  eventBus,
+		deltaChan: make(chan DeltaEnvelope, 10000),
 	}
 	SetGlobalEventBus(eventBus)
 	logging.Trace("Event processor created with event bus")

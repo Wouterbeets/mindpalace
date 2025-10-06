@@ -36,7 +36,8 @@ type LayoutManager struct {
 	Spacing float64
 	Zone    string // Ties to PLUGIN_ZONES in Godot
 	Counter int
-	Seed    int64 // For random positioning
+	Seed    int64                // For random positioning
+	Zones   map[string][]float64 // Zone offsets
 }
 
 // Theme defines a color scheme for UI elements

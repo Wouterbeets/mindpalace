@@ -175,5 +175,5 @@ type FullStateEnvelope struct {
 // Implement if the aggregate wants 3D UI (e.g., tasks as cubes).
 type ThreeDUIBroadcaster interface {
 	Broadcast3DDelta(event Event) []DeltaAction // Returns actions for this event (empty if irrelevant).
-	GetFull3DState() []DeltaAction              // Replays events to build initial/full state.
+	Clone() Aggregate                           // Returns a fresh copy for replaying events.
 }

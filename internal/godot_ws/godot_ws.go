@@ -1,31 +1,27 @@
 package godot_ws
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"mindpalace/internal/audio"
 	"mindpalace/internal/orchestration"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
 )
 
 type GodotServer struct {
-	upgrader          websocket.Upgrader
-	clients           map[*websocket.Conn]*ClientState
-	clientsMu         sync.RWMutex
-	deltaChan         chan eventsourcing.DeltaEnvelope
-	aggStore          eventsourcing.AggregateStore
-	audioCallback     func([]byte) // Callback for processing audio chunks
-	transcriber       *audio.VoiceTranscriber
+	upgrader   websocket.Upgrader
+	clients    map[*websocket.Conn]*ClientState
+	clientsMu  sync.RWMutex
+	deltaChan  chan eventsourcing.DeltaEnvelope
+	aggStore   eventsourcing.AggregateStore
+	eventStore eventsourcing.EventStore
+
 	settingsVisible   bool
-	selectedMicDevice string
 	eventBus          eventsourcing.EventBus
 	pendingKeypresses map[string]chan map[string]interface{}
 	pendingMu         sync.RWMutex
@@ -64,7 +60,7 @@ func NewGodotServer() *GodotServer {
 			CheckOrigin: func(r *http.Request) bool { return true }, // Allow all origins for testing
 		},
 		clients:           make(map[*websocket.Conn]*ClientState),
-		deltaChan:         make(chan eventsourcing.DeltaEnvelope, 100),
+		deltaChan:         make(chan eventsourcing.DeltaEnvelope, 1000),
 		pendingKeypresses: make(map[string]chan map[string]interface{}),
 	}
 }
@@ -77,16 +73,12 @@ func (s *GodotServer) SetAggStore(aggStore eventsourcing.AggregateStore) {
 	s.aggStore = aggStore
 }
 
-func (s *GodotServer) SetAudioCallback(callback func([]byte)) {
-	s.audioCallback = callback
-}
-
-func (s *GodotServer) SetTranscriber(t *audio.VoiceTranscriber) {
-	s.transcriber = t
-}
-
 func (s *GodotServer) SetEventBus(eb eventsourcing.EventBus) {
 	s.eventBus = eb
+}
+
+func (s *GodotServer) SetEventStore(es eventsourcing.EventStore) {
+	s.eventStore = es
 }
 
 func (s *GodotServer) SendTranscription(text string) {
@@ -147,64 +139,20 @@ func (s *GodotServer) handleTextMessage(conn *websocket.Conn, message []byte) {
 	switch msgType {
 	case "ready":
 		s.handleReadyMessage(conn, msg)
-	case "audio_chunk":
-		s.handleAudioChunk(msg)
+
 	case "state_update":
 		s.handleStateUpdate(msg)
 	case "request":
 		s.handleRequestMessage(msg)
 	case "delta":
 		s.handleDeltaMessage(msg)
+	case "ui_Position3DObject":
+		s.handlePosition3DObjectEvent(msg)
 	case "keypress_ack":
 		s.handleKeypressAck(msg)
-		// case "start_audio_capture":
-		// 	logging.Info("Received start_audio_capture signal from Godot")
-		// 	if s.transcriber != nil {
-		// 		if err := s.transcriber.StartCapture(context.Background()); err != nil {
-		// 			logging.Error("Failed to start audio capture: %v", err)
-		// 		} else {
-		// 			logging.Info("Started audio capture from backend microphone")
-		// 		}
-		// 	} else {
-		// 		logging.Info("Transcriber not set for audio capture")
-		// 	}
+
 	default:
 		logging.Info("Unknown message type from Godot: %s", msgType)
-	}
-}
-
-func (s *GodotServer) handleBinaryMessage(message []byte) {
-	logging.Debug("AUDIO: Handling binary message from Godot: %d bytes", len(message))
-	// Binary messages are audio data
-	if s.audioCallback != nil {
-		logging.Debug("AUDIO: Calling audio callback with binary data (%d bytes)", len(message))
-		s.audioCallback(message)
-	} else {
-		logging.Info("AUDIO: Audio callback not set, ignoring binary message")
-	}
-}
-
-func (s *GodotServer) handleAudioChunk(msg map[string]interface{}) {
-	logging.Debug("AUDIO: Handling audio chunk from Godot")
-	dataStr, ok := msg["data"].(string)
-	if !ok {
-		logging.Error("AUDIO: Audio chunk missing 'data' field")
-		return
-	}
-
-	logging.Debug("AUDIO: Decoding base64 audio data, length: %d", len(dataStr))
-	audioData, err := base64.StdEncoding.DecodeString(dataStr)
-	if err != nil {
-		logging.Error("AUDIO: Failed to decode base64 audio data: %v", err)
-		return
-	}
-
-	logging.Debug("AUDIO: Decoded audio data: %d bytes", len(audioData))
-	if s.audioCallback != nil {
-		logging.Debug("AUDIO: Calling audio callback with decoded data (%d bytes)", len(audioData))
-		s.audioCallback(audioData)
-	} else {
-		logging.Info("AUDIO: Audio callback not set, ignoring audio chunk")
 	}
 }
 
@@ -213,9 +161,7 @@ func (s *GodotServer) handleStateUpdate(msg map[string]interface{}) {
 	if visible, ok := msg["settings_visible"].(bool); ok {
 		s.settingsVisible = visible
 	}
-	if mic, ok := msg["selected_mic_device"].(string); ok {
-		s.selectedMicDevice = mic
-	}
+
 }
 
 func (s *GodotServer) handleRequestMessage(msg map[string]interface{}) {
@@ -258,12 +204,10 @@ func (s *GodotServer) handleDeltaMessage(msg map[string]interface{}) {
 					x, _ := pos[0].(float64)
 					y, _ := pos[1].(float64)
 					z, _ := pos[2].(float64)
-					if nodeID, ok := action["node_id"].(string); ok && strings.HasPrefix(nodeID, "task_") {
-						event := &TaskPositionUpdatedEvent{
-							TaskID:    nodeID,
-							PositionX: x,
-							PositionY: y,
-							PositionZ: z,
+					if nodeID, ok := action["node_id"].(string); ok {
+						event := &eventsourcing.Position3DObjectEvent{
+							ObjectID: nodeID,
+							Position: []float64{x, y, z},
 						}
 						if s.eventBus != nil {
 							s.eventBus.Publish(event)
@@ -274,6 +218,33 @@ func (s *GodotServer) handleDeltaMessage(msg map[string]interface{}) {
 				}
 			}
 		}
+	}
+}
+
+func (s *GodotServer) handlePosition3DObjectEvent(msg map[string]interface{}) {
+	logging.Debug("Handling Position3DObjectEvent from Godot: %v", msg)
+	objectID, ok := msg["object_id"].(string)
+	if !ok {
+		logging.Error("Position3DObjectEvent missing object_id")
+		return
+	}
+	pos, ok := msg["position"].([]interface{})
+	if !ok || len(pos) < 3 {
+		logging.Error("Position3DObjectEvent missing or invalid position")
+		return
+	}
+	x, _ := pos[0].(float64)
+	y, _ := pos[1].(float64)
+	z, _ := pos[2].(float64)
+
+	event := &eventsourcing.Position3DObjectEvent{
+		ObjectID: objectID,
+		Position: []float64{x, y, z},
+	}
+	if s.eventBus != nil {
+		s.eventBus.Publish(event)
+	} else {
+		logging.Error("EventBus not set")
 	}
 }
 
@@ -323,37 +294,74 @@ func (s *GodotServer) handleReadyMessage(conn *websocket.Conn, msg map[string]in
 }
 
 func (s *GodotServer) sendFullState(conn *websocket.Conn) {
-	if s.aggStore == nil {
-		logging.Error("AggStore is nil, cannot send full state")
+	if s.aggStore == nil || s.eventStore == nil {
+		logging.Error("AggStore or EventStore is nil, cannot send full state")
 		return
 	}
 
-	logging.Info("Sending full 3D state to Godot client")
+	logging.Info("Replaying event history to Godot client")
+	events := s.eventStore.GetEvents()
 	totalActions := 0
+
+	// Send zones first
+	zonesMsg := map[string]interface{}{
+		"type": "zones",
+		"zones": map[string][]float64{
+			"task":     {0, 0, 20},
+			"note":     {-20, 0, 0},
+			"calendar": {20, 0, 0},
+			"default":  {0, 5, 0},
+		},
+	}
+	conn.WriteJSON(zonesMsg)
+
+	// Group aggregates by ID for replay
+	replayAggs := make(map[string]eventsourcing.ThreeDUIBroadcaster)
 	for _, agg := range s.aggStore.AllAggregates() {
 		if broadcaster, ok := agg.(eventsourcing.ThreeDUIBroadcaster); ok {
-			actions := broadcaster.GetFull3DState()
-			logging.Info("Aggregate %s implements ThreeDUIBroadcaster, sending %d actions", agg.ID(), len(actions))
-			totalActions += len(actions)
-			if len(actions) > 0 {
+			replayAggs[agg.ID()] = broadcaster
+		}
+	}
+
+	// For each aggregate, create a clone and replay events
+	for aggID, originalBroadcaster := range replayAggs {
+		replayAgg := originalBroadcaster.Clone()
+		if replayAgg == nil {
+			logging.Error("Clone returned nil for aggregate %s", aggID)
+			continue
+		}
+		replayBroadcaster, ok := replayAgg.(eventsourcing.ThreeDUIBroadcaster)
+		if !ok {
+			logging.Error("Cloned aggregate %s does not implement ThreeDUIBroadcaster", aggID)
+			continue
+		}
+
+		actions := []eventsourcing.DeltaAction{}
+		for _, event := range events {
+			eventActions := replayBroadcaster.Broadcast3DDelta(event)
+			actions = append(actions, eventActions...)
+		}
+
+		logging.Info("Aggregate %s replayed %d events, sending %d actions", aggID, len(events), len(actions))
+		totalActions += len(actions)
+		if len(actions) > 0 {
+			// Send actions one by one with delay to see the process unfold
+			for i, action := range actions {
 				env := eventsourcing.DeltaEnvelope{
 					Type:      "delta",
-					Aggregate: agg.ID(),
-					EventID:   "full_state",
+					Aggregate: aggID,
+					EventID:   fmt.Sprintf("replay-%d", i+1),
 					Timestamp: eventsourcing.ISOTimestamp(),
-					Actions:   actions,
+					Actions:   []eventsourcing.DeltaAction{action},
 				}
-				logging.Info("Sending JSON to Godot")
 				err := conn.WriteJSON(env)
 				if err != nil {
-					logging.Error("Error sending full state to Godot: %v", err)
+					logging.Error("Error sending replay action to Godot: %v", err)
 					return
 				}
-			} else {
-				logging.Info("Aggregate %s has no actions to send", agg.ID())
+				// Delay to allow Godot to process each action
+				time.Sleep(40 * time.Millisecond)
 			}
-		} else {
-			logging.Info("Aggregate %s does not implement ThreeDUIBroadcaster", agg.ID())
 		}
 	}
 	logging.Info("Total actions sent to Godot: %d", totalActions)
@@ -420,8 +428,7 @@ func (s *GodotServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if messageType == websocket.TextMessage {
 				logging.Trace("Received text from Godot: %s", string(message))
 				s.handleTextMessage(conn, message)
-			} else if messageType == websocket.BinaryMessage {
-				s.handleBinaryMessage(message)
+
 			} else {
 				logging.Info("Received unknown message type from Godot: %d", messageType)
 			}

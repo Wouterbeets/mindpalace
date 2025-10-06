@@ -57,9 +57,12 @@ sky_material = SubResource("ProceduralSkyMaterial_7bkhj")
 background_mode = 2
 background_energy_multiplier = 0.4
 sky = SubResource("Sky_epkd7")
+fog_enabled = true
+fog_mode = 2
+fog_density = 0.1
+fog_color = Color(1, 1, 1, 1)
 fog_light_color = Color(0.00930032, 0.0112573, 0.0147838, 1)
 fog_light_energy = 0.46
-volumetric_fog_density = 0.002
 
 [node name="Main" type="Node3D"]
 script = ExtResource("2_main")

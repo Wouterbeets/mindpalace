@@ -861,6 +861,10 @@ func (a *CalendarAggregate) Broadcast3DDelta(event eventsourcing.Event) []events
 		pos[0] = pos[2] // Move Z spacing to X axis
 		pos[1] = 2.0
 		pos[2] = -8.0
+		// Offset by calendar zone position
+		pos[0] += 20
+		pos[1] += 0
+		pos[2] += 0
 		actions := ui3d.CreateCard(fmt.Sprintf("calendar_event_%s", e.EventID), e.Title, pos, theme)
 		for j := range actions {
 			if actions[j].Properties == nil {
@@ -883,6 +887,10 @@ func (a *CalendarAggregate) Broadcast3DDelta(event eventsourcing.Event) []events
 		pos[0] = pos[2] // Move Z spacing to X axis
 		pos[1] = 2.0
 		pos[2] = -8.0
+		// Offset by calendar zone position
+		pos[0] += 20
+		pos[1] += 0
+		pos[2] += 0
 		// Delete old and create new
 		oldActions := []eventsourcing.DeltaAction{
 			{Type: "delete", NodeID: fmt.Sprintf("calendar_event_%s", e.EventID)},

@@ -19,10 +19,10 @@ void fragment() {
     vec3 world_pos = world_pos_var;
     float noise = texture(noise_tex, world_pos.xz * 0.005).r;
 
-    // Simple height-based coloring
-    ALBEDO = mix(vec3(0.2, 0.4, 0.2), vec3(0.6, 0.3, 0.1), noise);
-    ALPHA = 0.3;  // Ghostly translucent
-    EMISSION = vec3(0.05);  // Barely-there silver whisper
+    // Black glass albedo
+    ALBEDO = vec3(0.0);
+    ALPHA = 0.2;  // Obsidian-like opacity
+    EMISSION = vec3(0.03, 0.03, 0.05);  // Faint ethereal glow
     ROUGHNESS = 1.0;  // Matte
     SPECULAR = 0.0;  // No shine
 }

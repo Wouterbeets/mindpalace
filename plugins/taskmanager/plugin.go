@@ -141,6 +141,13 @@ func (a *TaskAggregate) ApplyEvent(event eventsourcing.Event) error {
 		}
 		delete(a.Tasks, e.TaskID)
 
+	case "taskmanager_TaskPositionUpdated":
+		var e TaskPositionUpdatedEvent
+		if err := json.Unmarshal(data, &e); err != nil {
+			return fmt.Errorf("failed to unmarshal TaskPositionUpdated: %v", err)
+		}
+		// Position updates don't change task state, just acknowledge
+
 	default:
 		return nil
 	}
@@ -180,6 +187,7 @@ func NewPlugin() eventsourcing.Plugin {
 	eventsourcing.RegisterEvent("taskmanager_TaskCompleted", func() eventsourcing.Event { return &TaskCompletedEvent{} })
 	eventsourcing.RegisterEvent("taskmanager_TasksListed", func() eventsourcing.Event { return &TasksListedEvent{} })
 	eventsourcing.RegisterEvent("taskmanager_TaskDeleted", func() eventsourcing.Event { return &TaskDeletedEvent{} })
+	eventsourcing.RegisterEvent("taskmanager_TaskPositionUpdated", func() eventsourcing.Event { return &TaskPositionUpdatedEvent{} })
 	return p
 }
 
@@ -497,6 +505,19 @@ func (e *TaskDeletedEvent) Marshal() ([]byte, error) {
 }
 func (e *TaskDeletedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
 
+type TaskPositionUpdatedEvent struct {
+	EventType string    `json:"event_type"`
+	TaskID    string    `json:"task_id"`
+	Position  []float64 `json:"position"`
+}
+
+func (e *TaskPositionUpdatedEvent) Type() string { return "taskmanager_TaskPositionUpdated" }
+func (e *TaskPositionUpdatedEvent) Marshal() ([]byte, error) {
+	e.EventType = e.Type()
+	return json.Marshal(e)
+}
+func (e *TaskPositionUpdatedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
+
 // Utility functions
 func generateTaskID() string {
 	return fmt.Sprintf("task_%d", time.Now().UnixNano())
@@ -788,6 +809,10 @@ func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourc
 			i++
 		}
 		pos := ui3d.PositionInCircle(i, 6.0+float64(i)*0.5, 2.0)
+		// Offset by task zone position
+		pos[0] += 0
+		pos[1] += 0
+		pos[2] += 20
 		color := priorityColor(e.Priority)
 		actions := ui3d.CreateStandardObject(ui3d.StandardObject{
 			ID:       e.TaskID,
@@ -823,6 +848,10 @@ func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourc
 			i++
 		}
 		pos := ui3d.PositionInCircle(i, 6.0+float64(i)*0.5, 2.0)
+		// Offset by task zone position
+		pos[0] += 0
+		pos[1] += 0
+		pos[2] += 20
 		color := priorityColor(a.Tasks[e.TaskID].Priority)
 		// Delete old
 		oldActions := []eventsourcing.DeltaAction{{
@@ -863,50 +892,16 @@ func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourc
 	return nil
 }
 
-func (a *TaskAggregate) GetFull3DState() []eventsourcing.DeltaAction {
+func (a *TaskAggregate) Clone() eventsourcing.Aggregate {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()
-	theme := ui3d.DefaultTheme()
-	actions := make([]eventsourcing.DeltaAction, 0)
-
-	// Sort tasks by creation time for consistent positioning
-	type taskWithID struct {
-		id   string
-		task *Task
-	}
-	var sortedTasks []taskWithID
+	// Create a new aggregate with copied state
+	newAgg := NewTaskAggregate()
 	for id, task := range a.Tasks {
-		sortedTasks = append(sortedTasks, taskWithID{id: id, task: task})
+		newTask := *task // Shallow copy, assuming no nested pointers
+		newAgg.Tasks[id] = &newTask
 	}
-	sort.Slice(sortedTasks, func(i, j int) bool {
-		return sortedTasks[i].task.CreatedAt.Before(sortedTasks[j].task.CreatedAt)
-	})
-
-	lm := ui3d.LayoutManager{Type: "circle", Spacing: 6.0, Counter: 0}
-	for _, taskItem := range sortedTasks {
-		pos := lm.NextPosition()
-		pos[1] = 2.0 // Fixed height
-		color := priorityColor(taskItem.task.Priority)
-		// Use StandardObject
-		taskActions := ui3d.CreateStandardObject(ui3d.StandardObject{
-			ID:       taskItem.id,
-			MeshType: "box",
-			Position: pos,
-			Label:    &ui3d.LabelConfig{Text: taskItem.task.Title},
-			Theme:    theme,
-			Extra: map[string]interface{}{
-				"event_type": "task",
-				"material_override": map[string]interface{}{
-					"albedo_color": color,
-				},
-			},
-		})
-		if len(taskActions) > 1 {
-			taskActions[1].Properties["event_type"] = "task"
-		}
-		actions = append(actions, taskActions...)
-	}
-	return actions
+	return newAgg
 }
 
 // getSortedTaskIDs returns task IDs sorted by creation time for consistent positioning
