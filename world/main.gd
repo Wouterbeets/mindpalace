@@ -750,7 +750,7 @@ func update_node(node_id: String, properties: Dictionary):
         # Special handling for transcription display
         var transcription_node = get_node_or_null("transcription_display")
         if transcription_node and properties.has("text"):
-            transcription_node.text += properties["text"]
+            transcription_node.text = format_with_line_breaks(properties["text"], 80)
             # Ensure readability
             if not transcription_node.has_theme_override("font_size"):
                 transcription_node.add_theme_font_size_override("font_size", 64)
@@ -1278,15 +1278,35 @@ func _on_send_request():
     user_request_input.text = ""
 
 func send_request(text: String):
-  if websocket.get_ready_state() != WebSocketPeer.STATE_OPEN:
-    return
-  var req_msg = {
-    "type": "request",
-    "text": text
-  }
-  var json_string = JSON.stringify(req_msg)
-  var err = websocket.send_text(json_string)
-  if err != OK:
-    push_error("Failed to send request: ", err)
+    if websocket.get_ready_state() != WebSocketPeer.STATE_OPEN:
+        return
+    var req_msg = {
+        "type": "request",
+        "text": text
+    }
+    var json_string = JSON.stringify(req_msg)
+    var err = websocket.send_text(json_string)
+    if err != OK:
+        push_error("Failed to send request: ", err)
+func format_with_line_breaks(text: String, chars_per_line: int) -> String:
+    var words = text.split(" ", false)
+    var lines = []
+    var current_line = ""
+    var char_count = 0
+
+    for word in words:
+        var word_with_space = word + " "
+        var word_len = word_with_space.length()
+        if char_count + word_len > chars_per_line:
+            lines.append(current_line.strip_edges())
+            current_line = ""
+            char_count = 0
+        current_line += word_with_space
+        char_count += word_len
+
+    if current_line != "":
+        lines.append(current_line.strip_edges())
+
+    return "\n".join(lines)
 
 

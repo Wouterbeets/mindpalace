@@ -110,52 +110,10 @@ func TestGodotServer_SetAggStore(t *testing.T) {
 	}
 }
 
-func TestGodotServer_SetAudioCallback(t *testing.T) {
-	server := NewGodotServer()
-	called := false
-	callback := func(data []byte) {
-		called = true
-	}
-	server.SetAudioCallback(callback)
-
-	// Simulate calling the callback
-	if server.audioCallback != nil {
-		server.audioCallback([]byte("test"))
-		if !called {
-			t.Error("Audio callback was not called")
-		}
-	} else {
-		t.Error("Audio callback not set")
-	}
-}
-
 func TestGodotServer_SendTranscription(t *testing.T) {
 	server := NewGodotServer()
 	// Just test that it doesn't panic
 	server.SendTranscription("test text")
-}
-
-func TestGodotServer_handleTextMessage_AudioChunk(t *testing.T) {
-	server := NewGodotServer()
-	called := false
-	server.SetAudioCallback(func(data []byte) {
-		called = true
-		if string(data) != "test audio" {
-			t.Errorf("Expected 'test audio', got %s", string(data))
-		}
-	})
-
-	msg := map[string]interface{}{
-		"type": "audio_chunk",
-		"data": "dGVzdCBhdWRpbw==", // base64 for "test audio"
-	}
-	data, _ := json.Marshal(msg)
-
-	server.handleTextMessage(nil, data)
-
-	if !called {
-		t.Error("Audio callback not called")
-	}
 }
 
 func TestGodotServer_handleTextMessage_UnknownType(t *testing.T) {
@@ -168,20 +126,6 @@ func TestGodotServer_handleTextMessage_UnknownType(t *testing.T) {
 
 	// Should not panic or error
 	server.handleTextMessage(nil, data)
-}
-
-func TestGodotServer_handleBinaryMessage(t *testing.T) {
-	server := NewGodotServer()
-	called := false
-	server.SetAudioCallback(func(data []byte) {
-		called = true
-	})
-
-	server.handleBinaryMessage([]byte("test"))
-
-	if !called {
-		t.Error("Audio callback not called for binary message")
-	}
 }
 
 func TestGodotServer_broadcast(t *testing.T) {

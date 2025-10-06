@@ -24,9 +24,8 @@ type VoiceTranscriber struct {
 	mu                    sync.Mutex
 	transcriptionCallback func(string)
 	sessionCallback       func(eventType string, data map[string]interface{})
-	audioBuffer           []float32
+	streamProcessor       *AudioStreamProcessor
 	sampleRate            int
-	bufferThreshold       int // samples to buffer before transcription
 	sessionID             string
 	startTime             time.Time
 	totalSegments         int
@@ -34,6 +33,7 @@ type VoiceTranscriber struct {
 	captureCtx            context.Context
 	captureCancel         context.CancelFunc
 	stream                *portaudio.Stream
+	fullTranscription     string
 }
 
 // NewVoiceTranscriber initializes a new VoiceTranscriber instance with go-whisper
@@ -42,10 +42,9 @@ func NewVoiceTranscriber(modelPath string) (*VoiceTranscriber, error) {
 	filename := filepath.Base(modelPath)
 	var err error
 	vt := &VoiceTranscriber{
-		sampleRate:      16000,
-		bufferThreshold: 16000 * 10, // 10 seconds
-		audioBuffer:     make([]float32, 0, 16000*10),
+		sampleRate: 16000,
 	}
+	vt.streamProcessor = NewAudioStreamProcessor(4.0, 0.5, vt.sampleRate) // 4s window, 0.5s overlap
 	vt.whisper, err = whisper.New(dir)
 	if err != nil {
 		return nil, err
@@ -89,7 +88,7 @@ func (vt *VoiceTranscriber) Start(transcriptionCallback func(string)) error {
 	vt.sessionID = fmt.Sprintf("session-%d", time.Now().UnixNano())
 	vt.startTime = time.Now()
 	vt.totalSegments = 0
-	vt.audioBuffer = vt.audioBuffer[:0] // Clear buffer
+	vt.fullTranscription = ""
 	vt.running = true
 
 	logging.Info("AUDIO: Voice transcriber started with session %s", vt.sessionID)
@@ -120,7 +119,7 @@ func (vt *VoiceTranscriber) Stop() {
 		vt.sessionID, duration, vt.totalSegments)
 }
 
-// ProcessAudioChunk processes incoming audio data from WebSocket
+// ProcessAudioChunk processes incoming audio data from microphone
 func (vt *VoiceTranscriber) ProcessAudioChunk(pcmData []byte) error {
 	logging.Debug("AUDIO: Received audio chunk: %d bytes", len(pcmData))
 	vt.mu.Lock()
@@ -141,30 +140,27 @@ func (vt *VoiceTranscriber) ProcessAudioChunk(pcmData []byte) error {
 	logging.Debug("AUDIO: Converted to %d float32 samples", len(samples))
 
 	vt.mu.Lock()
-	vt.audioBuffer = append(vt.audioBuffer, samples...)
-	logging.Debug("AUDIO: Buffer now has %d samples (threshold: %d)", len(vt.audioBuffer), vt.bufferThreshold)
+	vt.streamProcessor.AddSamples(samples)
 
-	// Process when we have enough audio (10 seconds)
-	if len(vt.audioBuffer) >= vt.bufferThreshold {
-		audioToProcess := make([]float32, len(vt.audioBuffer))
-		copy(audioToProcess, vt.audioBuffer)
-		vt.audioBuffer = vt.audioBuffer[:0] // Clear buffer
+	// Process any available chunks
+	for {
+		chunk, ok := vt.streamProcessor.GetNextChunk()
+		if !ok {
+			break
+		}
 		vt.mu.Unlock()
-
-		logging.Info("AUDIO: Buffer threshold reached (%d samples), starting transcription", len(audioToProcess))
-		// Process in background
-		go vt.transcribeAudio(audioToProcess)
-	} else {
-		vt.mu.Unlock()
-		logging.Debug("AUDIO: Buffer not full yet, continuing to accumulate")
+		logging.Info("AUDIO: Processing overlapped chunk of %d samples (%.1fs)", len(chunk), float64(len(chunk))/float64(vt.sampleRate))
+		vt.transcribeAudio(chunk)
+		vt.mu.Lock()
 	}
+	vt.mu.Unlock()
 
 	return nil
 }
 
 // transcribeAudio performs the actual transcription using go-whisper
 func (vt *VoiceTranscriber) transcribeAudio(audio []float32) {
-	logging.Info("AUDIO: Transcribing %d audio samples (%.2fs)", len(audio), float64(len(audio))/float64(vt.sampleRate))
+	logging.Info("AUDIO: Transcribing %d audio samples (%.1fs)", len(audio), float64(len(audio))/float64(vt.sampleRate))
 
 	// Save audio to file for debugging
 	if err := saveAudioToWav(audio, fmt.Sprintf("debug_audio_%d.wav", time.Now().UnixNano())); err != nil {
@@ -255,7 +251,7 @@ func saveAudioToWav(samples []float32, filename string) error {
 	return nil
 }
 
-// Close cleans up the Whisper instance
+// StartCapture starts microphone capture using PortAudio
 func (vt *VoiceTranscriber) StartCapture(ctx context.Context) error {
 	logging.Info("AUDIO: Starting microphone capture")
 	vt.mu.Lock()
