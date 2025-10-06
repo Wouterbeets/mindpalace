@@ -1,3 +1,33 @@
 .aider*
 
-**/CLAUDE.local.md
+# API keys and sensitive files
+.gemini-api-key.txt
+world/.godot/export_credentials.cfg
+
+# Data and assets
+Thingi10K-002.tar.gz
+assets/
+models/
+
+# Documentation (if not needed in repo)
+AGENTS.md
+
+# Build artifacts and binaries
+build/
+cmd/mindpalace/mindpalace
+pkg/world/world
+*.so
+world/world.x86_64
+world/world.sh
+
+# Logs and databases
+events.db
+performance_test.log
+
+# Plugins and external tools
+plugins/bulderprompt.txt
+whisper-cpp/
+
+# Godot project files
+world/.godot/
+world/export_presets.cfg
