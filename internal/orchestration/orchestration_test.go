@@ -308,7 +308,8 @@ func TestBroadcast3DDelta(t *testing.T) {
 		Function:   "test",
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
-	actions := agg.Broadcast3DDelta(event)
+	signal := agg.Broadcast3DDelta(event)
+	actions := signal.Actions
 	if len(actions) != 2 {
 		t.Errorf("Expected 2 actions, got %d", len(actions))
 	}
@@ -727,7 +728,8 @@ func TestBroadcast3DDelta_UserRequestReceived(t *testing.T) {
 		RequestText: "test",
 		Timestamp:   "2023-01-01T00:00:00Z",
 	}
-	actions := agg.Broadcast3DDelta(event)
+	signal := agg.Broadcast3DDelta(event)
+	actions := signal.Actions
 	if len(actions) == 0 {
 		t.Errorf("Expected at least 1 action, got 0")
 	}
@@ -744,7 +746,8 @@ func TestBroadcast3DDelta_AgentCallDecided(t *testing.T) {
 		AgentName: "test",
 		Timestamp: "2023-01-01T00:00:00Z",
 	}
-	actions := agg.Broadcast3DDelta(event)
+	signal := agg.Broadcast3DDelta(event)
+	actions := signal.Actions
 	if len(actions) != 2 {
 		t.Errorf("Expected 2 actions, got %d", len(actions))
 	}
@@ -758,7 +761,8 @@ func TestBroadcast3DDelta_ToolCallRequestPlaced(t *testing.T) {
 		Function:   "test",
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
-	actions := agg.Broadcast3DDelta(event)
+	signal := agg.Broadcast3DDelta(event)
+	actions := signal.Actions
 	if len(actions) != 2 {
 		t.Errorf("Expected 2 actions, got %d", len(actions))
 	}
@@ -772,12 +776,13 @@ func TestBroadcast3DDelta_ToolCallStarted(t *testing.T) {
 		Function:   "test",
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
-	actions := agg.Broadcast3DDelta(event)
+	signal := agg.Broadcast3DDelta(event)
+	actions := signal.Actions
 	if len(actions) != 1 {
 		t.Errorf("Expected 1 action, got %d", len(actions))
 	}
-	if actions[0].Type != "update" {
-		t.Errorf("Expected update, got %s", actions[0].Type)
+	if actions[0].Type != "create" {
+		t.Errorf("Expected create, got %s", actions[0].Type)
 	}
 }
 
@@ -789,7 +794,8 @@ func TestBroadcast3DDelta_ToolCallCompleted(t *testing.T) {
 		Function:   "test",
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
-	actions := agg.Broadcast3DDelta(event)
+	signal := agg.Broadcast3DDelta(event)
+	actions := signal.Actions
 	if len(actions) != 1 {
 		t.Errorf("Expected 1 action, got %d", len(actions))
 	}
@@ -803,7 +809,8 @@ func TestBroadcast3DDelta_ToolCallFailedEvent(t *testing.T) {
 		Function:   "test",
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
-	actions := agg.Broadcast3DDelta(event)
+	signal := agg.Broadcast3DDelta(event)
+	actions := signal.Actions
 	if len(actions) != 1 {
 		t.Errorf("Expected 1 action, got %d", len(actions))
 	}
@@ -816,7 +823,8 @@ func TestBroadcast3DDelta_AgentExecutionFailedEvent(t *testing.T) {
 		RequestID: "req1",
 		Timestamp: "2023-01-01T00:00:00Z",
 	}
-	actions := agg.Broadcast3DDelta(event)
+	signal := agg.Broadcast3DDelta(event)
+	actions := signal.Actions
 	if len(actions) != 1 {
 		t.Errorf("Expected 1 action, got %d", len(actions))
 	}
@@ -829,7 +837,8 @@ func TestBroadcast3DDelta_RequestCompletedEvent(t *testing.T) {
 		ResponseText: "test",
 		CompletedAt:  "2023-01-01T00:00:00Z",
 	}
-	actions := agg.Broadcast3DDelta(event)
+	signal := agg.Broadcast3DDelta(event)
+	actions := signal.Actions
 	if len(actions) != 2 {
 		t.Errorf("Expected 2 actions, got %d", len(actions))
 	}

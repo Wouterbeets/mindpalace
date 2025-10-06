@@ -713,7 +713,7 @@ func (a *OrchestrationAggregate) nextPosition() []float64 {
 	return []float64{x, height, z}
 }
 
-func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourcing.DeltaAction {
+func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) eventsourcing.Signal {
 	theme := ui3d.DefaultTheme()
 	switch e := event.(type) {
 	// Orchestration events
@@ -740,7 +740,7 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []e
 				"details":     displayInfo.Details,
 			}
 		}
-		return []eventsourcing.DeltaAction{box, label}
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box, label}}
 	case *AgentCallDecidedEvent:
 		pos := a.nextPosition()
 		box := ui3d.CreateBox(fmt.Sprintf("agent_%s", e.RequestID), pos, theme)
@@ -765,7 +765,7 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []e
 				"details":     displayInfo.Details,
 			}
 		}
-		return []eventsourcing.DeltaAction{box, label}
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box, label}}
 	case *ToolCallRequestPlaced:
 		pos := a.nextPosition()
 		box := ui3d.CreateBox(fmt.Sprintf("tool_call_%s", e.ToolCallID), pos, theme)
@@ -789,7 +789,7 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []e
 				"details":     displayInfo.Details,
 			}
 		}
-		return []eventsourcing.DeltaAction{box, label}
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box, label}}
 	case *ToolCallStarted:
 		pos := a.nextPosition()
 		box := ui3d.CreateBox(fmt.Sprintf("tool_call_started_%s", e.ToolCallID), pos, theme)
@@ -797,7 +797,7 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []e
 		box.Properties["material_override"] = map[string]interface{}{
 			"albedo_color": []float64{1, 0.5, 0, 1}, // Orange for tool call started
 		}
-		return []eventsourcing.DeltaAction{box}
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box}}
 	case *ToolCallCompleted:
 		pos := a.nextPosition()
 		box := ui3d.CreateBox(fmt.Sprintf("tool_call_completed_%s", e.ToolCallID), pos, theme)
@@ -805,7 +805,7 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []e
 		box.Properties["material_override"] = map[string]interface{}{
 			"albedo_color": []float64{0, 1, 0, 1}, // Green for completed
 		}
-		return []eventsourcing.DeltaAction{box}
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box}}
 	case *ToolCallFailedEvent:
 		pos := a.nextPosition()
 		box := ui3d.CreateBox(fmt.Sprintf("tool_call_failed_%s", e.ToolCallID), pos, theme)
@@ -813,7 +813,7 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []e
 		box.Properties["material_override"] = map[string]interface{}{
 			"albedo_color": []float64{1, 0, 0, 1}, // Red for failed
 		}
-		return []eventsourcing.DeltaAction{box}
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box}}
 	case *AgentExecutionFailedEvent:
 		pos := a.nextPosition()
 		box := ui3d.CreateBox(fmt.Sprintf("agent_failed_%s", e.RequestID), pos, theme)
@@ -821,7 +821,7 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []e
 		box.Properties["material_override"] = map[string]interface{}{
 			"albedo_color": []float64{1, 0, 0, 1}, // Red for failed
 		}
-		return []eventsourcing.DeltaAction{box}
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box}}
 	case *RequestCompletedEvent:
 		pos := a.nextPosition()
 		box := ui3d.CreateBox(fmt.Sprintf("completed_%s", e.RequestID), pos, theme)
@@ -845,7 +845,7 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []e
 				"details":     displayInfo.Details,
 			}
 		}
-		return []eventsourcing.DeltaAction{box, label}
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box, label}}
 
 	// Task events
 	case *eventsourcing.InitiatePluginCreationEvent:
@@ -854,7 +854,7 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []e
 		box.Properties["event_type"] = "plugin_generated"
 		label := ui3d.CreateLabel(fmt.Sprintf("plugin_%s_label", e.PluginName), fmt.Sprintf("Plugin: %s", e.PluginName), []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
 		label.Properties["event_type"] = "plugin_generated"
-		return []eventsourcing.DeltaAction{box, label}
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box, label}}
 
 	// Add more event types as needed, e.g., task events, calendar events, etc.
 	// For now, handle a few key ones to visualize event history
@@ -865,9 +865,14 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) []e
 		box.Properties["event_type"] = event.Type()
 		label := ui3d.CreateLabel(fmt.Sprintf("external_%s_%d_label", event.Type(), a.PositionIndex-1), event.Type(), []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
 		label.Properties["event_type"] = event.Type()
-		return []eventsourcing.DeltaAction{box, label}
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box, label}}
 	}
-	return nil
+	return eventsourcing.Signal{}
+}
+
+func (a *OrchestrationAggregate) GetCurrent3DState() eventsourcing.Signal {
+	// Orchestration may not have persistent 3D state, return empty for now
+	return eventsourcing.Signal{}
 }
 
 func (a *OrchestrationAggregate) Clone() eventsourcing.Aggregate {
