@@ -78,9 +78,9 @@ Incremental TDD approach: Write tests first, fail, implement, integrate, commit.
 - [x] Validate design with team
 - [x] Phase 1: Extend ThreeDUIBroadcaster
 - [x] Phase 1: Implement GetCurrent3DState in TaskAggregate
+- [x] Phase 3: Update sendFullState
 - [ ] Phase 2: Godot underground scene
 - [ ] Phase 2: Message handling split
-- [ ] Phase 3: Update sendFullState
 - [ ] Phase 3: Add /debug API route
 - [ ] Phase 3: Godot debug WS messages
 - [ ] Phase 3: Integration tests with keystrokes

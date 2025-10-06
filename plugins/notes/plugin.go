@@ -567,12 +567,12 @@ func (p *NotesPlugin) EventHandlers() map[string]eventsourcing.EventHandler {
 	return nil
 }
 
-func (a *NotesAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourcing.DeltaAction {
+func (a *NotesAggregate) Broadcast3DDelta(event eventsourcing.Event) eventsourcing.Signal {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()
 	switch e := event.(type) {
 	case *NoteCreatedEvent:
-		return []eventsourcing.DeltaAction{{
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{{
 			Type:     "create",
 			NodeID:   e.NoteID,
 			NodeType: "MeshInstance3D",
@@ -595,24 +595,26 @@ func (a *NotesAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsour
 				"position":   []interface{}{0, 1, 0}, // Relative
 				"event_type": "note_created",
 			},
-		}}
+		}}}
 	case *NoteDeletedEvent:
-		return []eventsourcing.DeltaAction{{
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{{
 			Type:   "delete",
 			NodeID: e.NoteID,
 		}, {
 			Type:   "delete",
 			NodeID: e.NoteID + "_label",
-		}}
+		}}}
 	}
-	return nil
+	return eventsourcing.Signal{}
 }
 
-func (a *NotesAggregate) GetFull3DState() []eventsourcing.DeltaAction {
+func (a *NotesAggregate) GetCurrent3DState() eventsourcing.Signal {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()
 	theme := ui3d.DefaultTheme()
 	actions := make([]eventsourcing.DeltaAction, 0)
+	stateSummary := make(map[string]interface{})
+	noteSummaries := []map[string]interface{}{}
 	i := 0
 	for _, note := range a.Notes {
 		pos := ui3d.PositionInCircle(i, 6.0+float64(i)*0.5, 2.0)
@@ -628,9 +630,17 @@ func (a *NotesAggregate) GetFull3DState() []eventsourcing.DeltaAction {
 			cards[j].Properties["event_type"] = "note"
 		}
 		actions = append(actions, cards...)
+		noteSummaries = append(noteSummaries, map[string]interface{}{
+			"id":    note.NoteID,
+			"title": note.Title,
+		})
 		i++
 	}
-	return actions
+	stateSummary["notes"] = noteSummaries
+	return eventsourcing.Signal{
+		Actions:      actions,
+		StateSummary: stateSummary,
+	}
 }
 
 // Helper functions

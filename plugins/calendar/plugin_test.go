@@ -115,7 +115,7 @@ func TestCalendarAggregate_ApplyEvent_EventDeleted(t *testing.T) {
 	}
 }
 
-func TestCalendarAggregate_GetFull3DState(t *testing.T) {
+func TestCalendarAggregate_GetCurrent3DState(t *testing.T) {
 	agg := NewCalendarAggregate()
 
 	// Create an event
@@ -127,7 +127,8 @@ func TestCalendarAggregate_GetFull3DState(t *testing.T) {
 	}
 	agg.ApplyEvent(createEvent)
 
-	actions := agg.GetFull3DState()
+	signal := agg.GetCurrent3DState()
+	actions := signal.Actions
 
 	// Should have 1 hub + 2 for event (box and label)
 	if len(actions) != 3 {
@@ -166,7 +167,8 @@ func TestCalendarAggregate_Broadcast3DDelta_EventCreated(t *testing.T) {
 	// Apply the event first
 	agg.ApplyEvent(event)
 
-	actions := agg.Broadcast3DDelta(event)
+	signal := agg.Broadcast3DDelta(event)
+	actions := signal.Actions
 
 	// Should have 2 actions: box and label
 	if len(actions) != 2 {
@@ -192,7 +194,8 @@ func TestCalendarAggregate_Broadcast3DDelta_EventDeleted(t *testing.T) {
 		EventID:   "event1",
 	}
 
-	actions := agg.Broadcast3DDelta(event)
+	signal := agg.Broadcast3DDelta(event)
+	actions := signal.Actions
 
 	// Should have 2 actions: delete box and delete label
 	if len(actions) != 2 {

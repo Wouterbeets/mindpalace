@@ -842,7 +842,7 @@ func (p *CalendarPlugin) EventHandlers() map[string]eventsourcing.EventHandler {
 	return nil
 }
 
-func (a *CalendarAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourcing.DeltaAction {
+func (a *CalendarAggregate) Broadcast3DDelta(event eventsourcing.Event) eventsourcing.Signal {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()
 	theme := ui3d.DefaultTheme()
@@ -872,7 +872,7 @@ func (a *CalendarAggregate) Broadcast3DDelta(event eventsourcing.Event) []events
 			}
 			actions[j].Properties["event_type"] = "calendar_event_created"
 		}
-		return actions
+		return eventsourcing.Signal{Actions: actions}
 	case *EventUpdatedEvent:
 		// Get sorted event IDs to determine position
 		sortedIDs := a.getSortedEventIDs()
@@ -896,28 +896,30 @@ func (a *CalendarAggregate) Broadcast3DDelta(event eventsourcing.Event) []events
 			{Type: "delete", NodeID: fmt.Sprintf("calendar_event_%s", e.EventID)},
 			{Type: "delete", NodeID: fmt.Sprintf("calendar_event_%s_label", e.EventID)},
 		}
-		newActions := ui3d.CreateCard(fmt.Sprintf("calendar_event_%s", e.EventID), a.Events[e.EventID].Title, pos, theme)
+		newActions := ui3d.CreateCard(fmt.Sprintf("calendar_event_%s", e.EventID), e.Title, pos, theme)
 		for j := range newActions {
 			if newActions[j].Properties == nil {
 				newActions[j].Properties = make(map[string]interface{})
 			}
 			newActions[j].Properties["event_type"] = "calendar_event_updated"
 		}
-		return append(oldActions, newActions...)
+		return eventsourcing.Signal{Actions: append(oldActions, newActions...)}
 	case *EventDeletedEvent:
-		return []eventsourcing.DeltaAction{
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{
 			{Type: "delete", NodeID: fmt.Sprintf("calendar_event_%s", e.EventID)},
 			{Type: "delete", NodeID: fmt.Sprintf("calendar_event_%s_label", e.EventID)},
-		}
+		}}
 	}
-	return nil
+	return eventsourcing.Signal{}
 }
 
-func (a *CalendarAggregate) GetFull3DState() []eventsourcing.DeltaAction {
+func (a *CalendarAggregate) GetCurrent3DState() eventsourcing.Signal {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()
 	theme := ui3d.DefaultTheme()
 	actions := []eventsourcing.DeltaAction{ui3d.CreateSphere("calendar_hub", []float64{0.0, 0.0, -10.0}, theme)}
+	stateSummary := make(map[string]interface{})
+	eventSummaries := []map[string]interface{}{}
 	// Add cards for events in sorted order
 	sortedIDs := a.getSortedEventIDs()
 	for i, id := range sortedIDs {
@@ -934,8 +936,16 @@ func (a *CalendarAggregate) GetFull3DState() []eventsourcing.DeltaAction {
 			cards[j].Properties["event_type"] = "calendar_event"
 		}
 		actions = append(actions, cards...)
+		eventSummaries = append(eventSummaries, map[string]interface{}{
+			"id":    id,
+			"title": event.Title,
+		})
 	}
-	return actions
+	stateSummary["calendar_events"] = eventSummaries
+	return eventsourcing.Signal{
+		Actions:      actions,
+		StateSummary: stateSummary,
+	}
 }
 
 // getSortedEventIDs returns event IDs sorted by start time for consistent positioning
