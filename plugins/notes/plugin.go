@@ -10,10 +10,6 @@ import (
 
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/ui3d"
-
-	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/widget"
 )
 
 // Note represents a single note's state
@@ -428,70 +424,6 @@ func (p *NotesPlugin) listNotesHandler(input *ListNotesInput) ([]eventsourcing.E
 	return []eventsourcing.Event{event}, nil
 }
 
-// GetCustomUI returns a list view for the notes
-func (na *NotesAggregate) GetCustomUI() fyne.CanvasObject {
-	na.Mu.RLock()
-	notes := make([]*Note, 0, len(na.Notes))
-	for _, note := range na.Notes {
-		notes = append(notes, note)
-	}
-	na.Mu.RUnlock()
-
-	if len(notes) == 0 {
-		return container.NewCenter(widget.NewLabel("No notes available. Create one to get started!"))
-	}
-
-	// Sort notes by creation time
-	sort.Slice(notes, func(i, j int) bool {
-		return notes[i].CreatedAt.Before(notes[j].CreatedAt)
-	})
-
-	content := container.NewVBox()
-	for _, note := range notes {
-		card := createNoteCard(note)
-		content.Add(card)
-		content.Add(widget.NewSeparator())
-	}
-
-	return container.NewVScroll(content)
-}
-
-// createNoteCard creates a compact card UI for a single note
-func createNoteCard(note *Note) fyne.CanvasObject {
-	// Title
-	title := widget.NewLabel(note.Title)
-	title.TextStyle = fyne.TextStyle{Bold: true}
-	title.Wrapping = fyne.TextWrapOff
-
-	// Compact content preview
-	content := strings.TrimSpace(note.Content)
-	if len(content) > 100 {
-		content = content[:97] + "..."
-	}
-	contentLabel := widget.NewLabel(content)
-	contentLabel.Wrapping = fyne.TextWrapWord
-
-	// Tags
-	var tagsText string
-	if len(note.Tags) > 0 {
-		tagsText = fmt.Sprintf("Tags: %s", strings.Join(note.Tags, ", "))
-	}
-	tagsLabel := widget.NewLabel(tagsText)
-	tagsLabel.TextStyle = fyne.TextStyle{Italic: true}
-
-	// Card layout
-	card := container.NewVBox(
-		title,
-		widget.NewSeparator(),
-		contentLabel,
-		tagsLabel,
-	)
-
-	// Style the card with padding
-	return container.NewPadded(card)
-}
-
-// Additional Plugin Methods
 func (p *NotesPlugin) Aggregate() eventsourcing.Aggregate {
 	return p.aggregate
 }

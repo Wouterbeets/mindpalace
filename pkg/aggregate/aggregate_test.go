@@ -3,7 +3,6 @@ package aggregate
 import (
 	"testing"
 
-	"fyne.io/fyne/v2"
 	"mindpalace/pkg/eventsourcing"
 )
 
@@ -17,10 +16,6 @@ func (m *MockAggregate) ID() string {
 }
 
 func (m *MockAggregate) ApplyEvent(event eventsourcing.Event) error {
-	return nil
-}
-
-func (m *MockAggregate) GetCustomUI() fyne.CanvasObject {
 	return nil
 }
 

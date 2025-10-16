@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"mindpalace/pkg/logging"
-	"sync/atomic"
+	"sync"
 	"time"
-
-	"fyne.io/fyne/v2"
 )
 
 var eventRegistry = make(map[string]func() Event)
@@ -96,15 +94,18 @@ type Plugin interface {
 type Aggregate interface {
 	ID() string
 	ApplyEvent(event Event) error
-	GetCustomUI() fyne.CanvasObject
 }
 
 // Counter for generating unique IDs
 var idCounter uint64 = 0
+var idMutex sync.Mutex
 
 // GenerateUniqueID generates a unique ID for entities like tasks
 func GenerateUniqueID() uint64 {
-	return atomic.AddUint64(&idCounter, 1)
+	idMutex.Lock()
+	defer idMutex.Unlock()
+	idCounter++
+	return idCounter
 }
 
 // ISOTimestamp returns the current time as an ISO 8601 formatted string
@@ -163,6 +164,7 @@ type DeltaEnvelope struct {
 	Timestamp    string                 `json:"timestamp"`               // ISO for sorting
 	IsFullState  bool                   `json:"is_full_state,omitempty"` // True for full snapshots
 	StateSummary map[string]interface{} `json:"state_summary,omitempty"` // Current state summary
+	SequenceID   int                    `json:"sequence_id"`             // For ACK-based flow control
 	Actions      []DeltaAction          `json:"actions"`
 }
 

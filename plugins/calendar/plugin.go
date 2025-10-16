@@ -4,17 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/ui3d"
-
-	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/theme"
-	"fyne.io/fyne/v2/widget"
 )
 
 // Register event types
@@ -180,6 +174,31 @@ func (p *CalendarPlugin) Commands() map[string]eventsourcing.CommandHandler {
 // Name returns the plugin name
 func (p *CalendarPlugin) Name() string {
 	return "calendar"
+}
+
+func (p *CalendarPlugin) AgentModel() string {
+	return "gpt-oss:20b" // Using the general-purpose model for calendar management
+}
+
+func (p *CalendarPlugin) Aggregate() eventsourcing.Aggregate {
+	return p.aggregate
+}
+
+func (p *CalendarPlugin) SystemPrompt() string {
+	return `You are a calendar management assistant. You can help users create, update, delete, and list calendar events.
+
+Available commands:
+- CreateEvent: Create a new calendar event with title, description, start time, end time, and importance level
+- UpdateEvent: Modify an existing event's details
+- DeleteEvent: Remove an event from the calendar
+- ListEvents: Show all events, optionally filtered by date range
+
+When creating events, ensure start time is before end time. Importance levels are: low, medium, high.
+Format times as ISO 8601 strings (e.g., "2024-01-15T10:00:00Z").`
+}
+
+func (p *CalendarPlugin) Type() eventsourcing.PluginType {
+	return eventsourcing.LLMPlugin
 }
 
 // Schemas defines the command schemas
@@ -664,178 +683,6 @@ func (p *CalendarPlugin) listEventsHandler(input *ListEventsInput) ([]eventsourc
 
 	event := &EventsListedEvent{EventType: "calendar_EventsListed", Events: filteredEvents}
 	return []eventsourcing.Event{event}, nil
-}
-
-// GetCustomUI returns a list view for the calendar events
-func (ca *CalendarAggregate) GetCustomUI() fyne.CanvasObject {
-	ca.Mu.RLock()
-	events := make([]*CalendarEvent, 0, len(ca.Events))
-	for _, event := range ca.Events {
-		events = append(events, event)
-	}
-	ca.Mu.RUnlock()
-
-	if len(events) == 0 {
-		return container.NewCenter(widget.NewLabel("No events available. Create one to get started!"))
-	}
-
-	// Sort events by start time
-	sort.Slice(events, func(i, j int) bool {
-		return events[i].StartTime.Before(events[j].StartTime)
-	})
-
-	content := container.NewVBox()
-	for _, event := range events {
-		card := createEventCard(event)
-		content.Add(card)
-		content.Add(widget.NewSeparator())
-	}
-
-	return container.NewVScroll(content)
-}
-
-// createEventCard creates a compact card UI for a single event
-func createEventCard(event *CalendarEvent) fyne.CanvasObject {
-	// Title with importance icon
-	title := widget.NewLabel(event.Title)
-	title.TextStyle = fyne.TextStyle{Bold: true}
-	if event.Status == StatusCancelled {
-		title.TextStyle.Italic = true
-	}
-	title.Wrapping = fyne.TextWrapOff
-	titleBox := container.NewHBox(
-		widget.NewIcon(importanceIcon(event.Importance)),
-		title,
-	)
-
-	// Compact details
-	var detailLines []string
-	if event.Description != "" {
-		desc := strings.TrimSpace(event.Description)
-		if len(desc) > 50 {
-			desc = desc[:47] + "..."
-		}
-		detailLines = append(detailLines, desc)
-	}
-	detailLines = append(detailLines, fmt.Sprintf("Start: %s", event.StartTime.Format("2006-01-02 15:04")))
-	if !event.EndTime.IsZero() {
-		detailLines = append(detailLines, fmt.Sprintf("End: %s", event.EndTime.Format("2006-01-02 15:04")))
-	}
-	if event.Location != "" {
-		detailLines = append(detailLines, fmt.Sprintf("Location: %s", event.Location))
-	}
-	if len(event.Tags) > 0 {
-		detailLines = append(detailLines, fmt.Sprintf("Tags: %s", strings.Join(event.Tags, ", ")))
-	}
-	details := widget.NewLabel(strings.Join(detailLines, "\n"))
-	details.Wrapping = fyne.TextWrapWord
-
-	// Card layout
-	card := container.NewVBox(
-		titleBox,
-		widget.NewSeparator(),
-		details,
-	)
-
-	// Style the card with a border and padding
-	return container.NewPadded(container.NewBorder(
-		nil, nil, nil, nil,
-		card,
-	))
-}
-
-// importanceIcon returns an icon based on importance
-func importanceIcon(importance string) fyne.Resource {
-	switch importance {
-	case ImportanceCritical:
-		return theme.ErrorIcon()
-	case ImportanceHigh:
-		return theme.WarningIcon()
-	case ImportanceMedium:
-		return theme.InfoIcon()
-	case ImportanceLow:
-		return theme.ConfirmIcon()
-	default:
-		return theme.QuestionIcon()
-	}
-}
-
-// Additional Plugin Methods
-// Additional Plugin Methods
-func (p *CalendarPlugin) Aggregate() eventsourcing.Aggregate {
-	return p.aggregate
-}
-
-func (p *CalendarPlugin) Type() eventsourcing.PluginType {
-	return eventsourcing.LLMPlugin
-}
-
-func (p *CalendarPlugin) SystemPrompt() string {
-	// Acquire read lock to safely access events
-	p.aggregate.Mu.RLock()
-	defer p.aggregate.Mu.RUnlock()
-
-	// Collect events into a slice for sorting
-	events := make([]*CalendarEvent, 0, len(p.aggregate.Events))
-	for _, event := range p.aggregate.Events {
-		events = append(events, event)
-	}
-
-	// Sort events by start time for consistent ordering
-	sort.Slice(events, func(i, j int) bool {
-		return events[i].StartTime.Before(events[j].StartTime)
-	})
-
-	// Build the event list string
-	var eventList strings.Builder
-	if len(events) == 0 {
-		eventList.WriteString("There are currently no events.\n")
-	} else {
-		eventList.WriteString("Current events:\n")
-		for _, event := range events {
-			eventList.WriteString(fmt.Sprintf("- Event ID: %s, Title: \"%s\", Start: %s\n", event.EventID, event.Title, event.StartTime.Format("2006-01-02 15:04")))
-		}
-	}
-
-	// Construct the full dynamic prompt
-	prompt := `You are CalendarMaster, a specialized AI for managing calendar events in MindPalace.
-
-The user input will be a JSON object containing the arguments for the command to execute. Parse the JSON and call the appropriate command with the parsed values.
-
-Your job is to interpret user requests about calendar events and execute the right commands (CreateEvent, UpdateEvent, DeleteEvent, ListEvents) based on the current event state.
-
-` + eventList.String() + `
-
-Be concise, accurate, and always use the tools provided to manage events. Focus on:
-
-1. Creating detailed events with proper times, locations, and attendees
-2. Updating events with relevant information
-3. Deleting events when requested
-4. Listing and filtering events as requested
-
-When interpreting user requests, pay close attention to the intent:
-- If the user asks to "remove," "delete," or "cancel" an event, use the DeleteEvent command.
-- If the user asks to "create" or "add" an event, use the CreateEvent command.
-- If the user asks to "update" or "modify" an event, use the UpdateEvent command.
-- If the user asks to "list" or "show" events, use the ListEvents command.
-
-When creating or updating events, extract key information from user requests including:
-- Event title and description
-- Importance level (Low, Medium, High, Critical)
-- Status (Confirmed, Tentative, Cancelled)
-- Start and end times (in ISO format)
-- Location
-- Attendees
-- Tags for organization
-
-Format your responses in a structured way and confirm actions performed.`
-
-	return prompt
-}
-
-// AgentModel specifies the LLM model to use for this plugin's agent
-func (p *CalendarPlugin) AgentModel() string {
-	return "gpt-oss:20b" // Using the general-purpose model for calendar management
 }
 
 func (p *CalendarPlugin) EventHandlers() map[string]eventsourcing.EventHandler {

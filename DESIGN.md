@@ -27,7 +27,7 @@ This ensures users see *how* and *with what data* the AI works, while keeping th
 Instead of deltas, use "signals": Messages containing a list of actions for Godot to execute (like applying events in the backend), plus a current state summary as seen by the backend (e.g., list of task IDs with position and color, after actions applied). Godot has knowledge of the system and applies actions to maintain state.
 
 Signal structure:
-- `type`: "signal"
+- `type`: "delta"
 - `actions`: Array of actions (create, delete, update, animate, move_to, change_color, etc.), e.g.:
   ```json
   [
@@ -81,8 +81,8 @@ Incremental TDD approach: Write tests first, fail, implement, integrate, commit.
 - [x] Update notes plugin to use Signal
 - [x] Update calendar plugin to use Signal
 - [x] Phase 3: Update sendFullState
-- [ ] Phase 2: Godot underground scene
-- [ ] Phase 2: Message handling split
-- [ ] Phase 3: Add /debug API route
-- [ ] Phase 3: Godot debug WS messages
-- [ ] Phase 3: Integration tests with keystrokes
+- [x] Phase 2: Godot underground scene
+- [x] Phase 2: Message handling split
+- [x] Phase 3: Add /debug API route
+- [x] Phase 3: Godot debug WS messages
+- [x] Phase 3: Integration tests with keystrokes

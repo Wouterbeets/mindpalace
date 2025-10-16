@@ -28,12 +28,20 @@ type GodotServer struct {
 	pendingKeypresses map[string]chan map[string]interface{}
 	pendingMu         sync.RWMutex
 	transcriber       *audio.VoiceTranscriber
+
+	// ACK-based flow control
+	sequenceCounter int
+	pendingBatches  map[int]eventsourcing.DeltaEnvelope
+	ackChan         chan int
+	batchSize       int
+	ackTimeout      time.Duration
 }
 
 type ClientState struct {
 	conn      *websocket.Conn
 	ready     bool
 	lastReady time.Time
+	writeMu   sync.Mutex
 }
 
 type TaskPositionUpdatedEvent struct {
@@ -65,6 +73,11 @@ func NewGodotServer() *GodotServer {
 		clients:           make(map[*websocket.Conn]*ClientState),
 		deltaChan:         make(chan eventsourcing.DeltaEnvelope, 1000),
 		pendingKeypresses: make(map[string]chan map[string]interface{}),
+		sequenceCounter:   0,
+		pendingBatches:    make(map[int]eventsourcing.DeltaEnvelope),
+		ackChan:           make(chan int, 100),
+		batchSize:         5,
+		ackTimeout:        2 * time.Second,
 	}
 }
 
@@ -89,10 +102,9 @@ func (s *GodotServer) SetTranscriber(vt *audio.VoiceTranscriber) {
 }
 
 func (s *GodotServer) SendTranscription(text string) {
-	logging.Debug("AUDIO: Sending transcription to Godot: %s", text)
+	logging.Info("AUDIO: Sending transcription to Godot: '%s'", text)
 	env := eventsourcing.DeltaEnvelope{
-		Type:      "delta",
-		Aggregate: "transcription",
+		Type:      "transcription_update",
 		EventID:   fmt.Sprintf("transcription-%d", time.Now().UnixNano()),
 		Timestamp: eventsourcing.ISOTimestamp(),
 		Actions: []eventsourcing.DeltaAction{
@@ -106,7 +118,65 @@ func (s *GodotServer) SendTranscription(text string) {
 			},
 		},
 	}
+	logging.Info("AUDIO: Broadcasting transcription update")
 	s.broadcast(env)
+}
+
+func (s *GodotServer) SendBatchedDelta(env eventsourcing.DeltaEnvelope) {
+	// Split actions into batches
+	for i := 0; i < len(env.Actions); i += s.batchSize {
+		end := i + s.batchSize
+		if end > len(env.Actions) {
+			end = len(env.Actions)
+		}
+		batchEnv := eventsourcing.DeltaEnvelope{
+			Type:         env.Type,
+			Aggregate:    env.Aggregate,
+			EventID:      fmt.Sprintf("%s_batch_%d", env.EventID, s.sequenceCounter),
+			Timestamp:    env.Timestamp,
+			IsFullState:  env.IsFullState,
+			StateSummary: env.StateSummary,
+			SequenceID:   s.sequenceCounter,
+			Actions:      env.Actions[i:end],
+		}
+		s.pendingBatches[s.sequenceCounter] = batchEnv
+		s.sequenceCounter++
+
+		// Send batch and wait for ACK
+		s.sendBatchAndWait(batchEnv)
+	}
+}
+
+func (s *GodotServer) sendBatchAndWait(env eventsourcing.DeltaEnvelope) {
+	maxRetries := 3
+	for retry := 0; retry < maxRetries; retry++ {
+		s.clientsMu.RLock()
+		for _, client := range s.clients {
+			client.writeMu.Lock()
+			if err := client.conn.WriteJSON(env); err != nil {
+				logging.Error("Error sending batched delta: %v", err)
+			}
+			client.writeMu.Unlock()
+		}
+		s.clientsMu.RUnlock()
+
+		// Wait for ACK or timeout
+		select {
+		case ackSeq := <-s.ackChan:
+			if ackSeq == env.SequenceID {
+				delete(s.pendingBatches, env.SequenceID)
+				logging.Debug("ACK received for sequence %d", env.SequenceID)
+				return
+			}
+		case <-time.After(s.ackTimeout):
+			logging.Info("ACK timeout for sequence %d, retry %d/%d", env.SequenceID, retry+1, maxRetries)
+			if retry == maxRetries-1 {
+				logging.Error("Max retries reached for sequence %d", env.SequenceID)
+				delete(s.pendingBatches, env.SequenceID)
+				return
+			}
+		}
+	}
 }
 
 func (s *GodotServer) SendKeypresses(keyString string) {
@@ -159,6 +229,10 @@ func (s *GodotServer) handleTextMessage(conn *websocket.Conn, message []byte) {
 		s.handleKeypressAck(msg)
 	case "toggle_mic":
 		s.handleToggleMic(msg)
+	case "debug_info":
+		s.handleDebugInfo(msg)
+	case "delta_ack":
+		s.handleDeltaAck(msg)
 
 	default:
 		logging.Info("Unknown message type from Godot: %s", msgType)
@@ -307,8 +381,26 @@ func (s *GodotServer) handleToggleMic(msg map[string]interface{}) {
 	}
 }
 
+func (s *GodotServer) handleDebugInfo(msg map[string]interface{}) {
+	logging.Debug("Handling debug info from Godot: %v", msg)
+	// For now, just log it. Could store in a field for the debug endpoint if needed.
+}
+
+func (s *GodotServer) handleDeltaAck(msg map[string]interface{}) {
+	seqID, ok := msg["sequence_id"].(float64)
+	if !ok {
+		logging.Error("Invalid sequence_id in delta_ack")
+		return
+	}
+	select {
+	case s.ackChan <- int(seqID):
+	default:
+		logging.Info("ACK channel full, dropping ACK for %d", int(seqID))
+	}
+}
+
 func (s *GodotServer) handleReadyMessage(conn *websocket.Conn, msg map[string]interface{}) {
-	logging.Info("Received ready signal from Godot client")
+	logging.Info("BACKEND: Received ready signal from Godot client")
 
 	s.clientsMu.Lock()
 	if client, exists := s.clients[conn]; exists {
@@ -334,46 +426,54 @@ func (s *GodotServer) sendFullState(conn *websocket.Conn) {
 	zonesMsg := map[string]interface{}{
 		"type": "zones",
 		"zones": map[string][]float64{
-			"task":     {0, 0, 20},
+			"task":     {0, 0, -20},
 			"note":     {-20, 0, 0},
 			"calendar": {20, 0, 0},
 			"default":  {0, 5, 0},
 		},
 	}
-	conn.WriteJSON(zonesMsg)
+	s.clientsMu.RLock()
+	for _, client := range s.clients {
+		if client.conn == conn {
+			client.writeMu.Lock()
+			conn.WriteJSON(zonesMsg)
+			client.writeMu.Unlock()
+			break
+		}
+	}
+	s.clientsMu.RUnlock()
 
-	// For each aggregate, get current state
+	// Collect all actions into one envelope for batching
+	var allActions []eventsourcing.DeltaAction
 	for _, agg := range s.aggStore.AllAggregates() {
 		if broadcaster, ok := agg.(eventsourcing.ThreeDUIBroadcaster); ok {
 			signal := broadcaster.GetCurrent3DState()
-			logging.Info("Aggregate %s sending %d actions for full state", agg.ID(), len(signal.Actions))
+			logging.Info("Aggregate %s collecting %d actions for full state", agg.ID(), len(signal.Actions))
 			totalActions += len(signal.Actions)
-			if len(signal.Actions) > 0 {
-				// Send all actions instantly for full state
-				env := eventsourcing.DeltaEnvelope{
-					Type:         "signal",
-					IsFullState:  true,
-					Aggregate:    agg.ID(),
-					StateSummary: signal.StateSummary,
-					Actions:      signal.Actions,
-				}
-				err := conn.WriteJSON(env)
-				if err != nil {
-					logging.Error("Error sending full state to Godot: %v", err)
-					return
-				}
-			}
+			allActions = append(allActions, signal.Actions...)
 		}
 	}
-	logging.Info("Total actions sent to Godot: %d", totalActions)
+	if len(allActions) > 0 {
+		fullEnv := eventsourcing.DeltaEnvelope{
+			Type:         "delta",
+			IsFullState:  true,
+			Aggregate:    "full_state",
+			StateSummary: nil, // No summary for batched full state
+			Actions:      allActions,
+		}
+		s.SendBatchedDelta(fullEnv)
+	}
+	logging.Info("Total actions collected for Godot: %d", totalActions)
 }
 
 func (s *GodotServer) broadcast(env eventsourcing.DeltaEnvelope) {
 	s.clientsMu.RLock()
 	defer s.clientsMu.RUnlock()
 	logging.Trace("Broadcasting delta envelope: type=%s, aggregate=%s, actions=%d", env.Type, env.Aggregate, len(env.Actions))
-	for conn := range s.clients {
-		err := conn.WriteJSON(env)
+	for _, client := range s.clients {
+		client.writeMu.Lock()
+		err := client.conn.WriteJSON(env)
+		client.writeMu.Unlock()
 		if err != nil {
 			logging.Error("Error broadcasting to Godot client: %v", err)
 			// Optionally remove the client if error
@@ -385,8 +485,10 @@ func (s *GodotServer) broadcastJSON(msg interface{}) {
 	s.clientsMu.RLock()
 	defer s.clientsMu.RUnlock()
 	logging.Trace("Broadcasting JSON message: %v", msg)
-	for conn := range s.clients {
-		err := conn.WriteJSON(msg)
+	for _, client := range s.clients {
+		client.writeMu.Lock()
+		err := client.conn.WriteJSON(msg)
+		client.writeMu.Unlock()
 		if err != nil {
 			logging.Error("Error broadcasting JSON to Godot client: %v", err)
 		}
@@ -438,6 +540,35 @@ func (s *GodotServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Wait for ready signal before sending state
 	// State will be sent when client sends "ready" message
+}
+
+func (s *GodotServer) HandleDebugGodotState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.aggStore == nil {
+		http.Error(w, "Aggregate store not available", http.StatusInternalServerError)
+		return
+	}
+
+	state := make(map[string]interface{})
+
+	// Collect state from all aggregates
+	for _, agg := range s.aggStore.AllAggregates() {
+		if broadcaster, ok := agg.(eventsourcing.ThreeDUIBroadcaster); ok {
+			signal := broadcaster.GetCurrent3DState()
+			aggState := map[string]interface{}{
+				"object_count": len(signal.StateSummary),
+				"objects":      signal.StateSummary,
+			}
+			state[agg.ID()] = aggState
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(state)
 }
 
 func (s *GodotServer) HandleKeypresses(w http.ResponseWriter, r *http.Request) {
@@ -502,15 +633,16 @@ func (s *GodotServer) HandleKeypresses(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *GodotServer) Start() {
-	// Start broadcasting deltas
+	// Start broadcasting deltas with batching
 	go func() {
 		for env := range s.deltaChan {
-			s.broadcast(env)
+			s.SendBatchedDelta(env)
 		}
 	}()
 
 	http.HandleFunc("/godot", s.HandleWebSocket)
 	http.HandleFunc("/keypresses", s.HandleKeypresses)
+	http.HandleFunc("/debug/godot-state", s.HandleDebugGodotState)
 	logging.Info("Starting WebSocket server on :8081")
 	err := http.ListenAndServe(":8081", nil)
 	if err != nil {

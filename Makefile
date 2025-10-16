@@ -22,20 +22,16 @@ all: whisper build plugins
 
 # Build the main binary
 .PHONY: build
-build: whisper world download-model
+build: setup world
 	@echo "Building MindPalace binary..."
 	@mkdir -p $(BUILD_DIR)
 	PKG_CONFIG_PATH=$(shell pwd)/whisper-cpp/build/lib/pkgconfig:$(PKG_CONFIG_PATH) CGO_LDFLAGS="-Wl,-rpath,$(shell pwd)/whisper-cpp/build/lib" $(GO) build $(GOFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_SRC)
 
-# Generate templ files (once at root)
-.PHONY: templ
-templ:
-	@echo "Generating templ files..."
-	templ generate
+
 
 # Build all plugins
 .PHONY: plugins
-plugins: templ $(PLUGIN_OUTPUTS)
+plugins: setup $(PLUGIN_OUTPUTS)
 
 # Build plugins
 $(PLUGIN_DIR)/calendar/calendar.so: $(PLUGIN_DIR)/calendar/plugin.go
@@ -99,12 +95,18 @@ clean-all: clean
 	@echo "Cleaning all dependencies..."
 	rm -rf whisper-cpp
 
-# Install dependencies
-.PHONY: deps
-deps:
-	@echo "Installing dependencies..."
+# Check dependencies and install
+.PHONY: setup
+setup:
+	@echo "Checking dependencies..."
+	@if ! command -v go > /dev/null 2>&1; then echo "Error: Go is not installed. Please install Go 1.23.5 or later."; exit 1; fi
+	@if ! command -v godot > /dev/null 2>&1; then echo "Warning: Godot not found. You may need to install it for the UI components."; fi
+	@if ! command -v cmake > /dev/null 2>&1; then echo "Error: CMake is not installed. Please install CMake."; exit 1; fi
+	@echo "Installing Go dependencies..."
 	$(GO) mod tidy
 	$(GO) mod download
+	$(MAKE) whisper
+	$(MAKE) download-model
 
 # Format code
 .PHONY: fmt
@@ -188,7 +190,7 @@ help:
 	@echo "Available targets:"
 	@echo "  all         : Build everything (default)"
 	@echo "  build       : Build the main binary"
-	@echo "  templ       : Generate templ files"
+	@echo ""
 	@echo "  plugins     : Build all plugins"
 	@echo "  run         : Build and run (use RUN_ARGS='flags' for arguments)"
 	@echo "  run-verbose : Run with verbose logging"
@@ -196,7 +198,7 @@ help:
 	@echo "  run-headless: Run in headless mode"
 	@echo "  clean       : Remove build artifacts"
 	@echo "  clean-all   : Remove all build artifacts and dependencies"
-	@echo "  deps        : Install dependencies"
+	@echo "  setup       : Check dependencies and install"
 	@echo "  fmt         : Format code"
 	@echo "  test        : Run tests"
 	@echo "  doc         : Generate documentation"

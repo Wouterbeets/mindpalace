@@ -290,7 +290,7 @@ func (a *{{.Requirements.Name}}Aggregate) Broadcast3DDelta(event eventsourcing.E
 			NodeType: "MeshInstance3D",
 			Properties: map[string]interface{}{
 				"mesh":     "box",
-				"position": []float64{0, 0, 0}, // TODO: random pos
+				"position": {{randomPos}},
 				"material_override": map[string]interface{}{
 					"albedo_color": []float64{0.8, 0.8, 0.8, 1.0},
 				},

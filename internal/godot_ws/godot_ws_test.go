@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"fyne.io/fyne/v2"
 	"github.com/gorilla/websocket"
 	"mindpalace/pkg/eventsourcing"
 )
@@ -50,14 +49,6 @@ func (m *mockAggregate) ID() string {
 }
 
 func (m *mockAggregate) ApplyEvent(event eventsourcing.Event) error {
-	return nil
-}
-
-func (m *mockAggregate) GetCustomUI() fyne.CanvasObject {
-	return nil
-}
-
-func (m *mockThreeDUIBroadcaster) GetCustomUI() fyne.CanvasObject {
 	return nil
 }
 

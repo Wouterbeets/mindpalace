@@ -130,7 +130,7 @@ func TestCreateCard(t *testing.T) {
 	if label.NodeID != "test_card_label" || label.NodeType != "Label3D" {
 		t.Errorf("CreateCard() label action incorrect")
 	}
-	expectedLabelPos := []float64{0.0, 1.2, 0.0}
+	expectedLabelPos := []float64{0.0, 1.0, 0.0}
 	if !reflect.DeepEqual(label.Properties["position"], expectedLabelPos) {
 		t.Errorf("CreateCard() label position = %v, want %v", label.Properties["position"], expectedLabelPos)
 	}
@@ -355,5 +355,63 @@ func TestCreateInteractiveText(t *testing.T) {
 
 	if !reflect.DeepEqual(action, expected) {
 		t.Errorf("CreateInteractiveText() = %v, want %v", action, expected)
+	}
+}
+
+func TestCreateMoveToTouch(t *testing.T) {
+	action := CreateMoveToTouch("obj1", "obj2", 5.0, "callback")
+
+	expected := eventsourcing.DeltaAction{
+		Type:   "animate",
+		NodeID: "obj1",
+		Animation: &eventsourcing.AnimationSpec{
+			Property: "position",
+			To:       []interface{}{"move_to_touch", "obj2", 5.0, "callback"},
+		},
+	}
+
+	if action.Type != expected.Type || action.NodeID != expected.NodeID {
+		t.Errorf("CreateMoveToTouch() basic fields mismatch")
+	}
+	if !reflect.DeepEqual(action.Animation, expected.Animation) {
+		t.Errorf("CreateMoveToTouch() animation = %v, want %v", action.Animation, expected.Animation)
+	}
+}
+
+func TestCreateMoveTo(t *testing.T) {
+	targetPos := []float64{1.0, 2.0, 3.0}
+	action := CreateMoveTo("obj1", targetPos, 2.0, "ease_in")
+
+	expected := eventsourcing.DeltaAction{
+		Type:   "animate",
+		NodeID: "obj1",
+		Animation: &eventsourcing.AnimationSpec{
+			Property: "position",
+			To:       targetPos,
+			Duration: 2.0,
+			Ease:     "ease_in",
+		},
+	}
+
+	if !reflect.DeepEqual(action, expected) {
+		t.Errorf("CreateMoveTo() = %v, want %v", action, expected)
+	}
+}
+
+func TestCreateFade(t *testing.T) {
+	action := CreateFade("obj1", 0.5, 1.0)
+
+	expected := eventsourcing.DeltaAction{
+		Type:   "animate",
+		NodeID: "obj1",
+		Animation: &eventsourcing.AnimationSpec{
+			Property: "opacity",
+			To:       0.5,
+			Duration: 1.0,
+		},
+	}
+
+	if !reflect.DeepEqual(action, expected) {
+		t.Errorf("CreateFade() = %v, want %v", action, expected)
 	}
 }

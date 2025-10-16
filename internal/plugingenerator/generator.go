@@ -2,6 +2,7 @@ package plugingenerator
 
 import (
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,6 +68,9 @@ func (pg *PluginGenerator) GeneratePlugin(req *PluginRequirements) error {
 	// Load template
 	tmpl, err := template.New("plugin").Funcs(template.FuncMap{
 		"lower": strings.ToLower,
+		"randomPos": func() []float64 {
+			return []float64{rand.Float64()*10 - 5, rand.Float64()*10 - 5, rand.Float64()*10 - 5}
+		},
 	}).ParseFiles(pg.templatePath)
 	if err != nil {
 		return fmt.Errorf("failed to parse template: %v", err)

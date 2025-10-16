@@ -2,11 +2,8 @@ package aggregate
 
 import (
 	"encoding/json"
-	"fmt"
 	"sync"
 
-	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/widget"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/ui3d"
 )
@@ -249,16 +246,45 @@ func (a *ThreeDUIManagerAggregate) Broadcast3DDelta(event eventsourcing.Event) [
 	return nil
 }
 
-// GetCustomUI returns a UI for the 3D manager (placeholder)
-func (a *ThreeDUIManagerAggregate) GetCustomUI() fyne.CanvasObject {
-	// Placeholder: return a label with object count
+// GetCurrent3DState returns the current 3D state for full sync
+func (a *ThreeDUIManagerAggregate) GetCurrent3DState() eventsourcing.Signal {
 	a.Mu.RLock()
-	count := len(a.Objects)
-	a.Mu.RUnlock()
-	return widget.NewLabel(fmt.Sprintf("3D Objects: %d", count))
+	defer a.Mu.RUnlock()
+
+	var actions []eventsourcing.DeltaAction
+	stateSummary := make(map[string]interface{})
+
+	for _, obj := range a.Objects {
+		obj2 := ui3d.StandardObject{
+			ID:       obj.ID,
+			MeshType: obj.MeshType,
+			Position: obj.Position,
+			Label:    &ui3d.LabelConfig{Text: obj.Label},
+			Theme:    ui3d.DefaultTheme(),
+			Extra: map[string]interface{}{
+				"event_type": "create_3d_object",
+				"material_override": map[string]interface{}{
+					"albedo_color": obj.Color,
+				},
+			},
+		}
+		actions = append(actions, ui3d.CreateStandardObject(obj2)...)
+		stateSummary[obj.ID] = map[string]interface{}{
+			"id":       obj.ID,
+			"type":     obj.MeshType,
+			"position": obj.Position,
+			"color":    obj.Color,
+			"zone":     obj.Zone,
+			"label":    obj.Label,
+		}
+	}
+
+	return eventsourcing.Signal{
+		Actions:      actions,
+		StateSummary: stateSummary,
+	}
 }
 
-// Clone returns a copy for replaying events
 func (a *ThreeDUIManagerAggregate) Clone() eventsourcing.Aggregate {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()

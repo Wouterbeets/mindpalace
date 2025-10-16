@@ -10,11 +10,6 @@ import (
 
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/ui3d"
-
-	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/theme"
-	"fyne.io/fyne/v2/widget"
 )
 
 // Register event types
@@ -727,72 +722,6 @@ func (p *TaskPlugin) listTasksHandler(input *ListTasksInput) ([]eventsourcing.Ev
 	return []eventsourcing.Event{event}, nil
 }
 
-// GetCustomUI returns a Kanban board-style UI for the task manager
-func (ta *TaskAggregate) GetCustomUI() fyne.CanvasObject {
-	ta.Mu.RLock()
-	defer ta.Mu.RUnlock()
-
-	tasks := make([]*Task, 0, len(ta.Tasks))
-	for _, task := range ta.Tasks {
-		tasks = append(tasks, task)
-	}
-
-	if len(tasks) == 0 {
-		return container.NewCenter(widget.NewLabel("No tasks available. Create one to get started!"))
-	}
-
-	// Define Kanban columns based on task statuses
-	statuses := []string{StatusPending, StatusInProgress, StatusBlocked, StatusCompleted}
-	columns := make(map[string]*fyne.Container)
-	scrolls := make(map[string]*container.Scroll) // Store scroll containers separately
-
-	// Initialize each column
-	for _, status := range statuses {
-		header := widget.NewLabel(status)
-		header.TextStyle = fyne.TextStyle{Bold: true}
-		header.Alignment = fyne.TextAlignCenter
-		content := container.NewVBox()
-		scroll := container.NewVScroll(content)   // Create scroll container
-		scroll.SetMinSize(fyne.NewSize(250, 400)) // Set size directly on scroll
-		columns[status] = container.NewBorder(
-			container.NewPadded(header),
-			nil, nil, nil,
-			scroll, // Pass the scroll container directly
-		)
-		scrolls[status] = scroll // Store the scroll reference
-	}
-
-	// Sort tasks by priority and deadline within each column
-	sort.Slice(tasks, func(i, j int) bool {
-		pi, pj := priorityValue(tasks[i].Priority), priorityValue(tasks[j].Priority)
-		if pi != pj {
-			return pi > pj
-		}
-		if !tasks[i].Deadline.IsZero() && !tasks[j].Deadline.IsZero() {
-			return tasks[i].Deadline.Before(tasks[j].Deadline)
-		}
-		return tasks[i].CreatedAt.Before(tasks[j].CreatedAt)
-	})
-
-	// Populate columns with tasks
-	for _, task := range tasks {
-		card := createTaskCard(task)
-		// Use the stored scroll reference instead of type-asserting Objects[1]
-		columnContent := scrolls[task.Status].Content.(*fyne.Container)
-		columnContent.Add(card)
-		columnContent.Add(widget.NewSeparator()) // Always add separator after each card
-	}
-
-	// Assemble the Kanban board
-	board := container.NewHBox()
-	for _, status := range statuses {
-		board.Add(columns[status])
-	}
-
-	// Wrap in a scrollable container for wide boards
-	return container.NewHScroll(board)
-}
-
 func (a *TaskAggregate) GetCurrent3DState() eventsourcing.Signal {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()
@@ -985,85 +914,6 @@ func randomPos() []float64 {
 	return []float64{0, 0, 0} // placeholder
 }
 
-// createTaskCard creates a compact card UI for a single task
-func createTaskCard(task *Task) fyne.CanvasObject {
-	// Title with priority icon
-	title := widget.NewLabel(task.Title)
-	title.TextStyle = fyne.TextStyle{Bold: true}
-	if task.Status == StatusCompleted {
-		title.TextStyle.Italic = true
-	}
-	title.Wrapping = fyne.TextWrapOff
-	titleBox := container.NewHBox(
-		widget.NewIcon(priorityIcon(task.Priority)),
-		title,
-	)
-
-	// Compact details
-	var detailLines []string
-	if task.Description != "" {
-		desc := strings.TrimSpace(task.Description)
-		if len(desc) > 50 {
-			desc = desc[:47] + "..."
-		}
-		detailLines = append(detailLines, desc)
-	}
-	if !task.Deadline.IsZero() {
-		detailLines = append(detailLines, fmt.Sprintf("Due: %s", task.Deadline.Format("2006-01-02")))
-	}
-	if len(task.Tags) > 0 {
-		detailLines = append(detailLines, fmt.Sprintf("Tags: %s", strings.Join(task.Tags, ", ")))
-	}
-	details := widget.NewLabel(strings.Join(detailLines, "\n"))
-	details.Wrapping = fyne.TextWrapWord
-
-	// Card layout
-	card := container.NewVBox(
-		titleBox,
-		widget.NewSeparator(),
-		details,
-	)
-
-	// Style the card with a border and padding
-	return container.NewPadded(container.NewBorder(
-		nil, nil, nil, nil,
-		card,
-	))
-}
-
-// priorityValue assigns a numeric value to priorities
-func priorityValue(priority string) int {
-	switch priority {
-	case PriorityCritical:
-		return 4
-	case PriorityHigh:
-		return 3
-	case PriorityMedium:
-		return 2
-	case PriorityLow:
-		return 1
-	default:
-		return 0
-	}
-}
-
-// priorityIcon returns an icon based on priority
-func priorityIcon(priority string) fyne.Resource {
-	switch priority {
-	case PriorityCritical:
-		return theme.ErrorIcon()
-	case PriorityHigh:
-		return theme.WarningIcon()
-	case PriorityMedium:
-		return theme.InfoIcon()
-	case PriorityLow:
-		return theme.ConfirmIcon()
-	default:
-		return theme.QuestionIcon()
-	}
-}
-
-// Additional Plugin Methods
 func (p *TaskPlugin) Aggregate() eventsourcing.Aggregate {
 	return p.aggregate
 }

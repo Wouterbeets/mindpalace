@@ -112,12 +112,12 @@ func CreateStandardObject(obj StandardObject) []eventsourcing.DeltaAction {
 
 // calculateLabelPosition computes label position relative to mesh
 func calculateLabelPosition(basePos []float64, meshType string) []float64 {
-	offsetY := 1.2 // Default for box
+	offsetY := 1.0 // Default for box
 	switch meshType {
 	case "sphere":
 		offsetY = 0.8
 	case "cylinder":
-		offsetY = 1.5
+		offsetY = 1.2
 	case "plane":
 		offsetY = 0.1
 	case "capsule":
@@ -343,4 +343,45 @@ func PositionRandom(seed int64, radius, height float64) []float64 {
 // CreateInteractiveText creates a label that could be made interactive (Godot-side logic needed)
 func CreateInteractiveText(nodeID string, text string, position []float64, theme Theme) eventsourcing.DeltaAction {
 	return CreateLabel(nodeID, text, position, theme)
+}
+
+// CreateMoveToTouch creates an animation action to move nodeID towards targetNodeID at speed until they touch
+func CreateMoveToTouch(nodeID, targetNodeID string, speed float64, onTouchCallback string) eventsourcing.DeltaAction {
+	return eventsourcing.DeltaAction{
+		Type:   "animate",
+		NodeID: nodeID,
+		Animation: &eventsourcing.AnimationSpec{
+			Property: "position",
+			// To is not fixed; Godot will handle movement towards target
+			// Using To as placeholder, actual logic in Godot
+			To: []interface{}{"move_to_touch", targetNodeID, speed, onTouchCallback},
+		},
+	}
+}
+
+// CreateMoveTo creates a simple move animation to a fixed position
+func CreateMoveTo(nodeID string, targetPos []float64, duration float64, ease string) eventsourcing.DeltaAction {
+	return eventsourcing.DeltaAction{
+		Type:   "animate",
+		NodeID: nodeID,
+		Animation: &eventsourcing.AnimationSpec{
+			Property: "position",
+			To:       targetPos,
+			Duration: duration,
+			Ease:     ease,
+		},
+	}
+}
+
+// CreateFade creates a fade animation
+func CreateFade(nodeID string, targetOpacity float64, duration float64) eventsourcing.DeltaAction {
+	return eventsourcing.DeltaAction{
+		Type:   "animate",
+		NodeID: nodeID,
+		Animation: &eventsourcing.AnimationSpec{
+			Property: "opacity",
+			To:       targetOpacity,
+			Duration: duration,
+		},
+	}
 }

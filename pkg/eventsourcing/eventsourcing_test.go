@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
-
-	"fyne.io/fyne/v2"
 )
 
 // Mock implementations for testing
@@ -39,9 +37,8 @@ type mockAggregate struct {
 	id string
 }
 
-func (m *mockAggregate) ID() string                     { return m.id }
-func (m *mockAggregate) ApplyEvent(event Event) error   { return nil }
-func (m *mockAggregate) GetCustomUI() fyne.CanvasObject { return nil }
+func (m *mockAggregate) ID() string                   { return m.id }
+func (m *mockAggregate) ApplyEvent(event Event) error { return nil }
 
 type mockThreeDUIBroadcaster struct {
 	id     string
@@ -49,9 +46,8 @@ type mockThreeDUIBroadcaster struct {
 	called bool
 }
 
-func (m *mockThreeDUIBroadcaster) ID() string                     { return m.id }
-func (m *mockThreeDUIBroadcaster) ApplyEvent(event Event) error   { return nil }
-func (m *mockThreeDUIBroadcaster) GetCustomUI() fyne.CanvasObject { return nil }
+func (m *mockThreeDUIBroadcaster) ID() string                   { return m.id }
+func (m *mockThreeDUIBroadcaster) ApplyEvent(event Event) error { return nil }
 
 func (m *mockThreeDUIBroadcaster) Broadcast3DDelta(event Event) []DeltaAction {
 	m.called = true

@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 
-	"fyne.io/fyne/v2"
 	"mindpalace/internal/plugingenerator"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
@@ -50,11 +49,6 @@ func (a *PluginGeneratorAggregate) ApplyEvent(event eventsourcing.Event) error {
 	return nil
 }
 
-func (a *PluginGeneratorAggregate) GetCustomUI() fyne.CanvasObject {
-	return nil // No UI for this plugin
-}
-
-// Commands returns the command handlers
 func (p *PluginGeneratorPlugin) Commands() map[string]eventsourcing.CommandHandler {
 	return p.aggregate.commands
 }

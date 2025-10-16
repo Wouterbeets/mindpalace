@@ -272,15 +272,6 @@ func TestApplyEvent_RequestCompleted(t *testing.T) {
 	}
 }
 
-func TestGetCustomUI(t *testing.T) {
-	agg := NewOrchestrationAggregate()
-	ui := agg.GetCustomUI()
-	if ui == nil {
-		t.Error("GetCustomUI returned nil")
-	}
-	// Further testing would require Fyne mocking, which is complex
-}
-
 func TestClone(t *testing.T) {
 	agg := NewOrchestrationAggregate()
 	agg.RequestIDs = []string{"req1", "req2"}
@@ -310,8 +301,8 @@ func TestBroadcast3DDelta(t *testing.T) {
 	}
 	signal := agg.Broadcast3DDelta(event)
 	actions := signal.Actions
-	if len(actions) != 2 {
-		t.Errorf("Expected 2 actions, got %d", len(actions))
+	if len(actions) != 3 {
+		t.Errorf("Expected 3 actions, got %d", len(actions))
 	}
 	if actions[0].NodeType != "MeshInstance3D" {
 		t.Errorf("Expected first action to be MeshInstance3D, got %s", actions[0].NodeType)
@@ -322,19 +313,6 @@ func TestBroadcast3DDelta(t *testing.T) {
 }
 
 // RequestOrchestrator tests require full interface implementations, skipped for now
-
-func TestInitiatePluginCreationCommand(t *testing.T) {
-	// Test the saga command
-	data := map[string]interface{}{"test": "data"}
-	events, err := InitiatePluginCreationCommand(data)
-	if err != nil {
-		t.Fatalf("InitiatePluginCreationCommand failed: %v", err)
-	}
-	// It returns nil, nil
-	if events != nil {
-		t.Errorf("Expected nil events, got %v", events)
-	}
-}
 
 func TestOrchestrationFlow_UserRequestToCompletion(t *testing.T) {
 	// Integration test: simulate the flow from user request to completion
@@ -632,33 +610,6 @@ func TestAgentName(t *testing.T) {
 	if name := agg.AgentName("req1"); name != "testAgent" {
 		t.Errorf("Expected testAgent, got %s", name)
 	}
-	if name := agg.AgentName("nonexistent"); name != "" {
-		t.Errorf("Expected empty, got %s", name)
-	}
-}
-
-func TestIsRequestPending(t *testing.T) {
-	agg := NewOrchestrationAggregate()
-	agg.AgentStates["req1"] = &AgentState{Status: "executing"}
-	agg.PendingToolCalls["req1"] = map[string]struct{}{"tool1": {}}
-
-	if !agg.isRequestPending("req1") {
-		t.Error("Expected true for pending tools")
-	}
-
-	delete(agg.PendingToolCalls["req1"], "tool1")
-	if !agg.isRequestPending("req1") {
-		t.Error("Expected true for executing agent")
-	}
-
-	agg.AgentStates["req1"].Status = "completed"
-	if agg.isRequestPending("req1") {
-		t.Error("Expected false for completed")
-	}
-
-	if agg.isRequestPending("nonexistent") {
-		t.Error("Expected false for nonexistent")
-	}
 }
 
 func TestApplyEvent_ToolCallFailed(t *testing.T) {
@@ -748,8 +699,8 @@ func TestBroadcast3DDelta_AgentCallDecided(t *testing.T) {
 	}
 	signal := agg.Broadcast3DDelta(event)
 	actions := signal.Actions
-	if len(actions) != 2 {
-		t.Errorf("Expected 2 actions, got %d", len(actions))
+	if len(actions) != 3 {
+		t.Errorf("Expected 3 actions, got %d", len(actions))
 	}
 }
 
@@ -763,8 +714,8 @@ func TestBroadcast3DDelta_ToolCallRequestPlaced(t *testing.T) {
 	}
 	signal := agg.Broadcast3DDelta(event)
 	actions := signal.Actions
-	if len(actions) != 2 {
-		t.Errorf("Expected 2 actions, got %d", len(actions))
+	if len(actions) != 3 {
+		t.Errorf("Expected 3 actions, got %d", len(actions))
 	}
 }
 
@@ -796,8 +747,8 @@ func TestBroadcast3DDelta_ToolCallCompleted(t *testing.T) {
 	}
 	signal := agg.Broadcast3DDelta(event)
 	actions := signal.Actions
-	if len(actions) != 1 {
-		t.Errorf("Expected 1 action, got %d", len(actions))
+	if len(actions) != 2 {
+		t.Errorf("Expected 2 actions, got %d", len(actions))
 	}
 }
 
@@ -839,8 +790,8 @@ func TestBroadcast3DDelta_RequestCompletedEvent(t *testing.T) {
 	}
 	signal := agg.Broadcast3DDelta(event)
 	actions := signal.Actions
-	if len(actions) != 2 {
-		t.Errorf("Expected 2 actions, got %d", len(actions))
+	if len(actions) != 3 {
+		t.Errorf("Expected 3 actions, got %d", len(actions))
 	}
 }
 

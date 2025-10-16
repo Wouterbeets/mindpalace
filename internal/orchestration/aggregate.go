@@ -8,11 +8,6 @@ import (
 	"regexp"
 	"strings"
 
-	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/theme"
-	"fyne.io/fyne/v2/widget"
-
 	"mindpalace/internal/chat"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/ui3d"
@@ -220,250 +215,6 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 		}
 	}
 	return nil
-}
-
-func (a *OrchestrationAggregate) GetCustomUI() fyne.CanvasObject {
-	var chatUIList []fyne.CanvasObject
-	messages := a.chatState.GetChatManager().GetUIMessages()
-
-	tokenLabel := widget.NewLabel(fmt.Sprintf("Total Tokens Used: %d", a.chatState.GetChatManager().GetTotalTokens()))
-	tokenLabel.TextStyle = fyne.TextStyle{Bold: true}
-	chatUIList = append(chatUIList, tokenLabel, widget.NewSeparator())
-
-	currentRequestID := ""
-	for i, msg := range messages {
-		// Check if we've moved to a new request
-		if msg.RequestID != currentRequestID && currentRequestID != "" {
-			// Render agent state for the previous request, if it exists
-			if agentState, exists := a.AgentStates[currentRequestID]; exists {
-				chatUIList = append(chatUIList, a.renderAgentState(agentState))
-			}
-			// Render tool call states for the previous request, if any
-			for _, toolState := range a.ToolCallStates {
-				if toolState.RequestID == currentRequestID {
-					chatUIList = append(chatUIList, a.renderToolCallState(toolState))
-				}
-			}
-			// Add processing indicator if the previous request is ongoing
-			if a.isRequestPending(currentRequestID) {
-				chatUIList = append(chatUIList, container.NewHBox(
-					widget.NewProgressBarInfinite(),
-					widget.NewLabel("Processing..."),
-				), widget.NewSeparator())
-			}
-			currentRequestID = msg.RequestID
-		} else if currentRequestID == "" {
-			currentRequestID = msg.RequestID
-		}
-
-		// Render the chat message
-		chatUIList = append(chatUIList, a.renderChatMessage(msg))
-		if i < len(messages)-1 {
-			chatUIList = append(chatUIList, widget.NewSeparator())
-		}
-	}
-
-	// Handle the last request
-	if currentRequestID != "" {
-		// Render agent state for the last request, if it exists
-		if agentState, exists := a.AgentStates[currentRequestID]; exists {
-			chatUIList = append(chatUIList, a.renderAgentState(agentState))
-		}
-		// Render tool call states for the last request, if any
-		for _, toolState := range a.ToolCallStates {
-			if toolState.RequestID == currentRequestID {
-				chatUIList = append(chatUIList, a.renderToolCallState(toolState))
-			}
-		}
-		// Add processing indicator if the last request is ongoing
-		if a.isRequestPending(currentRequestID) {
-			chatUIList = append(chatUIList, container.NewHBox(
-				widget.NewProgressBarInfinite(),
-				widget.NewLabel("Processing..."),
-			))
-		}
-	}
-
-	return container.NewVBox(chatUIList...)
-}
-
-func (a *OrchestrationAggregate) renderChatMessage(msg chat.Message) fyne.CanvasObject {
-	roleLabel := widget.NewLabel("")
-	roleLabel.TextStyle = fyne.TextStyle{Bold: true}
-	var content fyne.CanvasObject
-
-	switch msg.Role {
-	case chat.RoleUser:
-		roleLabel.Text = "You"
-		content = parseMarkdownToCanvas(msg.Content)
-	case chat.RoleMindPalace:
-		roleLabel.Text = "MindPalace"
-		content = parseMarkdownToCanvas(msg.Content)
-	case chat.RoleTool:
-		roleLabel.Text = fmt.Sprintf("%s (tool)", msg.Metadata["function"])
-		content = parseMarkdownToCanvas(msg.Content)
-	}
-
-	return container.NewVBox(roleLabel, content)
-}
-
-// Helper to check if a request is still processing
-func (a *OrchestrationAggregate) isRequestPending(requestID string) bool {
-	return len(a.PendingToolCalls[requestID]) > 0 || (a.AgentStates[requestID] != nil && a.AgentStates[requestID].Status != "completed")
-}
-
-func (a *OrchestrationAggregate) renderAgentState(state *AgentState) fyne.CanvasObject {
-	messageContainer := container.NewVBox()
-	roleLabel := widget.NewLabel("MindPalace")
-	roleLabel.TextStyle = fyne.TextStyle{Bold: true}
-
-	switch state.Status {
-	case "deciding":
-		statusLabel := widget.NewLabel(fmt.Sprintf("Deciding if agent '%s' is needed...", state.AgentName))
-		statusLabel.TextStyle = fyne.TextStyle{Italic: true}
-		spinner := widget.NewProgressBarInfinite()
-		contentBox := container.NewHBox(spinner, statusLabel)
-		messageContainer.Add(container.NewVBox(roleLabel, contentBox))
-
-	case "called":
-		statusLabel := widget.NewLabel(fmt.Sprintf("Agent '%s' has been called", state.AgentName))
-		statusLabel.TextStyle = fyne.TextStyle{Italic: true}
-		icon := widget.NewIcon(theme.InfoIcon())
-		contentBox := container.NewHBox(icon, statusLabel)
-		messageContainer.Add(container.NewVBox(roleLabel, contentBox))
-
-	case "executing":
-		statusLabel := widget.NewLabel(fmt.Sprintf("Agent '%s' is working...", state.AgentName))
-		statusLabel.TextStyle = fyne.TextStyle{Italic: true}
-		spinner := widget.NewProgressBarInfinite()
-		contentBox := container.NewHBox(spinner, statusLabel)
-		messageContainer.Add(container.NewVBox(roleLabel, contentBox))
-
-	case "completed":
-		statusLabel := widget.NewLabel(fmt.Sprintf("Agent '%s' finished", state.AgentName))
-		statusLabel.TextStyle = fyne.TextStyle{Italic: true}
-		icon := widget.NewIcon(theme.ConfirmIcon())
-
-		var contentElements []fyne.CanvasObject
-		contentElements = append(contentElements, container.NewHBox(icon, statusLabel))
-
-		if state.Summary != "" {
-			contentElements = append(contentElements, widget.NewSeparator())
-			contentElements = append(contentElements, parseMarkdownToCanvas(state.Summary))
-		}
-
-		contentBox := container.NewVBox(contentElements...)
-		messageContainer.Add(container.NewVBox(roleLabel, contentBox))
-
-	case "failed":
-		statusLabel := widget.NewLabel(fmt.Sprintf("Agent '%s' failed", state.AgentName))
-		statusLabel.TextStyle = fyne.TextStyle{Italic: true}
-		icon := widget.NewIcon(theme.ErrorIcon())
-
-		var contentElements []fyne.CanvasObject
-		contentElements = append(contentElements, container.NewHBox(icon, statusLabel))
-
-		if state.Summary != "" {
-			contentElements = append(contentElements, widget.NewSeparator())
-			contentElements = append(contentElements, parseMarkdownToCanvas(state.Summary))
-		}
-
-		contentBox := container.NewVBox(contentElements...)
-		messageContainer.Add(container.NewVBox(roleLabel, contentBox))
-	}
-
-	return container.NewPadded(messageContainer)
-}
-
-func (a *OrchestrationAggregate) renderToolCallState(state *ToolCallState) fyne.CanvasObject {
-	messageContainer := container.NewVBox()
-	roleLabel := widget.NewLabel("MindPalace")
-	roleLabel.TextStyle = fyne.TextStyle{Bold: true}
-
-	switch state.Status {
-	case "requested":
-		statusLabel := widget.NewLabel(fmt.Sprintf("Tool Call: %s - Requested", state.Function))
-		statusLabel.TextStyle = fyne.TextStyle{Italic: true}
-		icon := widget.NewIcon(theme.InfoIcon())
-		contentBox := container.NewHBox(icon, statusLabel)
-		messageContainer.Add(container.NewVBox(roleLabel, contentBox))
-
-	case "started":
-		statusLabel := widget.NewLabel(fmt.Sprintf("Tool Call: %s - In Progress", state.Function))
-		statusLabel.TextStyle = fyne.TextStyle{Italic: true}
-		spinner := widget.NewProgressBarInfinite()
-		contentBox := container.NewHBox(spinner, statusLabel)
-		messageContainer.Add(container.NewVBox(roleLabel, contentBox))
-
-	case "completed":
-		statusLabel := widget.NewLabel(fmt.Sprintf("Tool Call: %s - Completed", state.Function))
-		statusLabel.TextStyle = fyne.TextStyle{Italic: true}
-		icon := widget.NewIcon(theme.ConfirmIcon())
-		resultText := fmt.Sprintf("%+v", state.Results)
-		resultContent := parseMarkdownToCanvas(resultText)
-		contentBox := container.NewVBox(
-			container.NewHBox(icon, statusLabel),
-			widget.NewSeparator(),
-			resultContent,
-		)
-		messageContainer.Add(container.NewVBox(roleLabel, contentBox))
-
-	case "failed":
-		statusLabel := widget.NewLabel(fmt.Sprintf("Tool Call: %s - Failed", state.Function))
-		statusLabel.TextStyle = fyne.TextStyle{Italic: true}
-		icon := widget.NewIcon(theme.ErrorIcon())
-		errorText := fmt.Sprintf("%+v", state.Results["error"])
-		errorContent := parseMarkdownToCanvas(errorText)
-		contentBox := container.NewVBox(
-			container.NewHBox(icon, statusLabel),
-			widget.NewSeparator(),
-			errorContent,
-		)
-		messageContainer.Add(container.NewVBox(roleLabel, contentBox))
-	}
-
-	return container.NewPadded(messageContainer)
-}
-
-// parseMarkdownToCanvas converts Markdown text into a styled Fyne CanvasObject (unchanged)
-func parseMarkdownToCanvas(text string) fyne.CanvasObject {
-	// Create a single Entry for the entire text
-	entry := widget.NewEntry()
-	entry.MultiLine = true             // Enable multi-line support
-	entry.Wrapping = fyne.TextWrapWord // Wrap text naturally
-
-	// Count the number of lines to set a reasonable height
-	lineCount := len(strings.Split(text, "\n"))
-	if lineCount < 1 {
-		lineCount = 1 // Ensure at least one line
-	}
-	entry.SetMinRowsVisible(lineCount + 1) // Add 1 for padding
-
-	// Set the text and style
-	if strings.HasPrefix(text, "# ") {
-		entry.SetText(strings.TrimPrefix(text, "# "))
-		entry.TextStyle = fyne.TextStyle{Bold: true}
-	} else if strings.HasPrefix(text, "## ") {
-		entry.SetText(strings.TrimPrefix(text, "## "))
-		entry.TextStyle = fyne.TextStyle{Bold: true}
-	} else if strings.HasPrefix(text, "- ") || strings.HasPrefix(text, "* ") {
-		text = strings.ReplaceAll(text, "- ", "• ")
-		text = strings.ReplaceAll(text, "* ", "• ")
-		entry.SetText(text)
-	} else if strings.HasPrefix(text, "```") && strings.HasSuffix(text, "```") {
-		entry.SetText(strings.TrimPrefix(strings.TrimSuffix(text, "```"), "```"))
-		entry.TextStyle = fyne.TextStyle{Monospace: true}
-	} else {
-		entry.SetText(text)
-	}
-
-	// Make read-only without disabling to preserve text color
-	entry.OnChanged = func(string) {
-		// Revert any changes to prevent editing
-		entry.SetText(text)
-	}
-
-	return entry
 }
 
 // markdownToHTML converts basic Markdown to HTML for web display
@@ -719,7 +470,7 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) eve
 	// Orchestration events
 	case *UserRequestReceivedEvent:
 		pos := a.nextPosition()
-		box := ui3d.CreateBox(fmt.Sprintf("request_%s", e.RequestID), pos, theme)
+		box := ui3d.CreateBox(fmt.Sprintf("request_%s", e.RequestID), pos, ui3d.DefaultTheme())
 		box.Properties["event_type"] = "user_request_received"
 		box.Properties["material_override"] = map[string]interface{}{
 			"albedo_color": []float64{0, 1, 0, 1}, // Green for user request
@@ -731,7 +482,7 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) eve
 				"details":     displayInfo.Details,
 			}
 		}
-		label := ui3d.CreateLabel(fmt.Sprintf("request_%s_label", e.RequestID), "User Request", []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
+		label := ui3d.CreateLabel(fmt.Sprintf("request_%s_label", e.RequestID), "User Request", []float64{pos[0], pos[1] + 1.0, pos[2]}, theme)
 		label.Properties["event_type"] = "user_request_received"
 		if displayInfo, exists := a.DisplayInfos[label.NodeID]; exists {
 			label.Properties["display_info"] = map[string]interface{}{
@@ -740,7 +491,9 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) eve
 				"details":     displayInfo.Details,
 			}
 		}
-		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box, label}}
+		// Animation: Move request towards orchestrator
+		anim := ui3d.CreateMoveToTouch(fmt.Sprintf("request_%s", e.RequestID), "orchestrator_ai", 3.0, "on_touch_fade")
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box, label, anim}}
 	case *AgentCallDecidedEvent:
 		pos := a.nextPosition()
 		box := ui3d.CreateBox(fmt.Sprintf("agent_%s", e.RequestID), pos, theme)
@@ -756,7 +509,7 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) eve
 				"details":     displayInfo.Details,
 			}
 		}
-		label := ui3d.CreateLabel(fmt.Sprintf("agent_%s_label", e.RequestID), fmt.Sprintf("Agent: %s", e.AgentName), []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
+		label := ui3d.CreateLabel(fmt.Sprintf("agent_%s_label", e.RequestID), fmt.Sprintf("Agent: %s", e.AgentName), []float64{pos[0], pos[1] + 1.0, pos[2]}, theme)
 		label.Properties["event_type"] = "agent_call_decided"
 		if displayInfo, exists := a.DisplayInfos[label.NodeID]; exists {
 			label.Properties["display_info"] = map[string]interface{}{
@@ -765,7 +518,9 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) eve
 				"details":     displayInfo.Details,
 			}
 		}
-		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box, label}}
+		// Animation: Move agent towards orchestrator
+		anim := ui3d.CreateMoveToTouch(fmt.Sprintf("agent_%s", e.RequestID), "orchestrator_ai", 2.0, "")
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box, label, anim}}
 	case *ToolCallRequestPlaced:
 		pos := a.nextPosition()
 		box := ui3d.CreateBox(fmt.Sprintf("tool_call_%s", e.ToolCallID), pos, theme)
@@ -780,7 +535,7 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) eve
 				"details":     displayInfo.Details,
 			}
 		}
-		label := ui3d.CreateLabel(fmt.Sprintf("tool_call_%s_label", e.ToolCallID), fmt.Sprintf("Tool: %s", e.Function), []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
+		label := ui3d.CreateLabel(fmt.Sprintf("tool_call_%s_label", e.ToolCallID), fmt.Sprintf("Tool: %s", e.Function), []float64{pos[0], pos[1] + 1.0, pos[2]}, theme)
 		label.Properties["event_type"] = "tool_call_started"
 		if displayInfo, exists := a.DisplayInfos[label.NodeID]; exists {
 			label.Properties["display_info"] = map[string]interface{}{
@@ -789,7 +544,10 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) eve
 				"details":     displayInfo.Details,
 			}
 		}
-		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box, label}}
+		// Animation: Move tool call to a tool zone (simplified, move to fixed position)
+		toolZone := []float64{10.0, -2.0, 0.0} // Tool execution zone
+		anim := ui3d.CreateMoveTo(fmt.Sprintf("tool_call_%s", e.ToolCallID), toolZone, 1.5, "ease_in")
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box, label, anim}}
 	case *ToolCallStarted:
 		pos := a.nextPosition()
 		box := ui3d.CreateBox(fmt.Sprintf("tool_call_started_%s", e.ToolCallID), pos, theme)
@@ -805,7 +563,10 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) eve
 		box.Properties["material_override"] = map[string]interface{}{
 			"albedo_color": []float64{0, 1, 0, 1}, // Green for completed
 		}
-		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box}}
+		// Animation: Move result back to agent
+		agentID := fmt.Sprintf("agent_%s", e.RequestID)
+		anim := ui3d.CreateMoveToTouch(fmt.Sprintf("tool_call_completed_%s", e.ToolCallID), agentID, 2.5, "on_touch_fade")
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box, anim}}
 	case *ToolCallFailedEvent:
 		pos := a.nextPosition()
 		box := ui3d.CreateBox(fmt.Sprintf("tool_call_failed_%s", e.ToolCallID), pos, theme)
@@ -836,7 +597,7 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) eve
 				"details":     displayInfo.Details,
 			}
 		}
-		label := ui3d.CreateLabel(fmt.Sprintf("completed_%s_label", e.RequestID), "Request Completed", []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
+		label := ui3d.CreateLabel(fmt.Sprintf("completed_%s_label", e.RequestID), "Request Completed", []float64{pos[0], pos[1] + 1.0, pos[2]}, theme)
 		label.Properties["event_type"] = "request_completed"
 		if displayInfo, exists := a.DisplayInfos[label.NodeID]; exists {
 			label.Properties["display_info"] = map[string]interface{}{
@@ -845,14 +606,16 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) eve
 				"details":     displayInfo.Details,
 			}
 		}
-		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box, label}}
+		// Animation: Fade out orchestrator to indicate completion
+		anim := ui3d.CreateFade("orchestrator_ai", 0.3, 2.0)
+		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box, label, anim}}
 
 	// Task events
 	case *eventsourcing.InitiatePluginCreationEvent:
 		pos := []float64{-2, -2, 0} // Underground
 		box := ui3d.CreateBox(fmt.Sprintf("plugin_%s", e.PluginName), pos, theme)
 		box.Properties["event_type"] = "plugin_generated"
-		label := ui3d.CreateLabel(fmt.Sprintf("plugin_%s_label", e.PluginName), fmt.Sprintf("Plugin: %s", e.PluginName), []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
+		label := ui3d.CreateLabel(fmt.Sprintf("plugin_%s_label", e.PluginName), fmt.Sprintf("Plugin: %s", e.PluginName), []float64{pos[0], pos[1] + 1.0, pos[2]}, theme)
 		label.Properties["event_type"] = "plugin_generated"
 		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box, label}}
 
@@ -863,7 +626,7 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) eve
 		pos := a.nextPosition()
 		box := ui3d.CreateBox(fmt.Sprintf("external_%s_%d", event.Type(), a.PositionIndex-1), pos, theme)
 		box.Properties["event_type"] = event.Type()
-		label := ui3d.CreateLabel(fmt.Sprintf("external_%s_%d_label", event.Type(), a.PositionIndex-1), event.Type(), []float64{pos[0], pos[1] + 1.5, pos[2]}, theme)
+		label := ui3d.CreateLabel(fmt.Sprintf("external_%s_%d_label", event.Type(), a.PositionIndex-1), event.Type(), []float64{pos[0], pos[1] + 1.0, pos[2]}, theme)
 		label.Properties["event_type"] = event.Type()
 		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{box, label}}
 	}
@@ -871,8 +634,118 @@ func (a *OrchestrationAggregate) Broadcast3DDelta(event eventsourcing.Event) eve
 }
 
 func (a *OrchestrationAggregate) GetCurrent3DState() eventsourcing.Signal {
-	// Orchestration may not have persistent 3D state, return empty for now
-	return eventsourcing.Signal{}
+	var actions []eventsourcing.DeltaAction
+	theme := ui3d.DefaultTheme()
+
+	// Create the central orchestrator AI object
+	sphere := ui3d.CreateSphere("orchestrator_ai", []float64{0, 0, 0}, theme)
+	sphere.Properties["event_type"] = "orchestrator_ai"
+	sphere.Properties["scale"] = []float64{2, 2, 2}
+	label := ui3d.CreateLabel("orchestrator_ai_label", "MindPalace Orchestrator", []float64{0, 1.2, 0}, theme)
+	label.Properties["event_type"] = "orchestrator_ai"
+	label.Properties["parent_id"] = "orchestrator_ai"
+	label.Properties["mesh_type"] = "sphere"
+	actions = append(actions, sphere, label)
+
+	// Create actions for user requests
+	for _, requestID := range a.RequestIDs {
+		if displayInfo, exists := a.DisplayInfos[fmt.Sprintf("request_%s", requestID)]; exists {
+			pos := a.nextPosition()
+			box := ui3d.CreateBox(fmt.Sprintf("request_%s", requestID), pos, theme)
+			box.Properties["event_type"] = "user_request_received"
+			box.Properties["material_override"] = map[string]interface{}{
+				"albedo_color": []float64{0, 1, 0, 1}, // Green for user request
+			}
+			box.Properties["display_info"] = map[string]interface{}{
+				"title":       displayInfo.Title,
+				"description": displayInfo.Description,
+				"details":     displayInfo.Details,
+			}
+			label := ui3d.CreateLabel(fmt.Sprintf("request_%s_label", requestID), "User Request", []float64{pos[0], pos[1] + 1.0, pos[2]}, theme)
+			label.Properties["event_type"] = "user_request_received"
+			label.Properties["display_info"] = map[string]interface{}{
+				"title":       displayInfo.Title,
+				"description": displayInfo.Description,
+				"details":     displayInfo.Details,
+			}
+			actions = append(actions, box, label)
+		}
+
+		// Create actions for completed requests
+		if displayInfo, exists := a.DisplayInfos[fmt.Sprintf("completed_%s", requestID)]; exists {
+			pos := a.nextPosition()
+			box := ui3d.CreateBox(fmt.Sprintf("completed_%s", requestID), pos, theme)
+			box.Properties["event_type"] = "request_completed"
+			box.Properties["material_override"] = map[string]interface{}{
+				"albedo_color": []float64{0, 1, 0, 1}, // Green for completed
+			}
+			box.Properties["display_info"] = map[string]interface{}{
+				"title":       displayInfo.Title,
+				"description": displayInfo.Description,
+				"details":     displayInfo.Details,
+			}
+			label := ui3d.CreateLabel(fmt.Sprintf("completed_%s_label", requestID), "Request Completed", []float64{pos[0], pos[1] + 1.0, pos[2]}, theme)
+			label.Properties["event_type"] = "request_completed"
+			label.Properties["display_info"] = map[string]interface{}{
+				"title":       displayInfo.Title,
+				"description": displayInfo.Description,
+				"details":     displayInfo.Details,
+			}
+			actions = append(actions, box, label)
+		}
+
+		// Create actions for agents
+		if agentState, exists := a.AgentStates[requestID]; exists {
+			if displayInfo, exists := a.DisplayInfos[fmt.Sprintf("agent_%s", requestID)]; exists {
+				pos := a.nextPosition()
+				box := ui3d.CreateBox(fmt.Sprintf("agent_%s", requestID), pos, theme)
+				box.Properties["event_type"] = "agent_call_decided"
+				box.Properties["material_override"] = map[string]interface{}{
+					"albedo_color": []float64{0, 0, 1, 1}, // Blue for agent
+				}
+				box.Properties["display_info"] = map[string]interface{}{
+					"title":       displayInfo.Title,
+					"description": displayInfo.Description,
+					"details":     displayInfo.Details,
+				}
+				label := ui3d.CreateLabel(fmt.Sprintf("agent_%s_label", requestID), fmt.Sprintf("Agent: %s", agentState.AgentName), []float64{pos[0], pos[1] + 1.0, pos[2]}, theme)
+				label.Properties["event_type"] = "agent_call_decided"
+				label.Properties["display_info"] = map[string]interface{}{
+					"title":       displayInfo.Title,
+					"description": displayInfo.Description,
+					"details":     displayInfo.Details,
+				}
+				actions = append(actions, box, label)
+			}
+		}
+	}
+
+	// Create actions for tool calls
+	for _, toolState := range a.ToolCallStates {
+		if displayInfo, exists := a.DisplayInfos[fmt.Sprintf("tool_call_%s", toolState.ToolCallID)]; exists {
+			pos := a.nextPosition()
+			box := ui3d.CreateBox(fmt.Sprintf("tool_call_%s", toolState.ToolCallID), pos, theme)
+			box.Properties["event_type"] = "tool_call_started"
+			box.Properties["material_override"] = map[string]interface{}{
+				"albedo_color": []float64{1, 1, 0, 1}, // Yellow for tool call
+			}
+			box.Properties["display_info"] = map[string]interface{}{
+				"title":       displayInfo.Title,
+				"description": displayInfo.Description,
+				"details":     displayInfo.Details,
+			}
+			label := ui3d.CreateLabel(fmt.Sprintf("tool_call_%s_label", toolState.ToolCallID), fmt.Sprintf("Tool: %s", toolState.Function), []float64{pos[0], pos[1] + 1.0, pos[2]}, theme)
+			label.Properties["event_type"] = "tool_call_started"
+			label.Properties["display_info"] = map[string]interface{}{
+				"title":       displayInfo.Title,
+				"description": displayInfo.Description,
+				"details":     displayInfo.Details,
+			}
+			actions = append(actions, box, label)
+		}
+	}
+
+	return eventsourcing.Signal{Actions: actions}
 }
 
 func (a *OrchestrationAggregate) Clone() eventsourcing.Aggregate {

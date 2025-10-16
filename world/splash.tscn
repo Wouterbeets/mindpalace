@@ -1,0 +1,29 @@
+[gd_scene load_steps=2 format=3 uid="uid://splash_scene"]
+
+[ext_resource type="Script" path="res://splash.gd" id="1_splash"]
+
+[node name="Splash" type="Node2D"]
+script = ExtResource("1_splash")
+
+[node name="ColorRect" type="ColorRect" parent="."]
+offset_right = 1920.0
+offset_bottom = 1080.0
+color = Color(0, 0, 0, 1)
+
+[node name="Label" type="Label" parent="."]
+offset_left = 960.0
+offset_top = 500.0
+offset_right = 960.0
+offset_bottom = 580.0
+theme_override_font_sizes/font_size = 72
+text = "MINDPALACE"
+horizontal_alignment = 1
+
+[node name="Subtitle" type="Label" parent="."]
+offset_left = 960.0
+offset_top = 600.0
+offset_right = 960.0
+offset_bottom = 640.0
+theme_override_font_sizes/font_size = 24
+text = "Click to continue"
+horizontal_alignment = 1

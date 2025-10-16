@@ -10,10 +10,8 @@ import (
 
 	"mindpalace/internal/audio"
 	"mindpalace/internal/godot_ws"
-	"mindpalace/internal/llmprocessor"
 	"mindpalace/internal/orchestration"
 	"mindpalace/internal/plugins"
-	"mindpalace/internal/ui"
 	"mindpalace/pkg/aggregate"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
@@ -79,6 +77,12 @@ func main() {
 			eventType, err, recoveryData, stackTrace)
 	})
 
+	// Register 3D UI events before loading
+	eventsourcing.RegisterEvent("ui_Create3DObject", func() eventsourcing.Event { return &eventsourcing.Create3DObjectEvent{} })
+	eventsourcing.RegisterEvent("ui_Update3DObject", func() eventsourcing.Event { return &eventsourcing.Update3DObjectEvent{} })
+	eventsourcing.RegisterEvent("ui_Delete3DObject", func() eventsourcing.Event { return &eventsourcing.Delete3DObjectEvent{} })
+	eventsourcing.RegisterEvent("ui_Position3DObject", func() eventsourcing.Event { return &eventsourcing.Position3DObjectEvent{} })
+
 	// Basic setup
 	store, err := eventsourcing.NewSQLiteEventStore(storagePath)
 	if err != nil {
@@ -92,7 +96,6 @@ func main() {
 	ep.EventBus = eb
 	eventsourcing.SetGlobalEventBus(eb)
 	pluginManager := plugins.NewPluginManager(ep)
-	llmClient := llmprocessor.NewLLMClient()
 
 	// Migrate from old file store if exists
 	oldFilePath := "events.json"
@@ -112,12 +115,6 @@ func main() {
 	}
 	events := store.GetEvents()
 	logging.Info("Loaded %d events", len(events))
-
-	// Register 3D UI events
-	eventsourcing.RegisterEvent("ui_Create3DObject", func() eventsourcing.Event { return &eventsourcing.Create3DObjectEvent{} })
-	eventsourcing.RegisterEvent("ui_Update3DObject", func() eventsourcing.Event { return &eventsourcing.Update3DObjectEvent{} })
-	eventsourcing.RegisterEvent("ui_Delete3DObject", func() eventsourcing.Event { return &eventsourcing.Delete3DObjectEvent{} })
-	eventsourcing.RegisterEvent("ui_Position3DObject", func() eventsourcing.Event { return &eventsourcing.Position3DObjectEvent{} })
 
 	// Register aggregates
 	for _, plug := range pluginManager.GetLLMPlugins() {
@@ -147,6 +144,24 @@ func main() {
 	}
 	defer transcriber.Close()
 
+	// Set up transcriber session event callback
+	transcriber.SetSessionEventCallback(func(eventType string, data map[string]interface{}) {
+		var cmdName string
+		switch eventType {
+		case "start":
+			cmdName = "StartTranscription"
+		case "stop":
+			cmdName = "StopTranscription"
+		default:
+			logging.Error("Unknown event type: %s", eventType)
+			return
+		}
+		err := ep.ExecuteCommand(cmdName, data)
+		if err != nil {
+			logging.Error("Failed to execute %s: %v", cmdName, err)
+		}
+	})
+
 	// Launch Godot WebSocket server
 	server := godot_ws.NewGodotServer()
 	server.SetDeltaChan(ep.DeltaChan())
@@ -175,7 +190,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer os.Remove(tmpPath)
-	cmd := exec.Command(tmpPath)
+	cmd := exec.Command(tmpPath, "--fullscreen")
 
 	// Capture stdout and stderr
 	stdout, err := cmd.StdoutPipe()
@@ -216,15 +231,6 @@ func main() {
 		}
 	}()
 
-	// Initialize orchestrator and Fyne app
-	orchestrator := orchestration.NewRequestOrchestrator(llmClient, pluginManager, orchAgg, ep, ep.EventBus)
-	app := ui.NewApp(ep, aggStore, orchestrator, pluginManager.GetLLMPlugins(), server)
-
-	// Run Fyne UI unless headless
-	if !headlessFlag {
-		app.InitUI()
-		app.Run()
-	} else {
-		select {}
-	}
+	// Run headless (Godot-only)
+	select {}
 }

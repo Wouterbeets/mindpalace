@@ -213,6 +213,7 @@ func (vt *VoiceTranscriber) transcribeAudio(audio []float32) {
 		vt.mu.Unlock()
 		logging.Debug("AUDIO: New segment: %s (absStart=%.2f, absEnd=%.2f)", seg.Text, absStartSec, absEndSec)
 		if vt.transcriptionCallback != nil {
+			logging.Info("AUDIO: Calling transcription callback with full text: '%s'", vt.fullTranscription)
 			vt.transcriptionCallback(vt.fullTranscription)
 		}
 	})
