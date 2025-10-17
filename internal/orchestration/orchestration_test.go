@@ -82,6 +82,7 @@ func (m *mockPlugin) Schemas() map[string]eventsourcing.CommandInput       { ret
 func (m *mockPlugin) Aggregate() eventsourcing.Aggregate                   { return nil }
 func (m *mockPlugin) SystemPrompt() string                                 { return m.systemPrompt }
 func (m *mockPlugin) AgentModel() string                                   { return m.model }
+func (m *mockPlugin) Description() string                                  { return "Mock plugin for testing" }
 
 type mockEventProcessor struct {
 	commands         map[string]eventsourcing.CommandHandler

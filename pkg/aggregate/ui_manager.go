@@ -260,14 +260,3 @@ func (a *ThreeDUIManagerAggregate) EmitDelta(event eventsourcing.Event) *eventso
 	}
 	return nil
 }
-
-func (a *ThreeDUIManagerAggregate) Clone() eventsourcing.Aggregate {
-	a.Mu.RLock()
-	defer a.Mu.RUnlock()
-	newAgg := NewThreeDUIManagerAggregate()
-	for id, obj := range a.Objects {
-		newObj := *obj
-		newAgg.Objects[id] = &newObj
-	}
-	return newAgg
-}

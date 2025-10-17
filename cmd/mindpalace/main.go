@@ -78,12 +78,6 @@ func main() {
 			eventType, err, recoveryData, stackTrace)
 	})
 
-	// Register 3D UI events before loading
-	eventsourcing.RegisterEvent("ui_Create3DObject", func() eventsourcing.Event { return &eventsourcing.Create3DObjectEvent{} })
-	eventsourcing.RegisterEvent("ui_Update3DObject", func() eventsourcing.Event { return &eventsourcing.Update3DObjectEvent{} })
-	eventsourcing.RegisterEvent("ui_Delete3DObject", func() eventsourcing.Event { return &eventsourcing.Delete3DObjectEvent{} })
-	eventsourcing.RegisterEvent("ui_Position3DObject", func() eventsourcing.Event { return &eventsourcing.Position3DObjectEvent{} })
-
 	// Basic setup
 	store, err := eventsourcing.NewSQLiteEventStore(storagePath)
 	if err != nil {
@@ -91,9 +85,16 @@ func main() {
 		os.Exit(1)
 	}
 	defer store.Close()
-	aggStore := aggregate.NewAggregateManager()
+
+	// Create command and control channels
+	commandChan := make(chan godot_ws.Command, 10)
+	controlChan := make(chan string, 10)
+	ackChan := make(chan int, 10)
+	deltaChan := make(chan eventsourcing.DeltaEnvelope, 10)
+
+	aggManager := aggregate.NewAggregateManager(deltaChan, ackChan)
 	ep := eventsourcing.NewEventProcessor(store, nil)
-	eb := eventsourcing.NewSimpleEventBus(store, aggStore)
+	eb := eventsourcing.NewSimpleEventBus(store, aggManager)
 	ep.EventBus = eb
 	eventsourcing.SetGlobalEventBus(eb)
 	pluginManager := plugins.NewPluginManager(ep)
@@ -117,25 +118,16 @@ func main() {
 	events := store.GetEvents()
 	logging.Info("Loaded %d events", len(events))
 
-	// Create command and control channels
-	commandChan := make(chan godot_ws.Command, 10)
-	controlChan := make(chan string, 10)
-	ackChan := make(chan int, 10)
-	deltaChan := make(chan eventsourcing.DeltaEnvelope, 10)
-
 	// Register aggregates
 	for _, plug := range pluginManager.GetLLMPlugins() {
-		aggStore.RegisterAggregate(plug.Name(), plug.Aggregate())
+		aggManager.RegisterAggregate(plug.Name(), plug.Aggregate())
 	}
 	orchAgg := orchestration.NewOrchestrationAggregate()
 	orchAgg.SetChannels(deltaChan, ackChan)
-	aggStore.RegisterAggregate("orchestration", orchAgg)
-	uiAgg := aggregate.NewThreeDUIManagerAggregate()
-	uiAgg.SetEventBus(eb)
-	aggStore.RegisterAggregate("ui_manager", uiAgg)
+	aggManager.RegisterAggregate("orchestration", orchAgg)
 
 	// Log registered aggregates
-	allAggs := aggStore.AllAggregates()
+	allAggs := aggManager.AllAggregates()
 	logging.Info("Registered %d aggregates:", len(allAggs))
 	for _, agg := range allAggs {
 		logging.Info("  - Aggregate: %s", agg.ID())
@@ -145,7 +137,7 @@ func main() {
 	llmClient := llmprocessor.NewLLMClient()
 
 	// Create and start orchestrator
-	ro := orchestration.NewRequestOrchestrator(llmClient, pluginManager, orchAgg, ep, eb, commandChan, controlChan, aggStore, events)
+	ro := orchestration.NewRequestOrchestrator(llmClient, pluginManager, orchAgg, ep, eb, commandChan, controlChan, aggManager, events)
 	ro.Start()
 
 	// Initialize voice transcriber with Whisper model
@@ -157,24 +149,6 @@ func main() {
 		os.Exit(1)
 	}
 	defer transcriber.Close()
-
-	// Set up transcriber session event callback
-	transcriber.SetSessionEventCallback(func(eventType string, data map[string]interface{}) {
-		var cmdName string
-		switch eventType {
-		case "start":
-			cmdName = "StartTranscription"
-		case "stop":
-			cmdName = "StopTranscription"
-		default:
-			logging.Error("Unknown event type: %s", eventType)
-			return
-		}
-		err := ep.ExecuteCommand(cmdName, data)
-		if err != nil {
-			logging.Error("Failed to execute %s: %v", cmdName, err)
-		}
-	})
 
 	// Launch Godot WebSocket server
 	server := godot_ws.NewGodotServer()

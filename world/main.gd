@@ -403,10 +403,7 @@ func process_event_message(data: Dictionary):
 	for action in data["actions"]:
 		if action.get("type", "") == "create":
 			create_node(action["node_id"], action.get("node_type", "MeshInstance3D"), action.get("properties", {}))
-	# Process animate actions
-	for action in data["actions"]:
-		if action.get("type", "") == "animate":
-			handle_animate_action(action)
+
 	# Send ACK if sequence_id is present
 	print("GODOT: Checking for sequence_id in data: " + str(data.has("sequence_id")))
 	if data.has("sequence_id"):
@@ -693,88 +690,7 @@ func handle_underground_action(action: Dictionary):
 			print("GODOT: user_request_input is null")
 		return
 
-	# Create spiraling particle effect for the action
-	create_spiraling_particles(action_type, properties)
 
-func handle_animate_action(action: Dictionary):
-	if typeof(action) != TYPE_DICTIONARY:
-		return
-	var node_id = action.get("node_id", "")
-	if node_id == "":
-		return
-	var anim_data = action.get("animation", {})
-	if typeof(anim_data) != TYPE_DICTIONARY:
-		return
-
-	var node = get_node_by_id(node_id)
-	if not node:
-		print("GODOT: Animation target node not found: " + node_id)
-		return
-
-	var property = anim_data.get("property", "")
-	var to_value = anim_data.get("to", null)
-	var duration = anim_data.get("duration", 1.0)
-	var ease = anim_data.get("ease", "linear")
-
-	print("GODOT: Animating " + node_id + " property " + property)
-
-	if property == "position":
-		if typeof(to_value) == TYPE_ARRAY and to_value.size() > 0:
-			if to_value[0] == "move_to_touch":
-				# Move to touch animation
-				var target_id = to_value[1]
-				var speed = float(to_value[2])
-				var callback = to_value[3] if to_value.size() > 3 else ""
-				animate_move_to_touch(node, target_id, speed, callback)
-			else:
-				# Standard move to position
-				var target_pos = []
-				for val in to_value:
-					target_pos.append(float(val))
-				while target_pos.size() < 3:
-					target_pos.append(0.0)
-				animate_move_to(node, Vector3(target_pos[0], target_pos[1], target_pos[2]), duration, ease)
-	elif property == "opacity":
-		animate_fade(node, float(to_value), duration)
-	else:
-		print("GODOT: Unsupported animation property: " + property)
-
-func create_spiraling_particles(action_type: String, properties: Dictionary):
-	var particles = GPUParticles3D.new()
-	var material = ParticleProcessMaterial.new()
-
-	# Spiral motion
-	material.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_POINT
-	material.direction = Vector3(0, 1, 0)
-	material.spread = 0.0  # Straight up initially
-	material.gravity = Vector3(0, 0, 0)	 # No gravity for spiral
-
-	# Custom spiral velocity (using script or curve)
-	# For simplicity, use angular velocity
-	material.angular_velocity_min = 1.0
-	material.angular_velocity_max = 2.0
-	material.initial_velocity_min = 2.0
-	material.initial_velocity_max = 5.0
-
-	# Color based on action type or event type
-	var color = Color.WHITE
-	if properties.has("event_type") and EVENT_COLORS.has(properties["event_type"]):
-		color = EVENT_COLORS[properties["event_type"]]
-	material.color = color
-
-	particles.process_material = material
-	particles.amount = 20
-	particles.lifetime = 3.0
-	particles.one_shot = true
-
-	# Position at origin or random
-	particles.position = Vector3(randf_range(-5, 5), -5, randf_range(-5, 5))
-
-	underground_node.add_child(particles)
-
-	# Remove after lifetime
-	await get_tree().create_timer(3.5).timeout
-	particles.queue_free()
 
 func update_above_ground(state_summary: Dictionary):
 	# state_summary is a dict like {"tasks": [array of task dicts]}
@@ -1771,9 +1687,7 @@ func show_orchestrator_menu(mouse_pos: Vector2):
 	menu_control.add_child(button)
 	button.connect("pressed", Callable(self, "_on_activate_transcription"))
 
-	# Animate in
-	var tween = create_tween()
-	tween.tween_property(button, "scale", Vector2(1, 1), 0.2).from(Vector2(0, 0)).set_ease(Tween.EASE_OUT)
+
 
 func _on_activate_transcription():
 	send_toggle_mic()
@@ -1818,73 +1732,8 @@ func get_node_by_id(node_id: String) -> Node:
 	# Then check scene tree
 	return get_node_or_null(node_id)
 
-func animate_move_to_touch(node: Node, target_id: String, speed: float, callback: String):
-	var target_node = get_node_by_id(target_id)
-	if not target_node:
-		print("GODOT: MoveToTouch target not found: " + target_id)
-		return
 
-	# Create a tween for movement
-	var tween = create_tween()
-	tween.set_process_mode(Tween.TWEEN_PROCESS_PHYSICS)
 
-	# Calculate direction and distance
-	var direction = (target_node.global_position - node.global_position).normalized()
-	var distance = node.global_position.distance_to(target_node.global_position)
-
-	if distance < 0.1:  # Already touching
-		if callback != "":
-			call(callback, node, target_node)
-		return
-
-	# Move at constant speed towards target
-	var move_time = distance / speed
-	tween.tween_property(node, "global_position", target_node.global_position, move_time).set_ease(Tween.EASE_IN_OUT)
-
-	# Check for collision during movement (simplified)
-	tween.finished.connect(func():
-		var final_distance = node.global_position.distance_to(target_node.global_position)
-		if final_distance < 0.2:  # Touch threshold
-			print("GODOT: Objects touched: " + node.name + " and " + target_node.name)
-			if callback != "":
-				execute_callback(callback, node, target_node)
-		else:
-			print("GODOT: MoveToTouch completed but not touching")
-	)
-
-func animate_move_to(node: Node, target_pos: Vector3, duration: float, ease: String):
-	var tween = create_tween()
-	var ease_type = Tween.EASE_IN_OUT
-	if ease == "linear":
-		ease_type = Tween.EASE_IN_OUT  # Godot doesn't have pure linear, use in_out
-	elif ease == "ease_in":
-		ease_type = Tween.EASE_IN
-	elif ease == "ease_out":
-		ease_type = Tween.EASE_OUT
-
-	tween.tween_property(node, "position", target_pos, duration).set_ease(ease_type)
-	print("GODOT: Moving " + node.name + " to " + str(target_pos) + " in " + str(duration) + "s")
-
-func animate_fade(node: Node, target_opacity: float, duration: float):
-	var tween = create_tween()
-	if node is MeshInstance3D and node.material_override:
-		tween.tween_property(node.material_override, "albedo_color:a", target_opacity, duration)
-	elif node is Label3D:
-		tween.tween_property(node, "modulate:a", target_opacity, duration)
-	else:
-		print("GODOT: Cannot fade node type: " + node.get_class())
-	print("GODOT: Fading " + node.name + " to opacity " + str(target_opacity) + " in " + str(duration) + "s")
-
-func execute_callback(callback_name: String, node: Node, target: Node):
-	if callback_name == "on_touch_fade":
-		# Fade out both objects
-		animate_fade(node, 0.0, 1.0)
-		animate_fade(target, 0.0, 1.0)
-		print("GODOT: Fading objects after touch")
-	elif has_method(callback_name):
-		call(callback_name, node, target)
-	else:
-		print("GODOT: Callback function not found: " + callback_name)
 
 func start_orchestrator_animation():
 	print("GODOT: Starting orchestrator animation")

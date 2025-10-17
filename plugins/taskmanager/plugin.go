@@ -939,6 +939,11 @@ func (p *TaskPlugin) AgentModel() string {
 	return "gpt-oss:20b" // Using the general-purpose model for task management
 }
 
+// Description returns a short description of how the orchestrator AI can use this agent
+func (p *TaskPlugin) Description() string {
+	return "use this to manage the todolist, talk to me in natural language with the task related request and I will create,update,delete or modify the tasks as needed."
+}
+
 func (p *TaskPlugin) EventHandlers() map[string]eventsourcing.EventHandler {
 	return nil
 }

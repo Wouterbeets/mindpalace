@@ -4,7 +4,6 @@ package eventsourcing
 import (
 	"encoding/json"
 	"fmt"
-	"mindpalace/pkg/logging"
 	"sync"
 	"time"
 )
@@ -51,9 +50,6 @@ func UnmarshalEvent(data []byte) (Event, error) {
 // Global event bus instance
 var globalEventBus EventBus
 
-// SubmitStreamingEvent is a function for sending streaming events that won't be persisted
-var SubmitStreamingEvent func(eventType string, data map[string]interface{})
-
 // SetGlobalEventBus sets the global event bus instance
 func SetGlobalEventBus(eb EventBus) {
 	globalEventBus = eb
@@ -86,14 +82,16 @@ type Plugin interface {
 	Type() PluginType
 	Name() string
 	Aggregate() Aggregate
-	SystemPrompt() string // New: Dynamic system prompt
-	AgentModel() string   // New: Preferred LLM model
+	SystemPrompt() string
+	AgentModel() string
+	Description() string
 }
 
 // Aggregate defines the interface for aggregates that process events
 type Aggregate interface {
 	ID() string
 	ApplyEvent(event Event) error
+	EmitDelta(event Event) *DeltaEnvelope
 }
 
 // Counter for generating unique IDs
@@ -129,7 +127,6 @@ type BaseEvent struct {
 }
 
 func (e *BaseEvent) Marshal() ([]byte, error) {
-	logging.Debug("calling base event marshal")
 	return json.Marshal(e)
 }
 func (e *BaseEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }

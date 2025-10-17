@@ -162,8 +162,7 @@ func TestSimpleEventBus_SubscribeAndPublish(t *testing.T) {
 	aggStore := &mockAggregateStore{
 		aggregates: []Aggregate{&mockAggregate{id: "agg1"}},
 	}
-	deltaChan := make(chan DeltaEnvelope, 10)
-	eb := NewSimpleEventBus(store, aggStore, deltaChan)
+	eb := NewSimpleEventBus(store, aggStore)
 
 	called := false
 	handler := func(event Event) error {
@@ -188,8 +187,7 @@ func TestSimpleEventBus_SubscribeAndPublish(t *testing.T) {
 func TestSimpleEventBus_SubscribeAll(t *testing.T) {
 	store := &mockEventStore{}
 	aggStore := &mockAggregateStore{}
-	deltaChan := make(chan DeltaEnvelope, 10)
-	eb := NewSimpleEventBus(store, aggStore, deltaChan)
+	eb := NewSimpleEventBus(store, aggStore)
 
 	called := false
 	handler := func(event Event) error {
@@ -248,8 +246,7 @@ func TestNewCommand_WrongType(t *testing.T) {
 func TestEventProcessor_RegisterAndExecute(t *testing.T) {
 	store := &mockEventStore{}
 	aggStore := &mockAggregateStore{}
-	deltaChan := make(chan DeltaEnvelope, 10)
-	eb := NewSimpleEventBus(store, aggStore, deltaChan)
+	eb := NewSimpleEventBus(store, aggStore)
 	ep := NewEventProcessor(store, eb)
 
 	handler := func(data string) ([]Event, error) {

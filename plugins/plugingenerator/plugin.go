@@ -49,6 +49,10 @@ func (a *PluginGeneratorAggregate) ApplyEvent(event eventsourcing.Event) error {
 	return nil
 }
 
+func (a *PluginGeneratorAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.DeltaEnvelope {
+	return nil
+}
+
 func (p *PluginGeneratorPlugin) Commands() map[string]eventsourcing.CommandHandler {
 	return p.aggregate.commands
 }
@@ -150,6 +154,11 @@ Parse the JSON and use the GeneratePlugin command with the parsed description.`
 
 func (p *PluginGeneratorPlugin) AgentModel() string {
 	return "gpt-oss:20b"
+}
+
+// Description returns a short description of how the orchestrator AI can use this agent
+func (p *PluginGeneratorPlugin) Description() string {
+	return "use this to generate new plugins, talk to me in natural language about what kind of plugin you want to create."
 }
 
 func (p *PluginGeneratorPlugin) EventHandlers() map[string]eventsourcing.EventHandler {

@@ -16,92 +16,40 @@ import (
 )
 
 type OrchestrationAggregate struct {
-	chatState        *ChatState
-	PendingToolCalls map[string]map[string]struct{}
-	ToolCallStates   map[string]*ToolCallState
-	AgentStates      map[string]*AgentState
-	RequestIDs       []string
-	DisplayInfos     map[string]*DisplayInfo
-	PositionIndex    int
-	deltaChan        chan eventsourcing.DeltaEnvelope
-	ackChan          <-chan int
+	chatState                 *ChatState
+	PendingToolCalls          map[string]map[string]struct{}
+	ToolCallStates            map[string]*ToolCallState
+	AgentStates               map[string]*AgentState
+	RequestIDs                []string
+	DisplayInfos              map[string]*DisplayInfo
+	PositionIndex             int
+	OrchestratorAICreated     bool
+	OrchestratorPositionIndex int
+	deltaChan                 chan eventsourcing.DeltaEnvelope
+	ackChan                   <-chan int
 }
 
 func NewOrchestrationAggregate() *OrchestrationAggregate {
 	// Initialize ChatManager with a base system prompt and context size
-	basePrompt := "You are MindPalace, a friendly AI assistant here to help with various queries and tasks."
+	basePrompt := "You are MindPalace, the orchestrator of a system designed to extent the users mind, allowing the user to store and retrieve anything with your help, you have several plugins at your disposal to help the user achieve this, the plugins are in the form of agents you can interact with by using function calls provided"
 	chatManager := chat.NewChatManager(100000, basePrompt) // 100K tokens max for LLM context
 	chatState := NewChatState(chatManager)
 	return &OrchestrationAggregate{
-		chatState:        chatState,
-		PendingToolCalls: make(map[string]map[string]struct{}),
-		ToolCallStates:   make(map[string]*ToolCallState),
-		AgentStates:      make(map[string]*AgentState),
-		RequestIDs:       make([]string, 0),
-		DisplayInfos:     make(map[string]*DisplayInfo),
-		PositionIndex:    0,
+		chatState:                 chatState,
+		PendingToolCalls:          make(map[string]map[string]struct{}),
+		ToolCallStates:            make(map[string]*ToolCallState),
+		AgentStates:               make(map[string]*AgentState),
+		RequestIDs:                make([]string, 0),
+		DisplayInfos:              make(map[string]*DisplayInfo),
+		PositionIndex:             0,
+		OrchestratorAICreated:     false,
+		OrchestratorPositionIndex: 0,
 	}
 }
 
 func (a *OrchestrationAggregate) ID() string {
 	return "orchestration"
 }
-
-func (a *OrchestrationAggregate) Clone() eventsourcing.Aggregate {
-	// Deep copy the aggregate
-	cloned := &OrchestrationAggregate{
-		chatState:        a.chatState, // Assuming ChatState is immutable or handles its own cloning
-		PendingToolCalls: make(map[string]map[string]struct{}),
-		ToolCallStates:   make(map[string]*ToolCallState),
-		AgentStates:      make(map[string]*AgentState),
-		RequestIDs:       make([]string, len(a.RequestIDs)),
-		DisplayInfos:     make(map[string]*DisplayInfo),
-		PositionIndex:    a.PositionIndex,
-		deltaChan:        a.deltaChan,
-		ackChan:          a.ackChan,
-	}
-	copy(cloned.RequestIDs, a.RequestIDs)
-	for k, v := range a.PendingToolCalls {
-		cloned.PendingToolCalls[k] = make(map[string]struct{})
-		for kk, vv := range v {
-			cloned.PendingToolCalls[k][kk] = vv
-		}
-	}
-	for k, v := range a.ToolCallStates {
-		cloned.ToolCallStates[k] = &ToolCallState{
-			RequestID:   v.RequestID,
-			ToolCallID:  v.ToolCallID,
-			Function:    v.Function,
-			Status:      v.Status,
-			Results:     make(map[string]interface{}),
-			LastUpdated: v.LastUpdated,
-		}
-		for kk, vv := range v.Results {
-			cloned.ToolCallStates[k].Results[kk] = vv
-		}
-	}
-	for k, v := range a.AgentStates {
-		cloned.AgentStates[k] = &AgentState{
-			RequestID:     v.RequestID,
-			AgentName:     v.AgentName,
-			Status:        v.Status,
-			ToolCallIDs:   make([]string, len(v.ToolCallIDs)),
-			ExecutionData: make(map[string]interface{}),
-			Summary:       v.Summary,
-			LastUpdated:   v.LastUpdated,
-			Model:         v.Model,
-		}
-		copy(cloned.AgentStates[k].ToolCallIDs, v.ToolCallIDs)
-		for kk, vv := range v.ExecutionData {
-			cloned.AgentStates[k].ExecutionData[kk] = vv
-		}
-	}
-	for k, v := range a.DisplayInfos {
-		cloned.DisplayInfos[k] = v // Assuming DisplayInfo is a pointer to immutable data
-	}
-	return cloned
-}
-
 func (a *OrchestrationAggregate) SetChannels(deltaChan chan eventsourcing.DeltaEnvelope, ackChan <-chan int) {
 	a.deltaChan = deltaChan
 	a.ackChan = ackChan
@@ -549,6 +497,16 @@ func (a *OrchestrationAggregate) nextPosition() []float64 {
 	return []float64{x, height, z}
 }
 
+func (a *OrchestrationAggregate) nextOrchestratorPosition() []float64 {
+	radius := 2.0
+	height := 0.0 - float64(a.OrchestratorPositionIndex)*0.5
+	angle := 2 * math.Pi * float64(a.OrchestratorPositionIndex) / 16
+	x := radius * math.Cos(angle)
+	z := radius * math.Sin(angle)
+	a.OrchestratorPositionIndex++
+	return []float64{x, height, z}
+}
+
 func (a *OrchestrationAggregate) addBox(builder *ui3d.DeltaBuilder, boxID string, pos []float64, eventType string, color []float64) {
 	boxExtra := map[string]interface{}{
 		"event_type": eventType,
@@ -586,27 +544,37 @@ func (a *OrchestrationAggregate) EmitDelta(event eventsourcing.Event) *eventsour
 	logging.GetLogger().Info("EmitDelta called for event: %s", event.Type())
 	theme := ui3d.DefaultTheme()
 	builder := ui3d.NewDeltaBuilder(theme)
+
+	// Create orchestrator_ai if not already done
+	if !a.OrchestratorAICreated {
+		pos := []float64{0, 0, 0}         // Center position
+		color := []float64{1, 0.84, 0, 1} // Gold color
+		a.addEventObject(builder, "orchestrator_ai", pos, "orchestrator_ai", color, "Orchestrator AI")
+		a.OrchestratorAICreated = true
+		logging.GetLogger().Info("Created orchestrator_ai object in the middle")
+	}
+
 	switch e := event.(type) {
 	// Orchestration events
 	case *UserRequestReceivedEvent:
 		pos := a.nextPosition()
 		boxID := fmt.Sprintf("request_%s", e.RequestID)
 		a.addEventObject(builder, boxID, pos, "user_request_received", []float64{0, 1, 0, 1}, "user_request_received")
-		// Animation: Move request towards orchestrator
-		builder.AnimateMoveToTouch(boxID, "orchestrator_ai", 30.0, "on_touch_fade")
+		// Animation: Move orchestrator AI to read the request
+		orchPos := a.nextOrchestratorPosition()
+		builder.AnimateMoveTo("orchestrator_ai", orchPos, 1.0, "ease_in_out")
 	case *AgentCallDecidedEvent:
 		pos := a.nextPosition()
 		boxID := fmt.Sprintf("agent_%s", e.RequestID)
 		a.addEventObject(builder, boxID, pos, "agent_call_decided", []float64{0, 0, 1, 1}, "agent_call_decided")
-		// Animation: Move agent towards orchestrator
-		builder.AnimateMoveToTouch(boxID, "orchestrator_ai", 20.0, "")
+		// Animation: Move orchestrator AI to read the agent call
+		orchPos := a.nextOrchestratorPosition()
+		builder.AnimateMoveTo("orchestrator_ai", orchPos, 1.0, "ease_in_out")
 	case *ToolCallRequestPlaced:
 		pos := a.nextPosition()
 		boxID := fmt.Sprintf("tool_call_%s", e.ToolCallID)
 		a.addEventObject(builder, boxID, pos, "tool_call_started", []float64{1, 1, 0, 1}, "tool_call_started")
-		// Animation: Move tool call to a tool zone (simplified, move to fixed position)
-		toolZone := []float64{10.0, -2.0, 0.0} // Tool execution zone
-		builder.AnimateMoveTo(boxID, toolZone, 0.15, "ease_in")
+
 		logging.GetLogger().Info("ToolCallRequestPlaced: returning 3 actions for tool_call_%s", e.ToolCallID)
 	case *ToolCallStarted:
 		pos := a.nextPosition()
@@ -616,9 +584,7 @@ func (a *OrchestrationAggregate) EmitDelta(event eventsourcing.Event) *eventsour
 		pos := a.nextPosition()
 		boxID := fmt.Sprintf("tool_call_completed_%s", e.ToolCallID)
 		a.addEventObject(builder, boxID, pos, "tool_call_completed", []float64{0, 1, 0, 1}, "")
-		// Animation: Move result back to agent
-		agentID := fmt.Sprintf("agent_%s", e.RequestID)
-		builder.AnimateMoveToTouch(boxID, agentID, 25.0, "on_touch_fade")
+
 	case *ToolCallFailedEvent:
 		pos := a.nextPosition()
 		boxID := fmt.Sprintf("tool_call_failed_%s", e.ToolCallID)
@@ -631,8 +597,8 @@ func (a *OrchestrationAggregate) EmitDelta(event eventsourcing.Event) *eventsour
 		pos := a.nextPosition()
 		boxID := fmt.Sprintf("completed_%s", e.RequestID)
 		a.addEventObject(builder, boxID, pos, "request_completed", []float64{0, 1, 0, 1}, "request_completed")
-		// Animation: Fade out orchestrator to indicate completion
-		builder.AnimateFade("orchestrator_ai", 0.3, 0.2)
+		// Animation: Move orchestrator AI back to center after reading
+		builder.AnimateMoveTo("orchestrator_ai", []float64{0, 0, 0}, 2.0, "ease_out")
 
 	// Task events
 	case *eventsourcing.InitiatePluginCreationEvent:
@@ -659,4 +625,11 @@ func (a *OrchestrationAggregate) EmitDelta(event eventsourcing.Event) *eventsour
 
 func (a *OrchestrationAggregate) GetChatManager() *chat.ChatManager {
 	return a.chatState.GetChatManager()
+}
+
+func (a *OrchestrationAggregate) Clone() eventsourcing.Aggregate {
+	cloned := NewOrchestrationAggregate()
+	cloned.RequestIDs = make([]string, len(a.RequestIDs))
+	copy(cloned.RequestIDs, a.RequestIDs)
+	return cloned
 }

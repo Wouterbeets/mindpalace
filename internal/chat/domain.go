@@ -223,18 +223,18 @@ func (cm *ChatManager) GetLLMContextWithTags(activeAgents []string, relevantTags
 		}
 	}
 
-	// Sort by relevance (messages with relevant tags first) then by timestamp
-	sort.Slice(mergedMessages, func(i, j int) bool {
-		iHasRelevantTag := cm.hasRelevantTag(mergedMessages[i], relevantTags)
-		jHasRelevantTag := cm.hasRelevantTag(mergedMessages[j], relevantTags)
+	//// Sort by relevance (messages with relevant tags first) then by timestamp
+	//sort.Slice(mergedMessages, func(i, j int) bool {
+	//iHasRelevantTag := cm.hasRelevantTag(mergedMessages[i], relevantTags)
+	//jHasRelevantTag := cm.hasRelevantTag(mergedMessages[j], relevantTags)
 
-		if iHasRelevantTag != jHasRelevantTag {
-			return iHasRelevantTag // Relevant messages first
-		}
-		// If both have same relevance, sort by timestamp (most recent first)
-		return mergedMessages[i].Timestamp.After(mergedMessages[j].Timestamp)
-	})
-	logging.Info("Sorted %d visible messages for LLM context (prioritizing %d relevant tags)", len(mergedMessages), len(relevantTags))
+	//if iHasRelevantTag != jHasRelevantTag {
+	//return iHasRelevantTag // Relevant messages first
+	//}
+	//// If both have same relevance, sort by timestamp (most recent first)
+	//return mergedMessages[i].Timestamp.After(mergedMessages[j].Timestamp)
+	//})
+	//logging.Info("Sorted %d visible messages for LLM context (prioritizing %d relevant tags)", len(mergedMessages), len(relevantTags))
 
 	// Trim to max tokens
 	totalTokens := len(cm.tokenizer.Encode(systemContent.String(), nil, nil))

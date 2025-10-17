@@ -2,7 +2,6 @@ package eventsourcing
 
 import (
 	"log"
-	"mindpalace/pkg/logging"
 )
 
 type EventBus interface {
@@ -20,6 +19,7 @@ type SimpleEventBus struct {
 
 type AggregateStore interface {
 	AllAggregates() []Aggregate
+	ApplyEventToAllAggs(event Event) error
 }
 
 func NewSimpleEventBus(store EventStore, aggregateStore AggregateStore) *SimpleEventBus {
@@ -45,11 +45,8 @@ func (eb *SimpleEventBus) Publish(event Event) {
 	eb.store.Append(event)
 
 	// Apply to aggregates
-	for _, agg := range eb.aggStore.AllAggregates() {
-		err := agg.ApplyEvent(event)
-		if err != nil {
-			logging.Error("Apply failed for event %s, on agg %s: %v", event.Type(), agg.ID(), err)
-		}
+	if err := eb.aggStore.ApplyEventToAllAggs(event); err != nil {
+		log.Printf("error during apply to all aggs: %s, %v", event.Type(), err)
 	}
 
 	for _, handler := range eb.allUpdatesSubscribers {

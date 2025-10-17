@@ -180,6 +180,11 @@ func (p *CalendarPlugin) AgentModel() string {
 	return "gpt-oss:20b" // Using the general-purpose model for calendar management
 }
 
+// Description returns a short description of how the orchestrator AI can use this agent
+func (p *CalendarPlugin) Description() string {
+	return "use this to manage calendar events, talk to me in natural language about scheduling, updating, or listing events."
+}
+
 func (p *CalendarPlugin) Aggregate() eventsourcing.Aggregate {
 	return p.aggregate
 }

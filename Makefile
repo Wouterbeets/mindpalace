@@ -8,7 +8,7 @@ BINARY_NAME = mindpalace
 PLUGIN_DIR = plugins
 BUILD_DIR = build
 MAIN_SRC = cmd/mindpalace/main.go
-PLUGIN_NAMES = calendar notes plugingenerator taskmanager
+PLUGIN_NAMES = calendar plugingenerator taskmanager
 PLUGIN_OUTPUTS = $(foreach name, $(PLUGIN_NAMES), $(PLUGIN_DIR)/$(name)/$(name).so)
 MODELS_DIR = models
 WHISPER_MODEL = $(MODELS_DIR)/ggml-base.en.bin
@@ -37,10 +37,6 @@ plugins: setup $(PLUGIN_OUTPUTS)
 $(PLUGIN_DIR)/calendar/calendar.so: $(PLUGIN_DIR)/calendar/plugin.go
 	@echo "Building plugin: $@"
 	cd $(dir $<) && $(GO) build $(GOFLAGS) -buildmode=plugin -o calendar.so ./*.go
-
-$(PLUGIN_DIR)/notes/notes.so: $(PLUGIN_DIR)/notes/plugin.go
-	@echo "Building plugin: $@"
-	cd $(dir $<) && $(GO) build $(GOFLAGS) -buildmode=plugin -o notes.so ./*.go
 
 $(PLUGIN_DIR)/plugingenerator/plugingenerator.so: $(PLUGIN_DIR)/plugingenerator/plugin.go
 	@echo "Building plugin: $@"

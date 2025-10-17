@@ -150,7 +150,7 @@ func (ro *RequestOrchestrator) DecideAgentCallCommand(event *UserRequestReceived
 	return events, nil
 }
 
-// gatherAgentTools remains unchanged but included for context
+// gatherAgentTools gathers tools for available LLM plugins using their descriptions
 func (ro *RequestOrchestrator) gatherAgentTools() []llmmodels.Tool {
 	var tools []llmmodels.Tool
 	for _, plugin := range ro.pluginManager.GetLLMPlugins() {
@@ -158,13 +158,13 @@ func (ro *RequestOrchestrator) gatherAgentTools() []llmmodels.Tool {
 			Type: "function",
 			Function: map[string]interface{}{
 				"name":        plugin.Name(),
-				"description": "Delegate to the " + plugin.Name() + " agent",
+				"description": plugin.Description(),
 				"parameters": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
 						"query": map[string]interface{}{
 							"type":        "string",
-							"description": "User query for the agent",
+							"description": "query for the agent",
 						},
 					},
 					"required": []string{"query"},
