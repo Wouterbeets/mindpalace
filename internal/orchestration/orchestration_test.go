@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"mindpalace/internal/godot_ws"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/llmmodels"
 )
@@ -55,6 +56,14 @@ func (m *mockPluginManager) GetPluginByCommand(cmd string) (eventsourcing.Plugin
 		}
 	}
 	return nil, fmt.Errorf("plugin not found for command %s", cmd)
+}
+
+type mockAggregateStore struct {
+	aggregates []eventsourcing.Aggregate
+}
+
+func (m *mockAggregateStore) AllAggregates() []eventsourcing.Aggregate {
+	return m.aggregates
 }
 
 type mockPlugin struct {
@@ -299,8 +308,8 @@ func TestBroadcast3DDelta(t *testing.T) {
 		Function:   "test",
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
-	signal := agg.Broadcast3DDelta(event)
-	actions := signal.Actions
+	envelope := agg.EmitDelta(event)
+	actions := envelope.Actions
 	if len(actions) != 3 {
 		t.Errorf("Expected 3 actions, got %d", len(actions))
 	}
@@ -321,9 +330,13 @@ func TestOrchestrationFlow_UserRequestToCompletion(t *testing.T) {
 	agg := NewOrchestrationAggregate()
 	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
 	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
+	commandChan := make(chan godot_ws.Command, 10)
+	controlChan := make(chan string, 10)
+	aggStore := &mockAggregateStore{}
+	events := []eventsourcing.Event{}
 
 	// Create orchestrator
-	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb)
+	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb, commandChan, controlChan, aggStore, events)
 
 	// Step 1: Process user request
 	data := map[string]interface{}{
@@ -411,8 +424,12 @@ func TestOrchestrationFlow_WithToolCalls(t *testing.T) {
 	agg := NewOrchestrationAggregate()
 	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
 	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
+	commandChan := make(chan godot_ws.Command, 10)
+	controlChan := make(chan string, 10)
+	aggStore := &mockAggregateStore{}
+	events := []eventsourcing.Event{}
 
-	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb)
+	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb, commandChan, controlChan, aggStore, events)
 
 	// Process user request
 	data := map[string]interface{}{
@@ -479,8 +496,12 @@ func TestEventTriggersCommand(t *testing.T) {
 	agg := NewOrchestrationAggregate()
 	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
 	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
+	commandChan := make(chan godot_ws.Command, 10)
+	controlChan := make(chan string, 10)
+	aggStore := &mockAggregateStore{}
+	events := []eventsourcing.Event{}
 
-	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb)
+	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb, commandChan, controlChan, aggStore, events)
 	_ = ro // Used to set up subscriptions
 
 	// The initializeCommandsAndSubscriptions sets up subscriptions
@@ -679,8 +700,8 @@ func TestBroadcast3DDelta_UserRequestReceived(t *testing.T) {
 		RequestText: "test",
 		Timestamp:   "2023-01-01T00:00:00Z",
 	}
-	signal := agg.Broadcast3DDelta(event)
-	actions := signal.Actions
+	envelope := agg.EmitDelta(event)
+	actions := envelope.Actions
 	if len(actions) == 0 {
 		t.Errorf("Expected at least 1 action, got 0")
 	}
@@ -697,8 +718,8 @@ func TestBroadcast3DDelta_AgentCallDecided(t *testing.T) {
 		AgentName: "test",
 		Timestamp: "2023-01-01T00:00:00Z",
 	}
-	signal := agg.Broadcast3DDelta(event)
-	actions := signal.Actions
+	envelope := agg.EmitDelta(event)
+	actions := envelope.Actions
 	if len(actions) != 3 {
 		t.Errorf("Expected 3 actions, got %d", len(actions))
 	}
@@ -712,8 +733,8 @@ func TestBroadcast3DDelta_ToolCallRequestPlaced(t *testing.T) {
 		Function:   "test",
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
-	signal := agg.Broadcast3DDelta(event)
-	actions := signal.Actions
+	envelope := agg.EmitDelta(event)
+	actions := envelope.Actions
 	if len(actions) != 3 {
 		t.Errorf("Expected 3 actions, got %d", len(actions))
 	}
@@ -727,8 +748,8 @@ func TestBroadcast3DDelta_ToolCallStarted(t *testing.T) {
 		Function:   "test",
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
-	signal := agg.Broadcast3DDelta(event)
-	actions := signal.Actions
+	envelope := agg.EmitDelta(event)
+	actions := envelope.Actions
 	if len(actions) != 1 {
 		t.Errorf("Expected 1 action, got %d", len(actions))
 	}
@@ -745,8 +766,8 @@ func TestBroadcast3DDelta_ToolCallCompleted(t *testing.T) {
 		Function:   "test",
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
-	signal := agg.Broadcast3DDelta(event)
-	actions := signal.Actions
+	envelope := agg.EmitDelta(event)
+	actions := envelope.Actions
 	if len(actions) != 2 {
 		t.Errorf("Expected 2 actions, got %d", len(actions))
 	}
@@ -760,8 +781,8 @@ func TestBroadcast3DDelta_ToolCallFailedEvent(t *testing.T) {
 		Function:   "test",
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
-	signal := agg.Broadcast3DDelta(event)
-	actions := signal.Actions
+	envelope := agg.EmitDelta(event)
+	actions := envelope.Actions
 	if len(actions) != 1 {
 		t.Errorf("Expected 1 action, got %d", len(actions))
 	}
@@ -774,8 +795,8 @@ func TestBroadcast3DDelta_AgentExecutionFailedEvent(t *testing.T) {
 		RequestID: "req1",
 		Timestamp: "2023-01-01T00:00:00Z",
 	}
-	signal := agg.Broadcast3DDelta(event)
-	actions := signal.Actions
+	envelope := agg.EmitDelta(event)
+	actions := envelope.Actions
 	if len(actions) != 1 {
 		t.Errorf("Expected 1 action, got %d", len(actions))
 	}
@@ -788,8 +809,8 @@ func TestBroadcast3DDelta_RequestCompletedEvent(t *testing.T) {
 		ResponseText: "test",
 		CompletedAt:  "2023-01-01T00:00:00Z",
 	}
-	signal := agg.Broadcast3DDelta(event)
-	actions := signal.Actions
+	envelope := agg.EmitDelta(event)
+	actions := envelope.Actions
 	if len(actions) != 3 {
 		t.Errorf("Expected 3 actions, got %d", len(actions))
 	}
@@ -801,8 +822,12 @@ func TestProcessUserRequestCommand(t *testing.T) {
 	agg := NewOrchestrationAggregate()
 	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
 	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
+	commandChan := make(chan godot_ws.Command, 10)
+	controlChan := make(chan string, 10)
+	aggStore := &mockAggregateStore{}
+	events := []eventsourcing.Event{}
 
-	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb)
+	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb, commandChan, controlChan, aggStore, events)
 
 	data := map[string]interface{}{
 		"requestText": "test",
@@ -825,8 +850,12 @@ func TestDecideAgentCallCommand_NoAgents(t *testing.T) {
 	agg := NewOrchestrationAggregate()
 	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
 	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
+	commandChan := make(chan godot_ws.Command, 10)
+	controlChan := make(chan string, 10)
+	aggStore := &mockAggregateStore{}
+	events := []eventsourcing.Event{}
 
-	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb)
+	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb, commandChan, controlChan, aggStore, events)
 
 	event := &UserRequestReceivedEvent{
 		RequestID:   "req1",
@@ -851,8 +880,12 @@ func TestExecuteToolCallCommand_NoPlugin(t *testing.T) {
 	agg := NewOrchestrationAggregate()
 	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
 	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
+	commandChan := make(chan godot_ws.Command, 10)
+	controlChan := make(chan string, 10)
+	aggStore := &mockAggregateStore{}
+	events := []eventsourcing.Event{}
 
-	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb)
+	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb, commandChan, controlChan, aggStore, events)
 
 	event := &ToolCallRequestPlaced{
 		RequestID:  "req1",
@@ -879,8 +912,12 @@ func TestCompleteRequestCommand_Pending(t *testing.T) {
 	agg.PendingToolCalls["req1"] = map[string]struct{}{"tool1": {}}
 	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
 	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
+	commandChan := make(chan godot_ws.Command, 10)
+	controlChan := make(chan string, 10)
+	aggStore := &mockAggregateStore{}
+	events := []eventsourcing.Event{}
 
-	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb)
+	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb, commandChan, controlChan, aggStore, events)
 
 	event := &ToolCallCompleted{
 		RequestID:  "req1",
@@ -903,8 +940,12 @@ func TestCompleteRequestWithErrorCommand(t *testing.T) {
 	agg := NewOrchestrationAggregate()
 	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
 	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
+	commandChan := make(chan godot_ws.Command, 10)
+	controlChan := make(chan string, 10)
+	aggStore := &mockAggregateStore{}
+	events := []eventsourcing.Event{}
 
-	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb)
+	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb, commandChan, controlChan, aggStore, events)
 
 	event := &ToolCallFailedEvent{
 		RequestID: "req1",

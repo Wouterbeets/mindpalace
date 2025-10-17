@@ -542,15 +542,14 @@ func (p *TaskPlugin) createTaskHandler(input *CreateTaskInput) ([]eventsourcing.
 		return nil, fmt.Errorf("title is required and must be a non-empty string")
 	}
 
-	// Default values for a new task. The priority default was previously set
-	// incorrectly to Medium; the tests expect the default to be Low.
+	// Default values for a new task.
 	event := &TaskCreatedEvent{
 		EventType:    "taskmanager_TaskCreated",
 		TaskID:       generateTaskID(),
 		Title:        input.Title,
 		Description:  input.Description,
 		Status:       StatusPending, // Default
-		Priority:     PriorityLow,   // Corrected default
+		Priority:     PriorityLow,
 		Deadline:     input.Deadline,
 		Dependencies: input.Dependencies,
 		Tags:         input.Tags,
@@ -592,7 +591,6 @@ func (p *TaskPlugin) createTaskHandler(input *CreateTaskInput) ([]eventsourcing.
 			return nil, fmt.Errorf("invalid deadline format: '%s' doesn't match any supported formats (e.g., '2006-01-02', '2006-01-02T15:04:05Z')", input.Deadline)
 		}
 
-		// Optional: Validate the parsed time is reasonable
 		if parsedTime.Year() < 0 || parsedTime.Year() > 9999 {
 			return nil, fmt.Errorf("deadline year %d is out of valid range (1-9999)", parsedTime.Year())
 		}
@@ -722,53 +720,7 @@ func (p *TaskPlugin) listTasksHandler(input *ListTasksInput) ([]eventsourcing.Ev
 	return []eventsourcing.Event{event}, nil
 }
 
-func (a *TaskAggregate) GetCurrent3DState() eventsourcing.Signal {
-	a.Mu.RLock()
-	defer a.Mu.RUnlock()
-	theme := ui3d.DefaultTheme()
-	var actions []eventsourcing.DeltaAction
-	var stateSummary = make(map[string]interface{})
-
-	sortedIDs := a.getSortedTaskIDs()
-	taskSummaries := []map[string]interface{}{}
-	for i, taskID := range sortedIDs {
-		task, exists := a.Tasks[taskID]
-		if !exists {
-			continue
-		}
-		pos := ui3d.PositionInCircle(i, 6.0+float64(i)*0.5, 2.0)
-		pos[0] += 0
-		pos[1] += 0
-		pos[2] += 20
-		color := priorityColor(task.Priority)
-		action := ui3d.CreateStandardObject(ui3d.StandardObject{
-			ID:       taskID,
-			MeshType: "box",
-			Position: pos,
-			Label:    &ui3d.LabelConfig{Text: task.Title},
-			Theme:    theme,
-			Extra: map[string]interface{}{
-				"event_type": "task",
-				"material_override": map[string]interface{}{
-					"albedo_color": color,
-				},
-			},
-		})
-		actions = append(actions, action...)
-		taskSummaries = append(taskSummaries, map[string]interface{}{
-			"id":       taskID,
-			"position": pos,
-			"color":    color,
-		})
-	}
-	stateSummary["tasks"] = taskSummaries
-	return eventsourcing.Signal{
-		Actions:      actions,
-		StateSummary: stateSummary,
-	}
-}
-
-func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) eventsourcing.Signal {
+func (a *TaskAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.DeltaEnvelope {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()
 	theme := ui3d.DefaultTheme()
@@ -783,35 +735,39 @@ func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) eventsourcin
 			}
 			i++
 		}
-		pos := ui3d.PositionInCircle(i, 6.0+float64(i)*0.5, 2.0)
-		// Offset by task zone position
-		pos[0] += 0
-		pos[1] += 0
-		pos[2] += 20
+		lm := &ui3d.LayoutManager{
+			Type:    "circle",
+			Spacing: 6.0 + float64(i)*0.5,
+			Zone:    e.Status,
+			Zones: map[string][]float64{
+				"todo":        {0, 0, 20},
+				"in_progress": {15, 0, 20},
+				"done":        {30, 0, 20},
+			},
+			Counter: i + 1,
+		}
+		pos := lm.NextPosition()
+		pos[1] = 2.0 // Set Y position
 		color := priorityColor(e.Priority)
-		actions := ui3d.CreateStandardObject(ui3d.StandardObject{
-			ID:       e.TaskID,
-			MeshType: "box",
-			Position: pos,
-			Label:    &ui3d.LabelConfig{Text: e.Title},
-			Theme:    theme,
-			Extra: map[string]interface{}{
-				"event_type": "task_created",
-				"material_override": map[string]interface{}{
-					"albedo_color": color,
-				},
+		builder := ui3d.NewDeltaBuilder(theme)
+		labelPos := []float64{pos[0], pos[1] + 1.0, pos[2]}
+		builder.CreateBox(e.TaskID, pos).WithExtra(map[string]interface{}{
+			"event_type": "task_created",
+			"material_override": map[string]interface{}{
+				"albedo_color": color,
 			},
 		})
+		builder.CreateLabel(e.TaskID+"_label", e.Title, labelPos).WithExtra(map[string]interface{}{
+			"event_type": "task_created",
+		})
+		actions := builder.Build()
 		if len(actions) > 0 {
 			actions[0].Metadata = map[string]interface{}{
 				"title":  e.Title,
 				"status": e.Status,
 			}
 		}
-		if len(actions) > 1 {
-			actions[1].Properties["event_type"] = "task_created"
-		}
-		return eventsourcing.Signal{Actions: actions}
+		return &eventsourcing.DeltaEnvelope{Type: "delta", Aggregate: "taskmanager", EventID: eventsourcing.ISOTimestamp(), Timestamp: eventsourcing.ISOTimestamp(), Actions: actions}
 	case *TaskUpdatedEvent:
 		// For updates, recreate the task at the correct position
 		sortedIDs := a.getSortedTaskIDs()
@@ -822,49 +778,42 @@ func (a *TaskAggregate) Broadcast3DDelta(event eventsourcing.Event) eventsourcin
 			}
 			i++
 		}
-		pos := ui3d.PositionInCircle(i, 6.0+float64(i)*0.5, 2.0)
-		// Offset by task zone position
-		pos[0] += 0
-		pos[1] += 0
-		pos[2] += 20
+		lm := &ui3d.LayoutManager{
+			Type:    "circle",
+			Spacing: 6.0 + float64(i)*0.5,
+			Zone:    a.Tasks[e.TaskID].Status,
+			Zones: map[string][]float64{
+				"todo":        {0, 0, 20},
+				"in_progress": {15, 0, 20},
+				"done":        {30, 0, 20},
+			},
+			Counter: i + 1,
+		}
+		pos := lm.NextPosition()
+		pos[1] = 2.0 // Set Y position
 		color := priorityColor(a.Tasks[e.TaskID].Priority)
+		builder := ui3d.NewDeltaBuilder(theme)
+		labelPos := []float64{pos[0], pos[1] + 1.0, pos[2]}
 		// Delete old
-		oldActions := []eventsourcing.DeltaAction{{
-			Type:   "delete",
-			NodeID: e.TaskID,
-		}, {
-			Type:   "delete",
-			NodeID: e.TaskID + "_label",
-		}}
+		builder.Delete(e.TaskID).Delete(e.TaskID + "_label")
 		// Create new
-		newActions := ui3d.CreateStandardObject(ui3d.StandardObject{
-			ID:       e.TaskID,
-			MeshType: "box",
-			Position: pos,
-			Label:    &ui3d.LabelConfig{Text: a.Tasks[e.TaskID].Title},
-			Theme:    theme,
-			Extra: map[string]interface{}{
-				"event_type": "task_updated",
-				"material_override": map[string]interface{}{
-					"albedo_color": color,
-				},
+		builder.CreateBox(e.TaskID, pos).WithExtra(map[string]interface{}{
+			"event_type": "task_updated",
+			"material_override": map[string]interface{}{
+				"albedo_color": color,
 			},
 		})
-		if len(newActions) > 1 {
-			newActions[1].Properties["event_type"] = "task_updated"
-		}
-		return eventsourcing.Signal{Actions: append(oldActions, newActions...)}
+		builder.CreateLabel(e.TaskID+"_label", a.Tasks[e.TaskID].Title, labelPos).WithExtra(map[string]interface{}{
+			"event_type": "task_updated",
+		})
+		return &eventsourcing.DeltaEnvelope{Type: "delta", Aggregate: "taskmanager", EventID: eventsourcing.ISOTimestamp(), Timestamp: eventsourcing.ISOTimestamp(), Actions: builder.Build()}
 	case *TaskCompletedEvent:
-		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{{
-			Type:   "delete",
-			NodeID: e.TaskID,
-		}, {
-			Type:   "delete",
-			NodeID: e.TaskID + "_label",
-		}}}
+		builder := ui3d.NewDeltaBuilder(theme)
+		builder.Delete(e.TaskID).Delete(e.TaskID + "_label")
+		return &eventsourcing.DeltaEnvelope{Type: "delta", Aggregate: "taskmanager", EventID: eventsourcing.ISOTimestamp(), Timestamp: eventsourcing.ISOTimestamp(), Actions: builder.Build()}
 		// ... similar for Update/Delete
 	}
-	return eventsourcing.Signal{}
+	return nil
 }
 
 func (a *TaskAggregate) Clone() eventsourcing.Aggregate {

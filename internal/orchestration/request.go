@@ -6,6 +6,8 @@ import (
 	"text/template"
 	"time"
 
+	"mindpalace/internal/godot_ws"
+	"mindpalace/pkg/aggregate"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/llmmodels"
 	"mindpalace/pkg/logging"
@@ -64,9 +66,13 @@ type RequestOrchestrator struct {
 	eventProcessor   EventProcessorInterface
 	eventBus         EventBusInterface
 	systemPromptTmpl *template.Template // Base template, no plugin specifics here
+	commandChan      <-chan godot_ws.Command
+	controlChan      <-chan string
+	aggStore         eventsourcing.AggregateStore
+	events           []eventsourcing.Event
 }
 
-func NewRequestOrchestrator(llmClient LLMClientInterface, pm PluginManagerInterface, agg *OrchestrationAggregate, ep EventProcessorInterface, eb EventBusInterface) *RequestOrchestrator {
+func NewRequestOrchestrator(llmClient LLMClientInterface, pm PluginManagerInterface, agg *OrchestrationAggregate, ep EventProcessorInterface, eb EventBusInterface, commandChan <-chan godot_ws.Command, controlChan <-chan string, aggStore eventsourcing.AggregateStore, events []eventsourcing.Event) *RequestOrchestrator {
 	tmpl, err := template.New("systemPrompt").Parse(systemPromptTemplate)
 	if err != nil {
 		logging.Error("Failed to parse system prompt template: %v", err)
@@ -79,6 +85,10 @@ func NewRequestOrchestrator(llmClient LLMClientInterface, pm PluginManagerInterf
 		eventProcessor:   ep,
 		eventBus:         eb,
 		systemPromptTmpl: tmpl,
+		commandChan:      commandChan,
+		controlChan:      controlChan,
+		aggStore:         aggStore,
+		events:           events,
 	}
 	ro.initializeCommandsAndSubscriptions()
 	return ro
@@ -175,6 +185,39 @@ type commandHandler struct {
 type eventSubscription struct {
 	eventType string
 	handler   func(eventsourcing.Event) error
+}
+
+func (ro *RequestOrchestrator) Start() {
+	go func() {
+		for cmd := range ro.commandChan {
+			err := ro.eventProcessor.ExecuteCommand(cmd.Name, cmd.Data)
+			if err != nil {
+				logging.Error("Failed to execute command %s: %v", cmd.Name, err)
+			}
+		}
+	}()
+
+	go func() {
+		for msg := range ro.controlChan {
+			switch msg {
+			case "rebuild_state":
+				logging.Info("Rebuilding aggregate state after ready signal")
+				if aggManager, ok := ro.aggStore.(*aggregate.AggregateManager); ok {
+					logging.Info("ORCHESTRATOR: Starting rebuild with %d events", len(ro.events))
+					err := aggManager.RebuildState(ro.events)
+					if err != nil {
+						logging.Error("Failed to rebuild state: %v", err)
+					} else {
+						logging.Info("ORCHESTRATOR: Rebuild completed successfully")
+					}
+				} else {
+					logging.Error("AggregateStore is not *AggregateManager")
+				}
+			default:
+				logging.Info("Unknown control message: %s", msg)
+			}
+		}
+	}()
 }
 
 func (ro *RequestOrchestrator) initializeCommandsAndSubscriptions() {

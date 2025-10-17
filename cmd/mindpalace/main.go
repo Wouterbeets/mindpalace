@@ -10,6 +10,7 @@ import (
 
 	"mindpalace/internal/audio"
 	"mindpalace/internal/godot_ws"
+	"mindpalace/internal/llmprocessor"
 	"mindpalace/internal/orchestration"
 	"mindpalace/internal/plugins"
 	"mindpalace/pkg/aggregate"
@@ -92,7 +93,7 @@ func main() {
 	defer store.Close()
 	aggStore := aggregate.NewAggregateManager()
 	ep := eventsourcing.NewEventProcessor(store, nil)
-	eb := eventsourcing.NewSimpleEventBus(store, aggStore, ep.DeltaChan())
+	eb := eventsourcing.NewSimpleEventBus(store, aggStore)
 	ep.EventBus = eb
 	eventsourcing.SetGlobalEventBus(eb)
 	pluginManager := plugins.NewPluginManager(ep)
@@ -116,16 +117,22 @@ func main() {
 	events := store.GetEvents()
 	logging.Info("Loaded %d events", len(events))
 
+	// Create command and control channels
+	commandChan := make(chan godot_ws.Command, 10)
+	controlChan := make(chan string, 10)
+	ackChan := make(chan int, 10)
+	deltaChan := make(chan eventsourcing.DeltaEnvelope, 10)
+
 	// Register aggregates
 	for _, plug := range pluginManager.GetLLMPlugins() {
 		aggStore.RegisterAggregate(plug.Name(), plug.Aggregate())
 	}
 	orchAgg := orchestration.NewOrchestrationAggregate()
+	orchAgg.SetChannels(deltaChan, ackChan)
 	aggStore.RegisterAggregate("orchestration", orchAgg)
 	uiAgg := aggregate.NewThreeDUIManagerAggregate()
 	uiAgg.SetEventBus(eb)
 	aggStore.RegisterAggregate("ui_manager", uiAgg)
-	aggStore.RebuildState(events)
 
 	// Log registered aggregates
 	allAggs := aggStore.AllAggregates()
@@ -133,6 +140,13 @@ func main() {
 	for _, agg := range allAggs {
 		logging.Info("  - Aggregate: %s", agg.ID())
 	}
+
+	// Create real LLM client (Ollama)
+	llmClient := llmprocessor.NewLLMClient()
+
+	// Create and start orchestrator
+	ro := orchestration.NewRequestOrchestrator(llmClient, pluginManager, orchAgg, ep, eb, commandChan, controlChan, aggStore, events)
+	ro.Start()
 
 	// Initialize voice transcriber with Whisper model
 	modelPath, _ := filepath.Abs("models/ggml-base.en.bin")
@@ -164,11 +178,11 @@ func main() {
 
 	// Launch Godot WebSocket server
 	server := godot_ws.NewGodotServer()
-	server.SetDeltaChan(ep.DeltaChan())
-	server.SetAggStore(aggStore)
-	server.SetEventStore(store)
-	server.SetEventBus(eb)
+	server.SetDeltaChan(deltaChan)
 	server.SetTranscriber(transcriber)
+	server.SetCommandChan(commandChan)
+	server.SetControlChan(controlChan)
+	server.SetAckChan(ackChan)
 
 	// Start the voice transcriber (for processing, without auto-capture)
 	err = transcriber.Start(func(text string) {
@@ -231,6 +245,7 @@ func main() {
 		}
 	}()
 
-	// Run headless (Godot-only)
+	// Aggregate state will be rebuilt after frontend sends ready signal
+
 	select {}
 }

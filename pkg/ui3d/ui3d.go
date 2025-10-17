@@ -6,6 +6,196 @@ import (
 	"mindpalace/pkg/eventsourcing"
 )
 
+// DeltaBuilder provides a fluent interface for building 3D UI deltas
+type DeltaBuilder struct {
+	actions []eventsourcing.DeltaAction
+	theme   Theme
+}
+
+// NewDeltaBuilder creates a new DeltaBuilder with the given theme
+func NewDeltaBuilder(theme Theme) *DeltaBuilder {
+	return &DeltaBuilder{
+		actions: []eventsourcing.DeltaAction{},
+		theme:   theme,
+	}
+}
+
+// CreateBox adds a box mesh to the builder
+func (db *DeltaBuilder) CreateBox(nodeID string, position []float64) *DeltaBuilder {
+	action := createMeshAction(nodeID, "box", position, db.theme, nil)
+	db.actions = append(db.actions, action)
+	return db
+}
+
+// CreateSphere adds a sphere mesh to the builder
+func (db *DeltaBuilder) CreateSphere(nodeID string, position []float64) *DeltaBuilder {
+	action := createMeshAction(nodeID, "sphere", position, db.theme, nil)
+	db.actions = append(db.actions, action)
+	return db
+}
+
+// CreateCylinder adds a cylinder mesh to the builder
+func (db *DeltaBuilder) CreateCylinder(nodeID string, position []float64) *DeltaBuilder {
+	action := createMeshAction(nodeID, "cylinder", position, db.theme, nil)
+	db.actions = append(db.actions, action)
+	return db
+}
+
+// CreatePlane adds a plane mesh to the builder
+func (db *DeltaBuilder) CreatePlane(nodeID string, position []float64) *DeltaBuilder {
+	action := eventsourcing.DeltaAction{
+		Type:     "create",
+		NodeID:   nodeID,
+		NodeType: "MeshInstance3D",
+		Properties: map[string]interface{}{
+			"mesh":     "plane",
+			"position": position,
+			"material_override": map[string]interface{}{
+				"albedo_color": db.theme.Background,
+			},
+		},
+	}
+	db.actions = append(db.actions, action)
+	return db
+}
+
+// CreateCapsule adds a capsule mesh to the builder
+func (db *DeltaBuilder) CreateCapsule(nodeID string, position []float64) *DeltaBuilder {
+	action := eventsourcing.DeltaAction{
+		Type:     "create",
+		NodeID:   nodeID,
+		NodeType: "MeshInstance3D",
+		Properties: map[string]interface{}{
+			"mesh":     "capsule",
+			"position": position,
+			"material_override": map[string]interface{}{
+				"albedo_color": db.theme.Accent,
+			},
+		},
+	}
+	db.actions = append(db.actions, action)
+	return db
+}
+
+// CreateLabel adds a 3D text label to the builder
+func (db *DeltaBuilder) CreateLabel(nodeID string, text string, position []float64) *DeltaBuilder {
+	action := eventsourcing.DeltaAction{
+		Type:     "create",
+		NodeID:   nodeID,
+		NodeType: "Label3D",
+		Properties: map[string]interface{}{
+			"text":             text,
+			"position":         position,
+			"modulate":         db.theme.Text,
+			"outline_modulate": db.theme.Accent,
+		},
+	}
+	db.actions = append(db.actions, action)
+	return db
+}
+
+// WithExtra adds extra properties to the last added action
+func (db *DeltaBuilder) WithExtra(extra map[string]interface{}) *DeltaBuilder {
+	if len(db.actions) > 0 {
+		last := &db.actions[len(db.actions)-1]
+		if last.Properties == nil {
+			last.Properties = make(map[string]interface{})
+		}
+		for k, v := range extra {
+			last.Properties[k] = v
+		}
+	}
+	return db
+}
+
+// WithDisplayInfo adds display info to the last added action
+func (db *DeltaBuilder) WithDisplayInfo(info *DisplayInfo) *DeltaBuilder {
+	if len(db.actions) > 0 && info != nil {
+		last := &db.actions[len(db.actions)-1]
+		if last.Properties == nil {
+			last.Properties = make(map[string]interface{})
+		}
+		last.Properties["display_info"] = map[string]interface{}{
+			"title":       info.Title,
+			"description": info.Description,
+			"details":     info.Details,
+		}
+	}
+	return db
+}
+
+// AnimateMoveTo adds a move animation to the specified node
+func (db *DeltaBuilder) AnimateMoveTo(nodeID string, targetPos []float64, duration float64, ease string) *DeltaBuilder {
+	action := eventsourcing.DeltaAction{
+		Type:   "animate",
+		NodeID: nodeID,
+		Animation: &eventsourcing.AnimationSpec{
+			Property: "position",
+			To:       targetPos,
+			Duration: duration,
+			Ease:     ease,
+		},
+	}
+	db.actions = append(db.actions, action)
+	return db
+}
+
+// AnimateMoveToTouch adds a move-to-touch animation
+func (db *DeltaBuilder) AnimateMoveToTouch(nodeID, targetNodeID string, speed float64, onTouchCallback string) *DeltaBuilder {
+	action := eventsourcing.DeltaAction{
+		Type:   "animate",
+		NodeID: nodeID,
+		Animation: &eventsourcing.AnimationSpec{
+			Property: "position",
+			To:       []interface{}{"move_to_touch", targetNodeID, speed, onTouchCallback},
+		},
+	}
+	db.actions = append(db.actions, action)
+	return db
+}
+
+// AnimateFade adds a fade animation
+func (db *DeltaBuilder) AnimateFade(nodeID string, targetOpacity float64, duration float64) *DeltaBuilder {
+	action := eventsourcing.DeltaAction{
+		Type:   "animate",
+		NodeID: nodeID,
+		Animation: &eventsourcing.AnimationSpec{
+			Property: "opacity",
+			To:       targetOpacity,
+			Duration: duration,
+		},
+	}
+	db.actions = append(db.actions, action)
+	return db
+}
+
+// Update adds an update action for the specified node with given properties
+func (db *DeltaBuilder) Update(nodeID string, properties map[string]interface{}) *DeltaBuilder {
+	action := eventsourcing.DeltaAction{
+		Type:       "update",
+		NodeID:     nodeID,
+		NodeType:   "MeshInstance3D",
+		Properties: properties,
+	}
+	db.actions = append(db.actions, action)
+	return db
+}
+
+// Delete adds a delete action for the specified node
+func (db *DeltaBuilder) Delete(nodeID string) *DeltaBuilder {
+	action := eventsourcing.DeltaAction{
+		Type:   "delete",
+		NodeID: nodeID,
+	}
+	db.actions = append(db.actions, action)
+	return db
+}
+
+// Build returns the accumulated DeltaActions
+func (db *DeltaBuilder) Build() []eventsourcing.DeltaAction {
+	return db.actions
+}
+
 // LabelConfig defines optional label settings for StandardObject
 type LabelConfig struct {
 	Text  string
@@ -32,12 +222,13 @@ type StandardObject struct {
 
 // LayoutManager handles positioning for groups of objects
 type LayoutManager struct {
-	Type    string // "grid", "circle", "spiral", "random"
+	Type    string // "grid", "circle", "spiral", "random", "linear"
 	Spacing float64
 	Zone    string // Ties to PLUGIN_ZONES in Godot
 	Counter int
 	Seed    int64                // For random positioning
 	Zones   map[string][]float64 // Zone offsets
+	Columns int                  // Number of columns for grid layouts (default 4)
 }
 
 // Theme defines a color scheme for UI elements
@@ -90,7 +281,7 @@ func CreateStandardObject(obj StandardObject) []eventsourcing.DeltaAction {
 
 	// Auto-tie label if present
 	if obj.Label != nil {
-		labelPos := calculateLabelPosition(obj.Position, obj.MeshType)
+		labelPos := CalculateLabelPosition(obj.Position, obj.MeshType)
 		labelAction := CreateLabel(obj.ID+"_label", obj.Label.Text, labelPos, obj.Theme)
 		if obj.Label.Color != nil {
 			labelAction.Properties["modulate"] = obj.Label.Color
@@ -110,8 +301,8 @@ func CreateStandardObject(obj StandardObject) []eventsourcing.DeltaAction {
 	return actions
 }
 
-// calculateLabelPosition computes label position relative to mesh
-func calculateLabelPosition(basePos []float64, meshType string) []float64 {
+// CalculateLabelPosition computes label position relative to mesh
+func CalculateLabelPosition(basePos []float64, meshType string) []float64 {
 	offsetY := 1.0 // Default for box
 	switch meshType {
 	case "sphere":
@@ -149,16 +340,6 @@ func createMeshAction(nodeID, meshType string, position []float64, theme Theme, 
 	}
 }
 
-// CreateBox creates a DeltaAction for a themed box mesh (deprecated: use CreateStandardObject)
-func CreateBox(nodeID string, position []float64, theme Theme) eventsourcing.DeltaAction {
-	return createMeshAction(nodeID, "box", position, theme, nil)
-}
-
-// CreateSphere creates a DeltaAction for a themed sphere mesh (deprecated: use CreateStandardObject)
-func CreateSphere(nodeID string, position []float64, theme Theme) eventsourcing.DeltaAction {
-	return createMeshAction(nodeID, "sphere", position, theme, nil)
-}
-
 // CreateLabel creates a DeltaAction for a 3D text label
 func CreateLabel(nodeID string, text string, position []float64, theme Theme) eventsourcing.DeltaAction {
 	return eventsourcing.DeltaAction{
@@ -174,214 +355,47 @@ func CreateLabel(nodeID string, text string, position []float64, theme Theme) ev
 	}
 }
 
-// CreateCard creates a simple card as a box with a label on top (deprecated: use CreateStandardObject)
-func CreateCard(nodeID string, title string, position []float64, theme Theme) []eventsourcing.DeltaAction {
-	return CreateStandardObject(StandardObject{
-		ID:       nodeID,
-		MeshType: "box",
-		Position: position,
-		Label:    &LabelConfig{Text: title},
-		Theme:    theme,
-	})
-}
-
 // NextPosition computes the next position based on layout type
 func (lm *LayoutManager) NextPosition() []float64 {
 	lm.Counter++
+	var pos []float64
 	switch lm.Type {
 	case "grid":
 		cols := 4.0 // Default columns
+		if lm.Columns > 0 {
+			cols = float64(lm.Columns)
+		}
 		row := math.Floor(float64(lm.Counter-1) / cols)
 		col := math.Mod(float64(lm.Counter-1), cols)
-		return []float64{col * lm.Spacing, 0, row * lm.Spacing}
+		pos = []float64{col * lm.Spacing, 0, row * lm.Spacing}
 	case "circle":
 		angle := 2 * math.Pi * float64(lm.Counter-1) / 8 // Assuming 8 items
 		x := lm.Spacing * math.Cos(angle)
 		z := lm.Spacing * math.Sin(angle)
-		return []float64{x, 0, z}
+		pos = []float64{x, 0, z}
 	case "spiral":
 		angle := float64(lm.Counter-1) * 0.5
 		radius := float64(lm.Counter-1) * lm.Spacing
 		x := radius * math.Cos(angle)
 		z := radius * math.Sin(angle)
-		return []float64{x, 0, z}
+		pos = []float64{x, 0, z}
 	case "random":
 		x := (float64(lm.Seed%100) - 50.0) / 50.0 * lm.Spacing
 		z := (float64((lm.Seed/100)%100) - 50.0) / 50.0 * lm.Spacing
 		lm.Seed++ // Increment seed for next
-		return []float64{x, 0, z}
+		pos = []float64{x, 0, z}
+	case "linear":
+		pos = []float64{float64(lm.Counter-1) * lm.Spacing, 0, 0}
 	default:
-		return []float64{0, 0, 0}
+		pos = []float64{0, 0, 0}
 	}
-}
-
-// PositionInGrid positions items in a grid layout (deprecated: use LayoutManager)
-func PositionInGrid(row, col, spacing float64) []float64 {
-	return []float64{col * spacing, 0, row * spacing}
-}
-
-// PositionInCircle positions items in a circle
-func PositionInCircle(index int, radius, height float64) []float64 {
-	angle := 2 * math.Pi * float64(index) / 8 // Assuming 8 items for simplicity
-	x := radius * math.Cos(angle)
-	z := radius * math.Sin(angle)
-	return []float64{x, height, z}
-}
-
-// CreateImageHolder creates a placeholder for an image (using a box for now, as Godot handles images separately)
-func CreateImageHolder(nodeID string, position []float64, theme Theme) eventsourcing.DeltaAction {
-	return eventsourcing.DeltaAction{
-		Type:     "create",
-		NodeID:   nodeID,
-		NodeType: "MeshInstance3D",
-		Properties: map[string]interface{}{
-			"mesh":     "box",
-			"position": position,
-			"material_override": map[string]interface{}{
-				"albedo_color": theme.Background,
-			},
-		},
+	// Apply zone offset if defined
+	if lm.Zone != "" && lm.Zones != nil {
+		if offset, exists := lm.Zones[lm.Zone]; exists && len(offset) >= 3 {
+			pos[0] += offset[0]
+			pos[1] += offset[1]
+			pos[2] += offset[2]
+		}
 	}
-}
-
-// CreateCylinder creates a DeltaAction for a themed cylinder mesh (deprecated: use CreateStandardObject)
-func CreateCylinder(nodeID string, position []float64, theme Theme) eventsourcing.DeltaAction {
-	return createMeshAction(nodeID, "cylinder", position, theme, nil)
-}
-
-// CreatePlane creates a DeltaAction for a themed plane mesh
-func CreatePlane(nodeID string, position []float64, theme Theme) eventsourcing.DeltaAction {
-	return eventsourcing.DeltaAction{
-		Type:     "create",
-		NodeID:   nodeID,
-		NodeType: "MeshInstance3D",
-		Properties: map[string]interface{}{
-			"mesh":     "plane",
-			"position": position,
-			"material_override": map[string]interface{}{
-				"albedo_color": theme.Background,
-			},
-		},
-	}
-}
-
-// CreateCapsule creates a DeltaAction for a themed capsule mesh
-func CreateCapsule(nodeID string, position []float64, theme Theme) eventsourcing.DeltaAction {
-	return eventsourcing.DeltaAction{
-		Type:     "create",
-		NodeID:   nodeID,
-		NodeType: "MeshInstance3D",
-		Properties: map[string]interface{}{
-			"mesh":     "capsule",
-			"position": position,
-			"material_override": map[string]interface{}{
-				"albedo_color": theme.Accent,
-			},
-		},
-	}
-}
-
-// CreateTree creates a simple tree as a cylinder trunk with a sphere crown
-func CreateTree(nodeID string, position []float64, theme Theme) []eventsourcing.DeltaAction {
-	trunk := CreateCylinder(nodeID+"_trunk", position, theme)
-	crownPos := []float64{position[0], position[1] + 2.0, position[2]}
-	crown := CreateSphere(nodeID+"_crown", crownPos, theme)
-	return []eventsourcing.DeltaAction{trunk, crown}
-}
-
-// CreateWater creates a water plane
-func CreateWater(nodeID string, position []float64, theme Theme) eventsourcing.DeltaAction {
-	return eventsourcing.DeltaAction{
-		Type:     "create",
-		NodeID:   nodeID,
-		NodeType: "MeshInstance3D",
-		Properties: map[string]interface{}{
-			"mesh":     "plane",
-			"position": position,
-			"material_override": map[string]interface{}{
-				"albedo_color": []float64{0.0, 0.5, 1.0, 0.8}, // Blue semi-transparent
-			},
-		},
-	}
-}
-
-// CreateRock creates a rock as a scaled and rotated box
-func CreateRock(nodeID string, position []float64, theme Theme) eventsourcing.DeltaAction {
-	return eventsourcing.DeltaAction{
-		Type:     "create",
-		NodeID:   nodeID,
-		NodeType: "MeshInstance3D",
-		Properties: map[string]interface{}{
-			"mesh":     "box",
-			"position": position,
-			"scale":    []float64{1.5, 0.8, 1.2}, // Irregular shape
-			"rotation": []float64{0.3, 0.0, 0.2}, // Slight rotation
-			"material_override": map[string]interface{}{
-				"albedo_color": []float64{0.4, 0.3, 0.2, 1.0}, // Brown
-			},
-		},
-	}
-}
-
-// PositionInSpiral positions items in a spiral pattern
-func PositionInSpiral(index int, spacing, height float64) []float64 {
-	angle := float64(index) * 0.5
-	radius := float64(index) * spacing
-	x := radius * math.Cos(angle)
-	z := radius * math.Sin(angle)
-	return []float64{x, height, z}
-}
-
-// PositionRandom positions items randomly within a radius
-func PositionRandom(seed int64, radius, height float64) []float64 {
-	// Simple pseudo-random based on seed
-	x := (float64(seed%100) - 50.0) / 50.0 * radius
-	z := (float64((seed/100)%100) - 50.0) / 50.0 * radius
-	return []float64{x, height, z}
-}
-
-// CreateInteractiveText creates a label that could be made interactive (Godot-side logic needed)
-func CreateInteractiveText(nodeID string, text string, position []float64, theme Theme) eventsourcing.DeltaAction {
-	return CreateLabel(nodeID, text, position, theme)
-}
-
-// CreateMoveToTouch creates an animation action to move nodeID towards targetNodeID at speed until they touch
-func CreateMoveToTouch(nodeID, targetNodeID string, speed float64, onTouchCallback string) eventsourcing.DeltaAction {
-	return eventsourcing.DeltaAction{
-		Type:   "animate",
-		NodeID: nodeID,
-		Animation: &eventsourcing.AnimationSpec{
-			Property: "position",
-			// To is not fixed; Godot will handle movement towards target
-			// Using To as placeholder, actual logic in Godot
-			To: []interface{}{"move_to_touch", targetNodeID, speed, onTouchCallback},
-		},
-	}
-}
-
-// CreateMoveTo creates a simple move animation to a fixed position
-func CreateMoveTo(nodeID string, targetPos []float64, duration float64, ease string) eventsourcing.DeltaAction {
-	return eventsourcing.DeltaAction{
-		Type:   "animate",
-		NodeID: nodeID,
-		Animation: &eventsourcing.AnimationSpec{
-			Property: "position",
-			To:       targetPos,
-			Duration: duration,
-			Ease:     ease,
-		},
-	}
-}
-
-// CreateFade creates a fade animation
-func CreateFade(nodeID string, targetOpacity float64, duration float64) eventsourcing.DeltaAction {
-	return eventsourcing.DeltaAction{
-		Type:   "animate",
-		NodeID: nodeID,
-		Animation: &eventsourcing.AnimationSpec{
-			Property: "opacity",
-			To:       targetOpacity,
-			Duration: duration,
-		},
-	}
+	return pos
 }

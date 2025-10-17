@@ -38,7 +38,10 @@ func TestLightTheme(t *testing.T) {
 func TestCreateBox(t *testing.T) {
 	theme := DefaultTheme()
 	position := []float64{1.0, 2.0, 3.0}
-	action := CreateBox("test_box", position, theme)
+	db := NewDeltaBuilder(theme)
+	db.CreateBox("test_box", position)
+	actions := db.Build()
+	action := actions[0]
 
 	expected := eventsourcing.DeltaAction{
 		Type:     "create",
@@ -66,7 +69,10 @@ func TestCreateBox(t *testing.T) {
 func TestCreateSphere(t *testing.T) {
 	theme := DefaultTheme()
 	position := []float64{0.0, 0.0, 0.0}
-	action := CreateSphere("test_sphere", position, theme)
+	db := NewDeltaBuilder(theme)
+	db.CreateSphere("test_sphere", position)
+	actions := db.Build()
+	action := actions[0]
 
 	expected := eventsourcing.DeltaAction{
 		Type:     "create",
@@ -110,308 +116,30 @@ func TestCreateLabel(t *testing.T) {
 	}
 }
 
-func TestCreateCard(t *testing.T) {
-	theme := DefaultTheme()
-	position := []float64{0.0, 0.0, 0.0}
-	actions := CreateCard("test_card", "Title", position, theme)
-
-	if len(actions) != 2 {
-		t.Errorf("CreateCard() should return 2 actions, got %d", len(actions))
+func TestLayoutManagerGrid(t *testing.T) {
+	lm := &LayoutManager{
+		Type:    "grid",
+		Spacing: 5.0,
+		Counter: 1, // Will increment to 2, giving col=1
 	}
-
-	// Check box
-	box := actions[0]
-	if box.NodeID != "test_card" || box.NodeType != "MeshInstance3D" {
-		t.Errorf("CreateCard() box action incorrect")
-	}
-
-	// Check label
-	label := actions[1]
-	if label.NodeID != "test_card_label" || label.NodeType != "Label3D" {
-		t.Errorf("CreateCard() label action incorrect")
-	}
-	expectedLabelPos := []float64{0.0, 1.0, 0.0}
-	if !reflect.DeepEqual(label.Properties["position"], expectedLabelPos) {
-		t.Errorf("CreateCard() label position = %v, want %v", label.Properties["position"], expectedLabelPos)
-	}
-}
-
-func TestPositionInGrid(t *testing.T) {
-	pos := PositionInGrid(1, 2, 5.0)
-	expected := []float64{10.0, 0, 5.0}
+	pos := lm.NextPosition()
+	expected := []float64{5.0, 0, 0} // col=1, row=0
 	if !reflect.DeepEqual(pos, expected) {
-		t.Errorf("PositionInGrid() = %v, want %v", pos, expected)
+		t.Errorf("LayoutManager grid = %v, want %v", pos, expected)
 	}
 }
 
-func TestPositionInCircle(t *testing.T) {
-	pos := PositionInCircle(0, 10.0, 2.0)
-	// For index 0, angle 0, x=10*cos(0)=10, z=10*sin(0)=0
-	expected := []float64{10.0, 2.0, 0.0}
+func TestLayoutManagerWithZones(t *testing.T) {
+	lm := &LayoutManager{
+		Type:    "linear",
+		Spacing: 2.0,
+		Zone:    "test_zone",
+		Zones:   map[string][]float64{"test_zone": {10, 5, 3}},
+		Counter: 0, // Will increment to 1, giving index 0
+	}
+	pos := lm.NextPosition()
+	expected := []float64{10, 5, 3} // 0*2 + offset
 	if !reflect.DeepEqual(pos, expected) {
-		t.Errorf("PositionInCircle() = %v, want %v", pos, expected)
-	}
-}
-
-func TestCreateImageHolder(t *testing.T) {
-	theme := DefaultTheme()
-	position := []float64{1.0, 1.0, 1.0}
-	action := CreateImageHolder("test_image", position, theme)
-
-	expected := eventsourcing.DeltaAction{
-		Type:     "create",
-		NodeID:   "test_image",
-		NodeType: "MeshInstance3D",
-		Properties: map[string]interface{}{
-			"mesh":     "box",
-			"position": position,
-			"material_override": map[string]interface{}{
-				"albedo_color": theme.Background,
-			},
-		},
-	}
-
-	if !reflect.DeepEqual(action, expected) {
-		t.Errorf("CreateImageHolder() = %v, want %v", action, expected)
-	}
-}
-
-func TestCreateCylinder(t *testing.T) {
-	theme := DefaultTheme()
-	position := []float64{1.0, 2.0, 3.0}
-	action := CreateCylinder("test_cylinder", position, theme)
-
-	expected := eventsourcing.DeltaAction{
-		Type:     "create",
-		NodeID:   "test_cylinder",
-		NodeType: "MeshInstance3D",
-		Properties: map[string]interface{}{
-			"mesh":     "cylinder",
-			"position": position,
-			"material_override": map[string]interface{}{
-				"albedo_color":     theme.Primary,
-				"emissive_color":   theme.Accent,
-				"emission_enabled": true,
-			},
-		},
-	}
-
-	if !reflect.DeepEqual(action, expected) {
-		t.Errorf("CreateCylinder() = %v, want %v", action, expected)
-	}
-}
-
-func TestCreatePlane(t *testing.T) {
-	theme := DefaultTheme()
-	position := []float64{0.0, 0.0, 0.0}
-	action := CreatePlane("test_plane", position, theme)
-
-	expected := eventsourcing.DeltaAction{
-		Type:     "create",
-		NodeID:   "test_plane",
-		NodeType: "MeshInstance3D",
-		Properties: map[string]interface{}{
-			"mesh":     "plane",
-			"position": position,
-			"material_override": map[string]interface{}{
-				"albedo_color": theme.Background,
-			},
-		},
-	}
-
-	if !reflect.DeepEqual(action, expected) {
-		t.Errorf("CreatePlane() = %v, want %v", action, expected)
-	}
-}
-
-func TestCreateCapsule(t *testing.T) {
-	theme := DefaultTheme()
-	position := []float64{1.0, 1.0, 1.0}
-	action := CreateCapsule("test_capsule", position, theme)
-
-	expected := eventsourcing.DeltaAction{
-		Type:     "create",
-		NodeID:   "test_capsule",
-		NodeType: "MeshInstance3D",
-		Properties: map[string]interface{}{
-			"mesh":     "capsule",
-			"position": position,
-			"material_override": map[string]interface{}{
-				"albedo_color": theme.Accent,
-			},
-		},
-	}
-
-	if !reflect.DeepEqual(action, expected) {
-		t.Errorf("CreateCapsule() = %v, want %v", action, expected)
-	}
-}
-
-func TestCreateTree(t *testing.T) {
-	theme := DefaultTheme()
-	position := []float64{0.0, 0.0, 0.0}
-	actions := CreateTree("test_tree", position, theme)
-
-	if len(actions) != 2 {
-		t.Errorf("CreateTree() should return 2 actions, got %d", len(actions))
-	}
-
-	// Check trunk
-	trunk := actions[0]
-	if trunk.NodeID != "test_tree_trunk" || trunk.NodeType != "MeshInstance3D" {
-		t.Errorf("CreateTree() trunk action incorrect")
-	}
-
-	// Check crown
-	crown := actions[1]
-	if crown.NodeID != "test_tree_crown" || crown.NodeType != "MeshInstance3D" {
-		t.Errorf("CreateTree() crown action incorrect")
-	}
-	expectedCrownPos := []float64{0.0, 2.0, 0.0}
-	if !reflect.DeepEqual(crown.Properties["position"], expectedCrownPos) {
-		t.Errorf("CreateTree() crown position = %v, want %v", crown.Properties["position"], expectedCrownPos)
-	}
-}
-
-func TestCreateWater(t *testing.T) {
-	theme := DefaultTheme()
-	position := []float64{0.0, 0.0, 0.0}
-	action := CreateWater("test_water", position, theme)
-
-	expected := eventsourcing.DeltaAction{
-		Type:     "create",
-		NodeID:   "test_water",
-		NodeType: "MeshInstance3D",
-		Properties: map[string]interface{}{
-			"mesh":     "plane",
-			"position": position,
-			"material_override": map[string]interface{}{
-				"albedo_color": []float64{0.0, 0.5, 1.0, 0.8},
-			},
-		},
-	}
-
-	if !reflect.DeepEqual(action, expected) {
-		t.Errorf("CreateWater() = %v, want %v", action, expected)
-	}
-}
-
-func TestCreateRock(t *testing.T) {
-	theme := DefaultTheme()
-	position := []float64{1.0, 1.0, 1.0}
-	action := CreateRock("test_rock", position, theme)
-
-	expected := eventsourcing.DeltaAction{
-		Type:     "create",
-		NodeID:   "test_rock",
-		NodeType: "MeshInstance3D",
-		Properties: map[string]interface{}{
-			"mesh":     "box",
-			"position": position,
-			"scale":    []float64{1.5, 0.8, 1.2},
-			"rotation": []float64{0.3, 0.0, 0.2},
-			"material_override": map[string]interface{}{
-				"albedo_color": []float64{0.4, 0.3, 0.2, 1.0},
-			},
-		},
-	}
-
-	if !reflect.DeepEqual(action, expected) {
-		t.Errorf("CreateRock() = %v, want %v", action, expected)
-	}
-}
-
-func TestPositionInSpiral(t *testing.T) {
-	pos := PositionInSpiral(0, 1.0, 0.0)
-	expected := []float64{0.0, 0.0, 0.0}
-	if !reflect.DeepEqual(pos, expected) {
-		t.Errorf("PositionInSpiral(0) = %v, want %v", pos, expected)
-	}
-
-	pos = PositionInSpiral(1, 1.0, 0.0)
-	// angle = 0.5, radius = 1.0, x = 1*cos(0.5) ≈ 0.877, z = 1*sin(0.5) ≈ 0.479
-	expected = []float64{0.8775825618903728, 0.0, 0.479425538604203}
-	if !reflect.DeepEqual(pos, expected) {
-		t.Errorf("PositionInSpiral(1) = %v, want %v", pos, expected)
-	}
-}
-
-func TestPositionRandom(t *testing.T) {
-	pos := PositionRandom(0, 10.0, 1.0)
-	// For seed 0, x = (0-50)/50 *10 = -10, z = same = -10
-	expected := []float64{-10.0, 1.0, -10.0}
-	if !reflect.DeepEqual(pos, expected) {
-		t.Errorf("PositionRandom(0) = %v, want %v", pos, expected)
-	}
-}
-
-func TestCreateInteractiveText(t *testing.T) {
-	theme := DefaultTheme()
-	position := []float64{0.0, 0.0, 0.0}
-	action := CreateInteractiveText("test_text", "Click me", position, theme)
-
-	// Should be same as CreateLabel
-	expected := CreateLabel("test_text", "Click me", position, theme)
-
-	if !reflect.DeepEqual(action, expected) {
-		t.Errorf("CreateInteractiveText() = %v, want %v", action, expected)
-	}
-}
-
-func TestCreateMoveToTouch(t *testing.T) {
-	action := CreateMoveToTouch("obj1", "obj2", 5.0, "callback")
-
-	expected := eventsourcing.DeltaAction{
-		Type:   "animate",
-		NodeID: "obj1",
-		Animation: &eventsourcing.AnimationSpec{
-			Property: "position",
-			To:       []interface{}{"move_to_touch", "obj2", 5.0, "callback"},
-		},
-	}
-
-	if action.Type != expected.Type || action.NodeID != expected.NodeID {
-		t.Errorf("CreateMoveToTouch() basic fields mismatch")
-	}
-	if !reflect.DeepEqual(action.Animation, expected.Animation) {
-		t.Errorf("CreateMoveToTouch() animation = %v, want %v", action.Animation, expected.Animation)
-	}
-}
-
-func TestCreateMoveTo(t *testing.T) {
-	targetPos := []float64{1.0, 2.0, 3.0}
-	action := CreateMoveTo("obj1", targetPos, 2.0, "ease_in")
-
-	expected := eventsourcing.DeltaAction{
-		Type:   "animate",
-		NodeID: "obj1",
-		Animation: &eventsourcing.AnimationSpec{
-			Property: "position",
-			To:       targetPos,
-			Duration: 2.0,
-			Ease:     "ease_in",
-		},
-	}
-
-	if !reflect.DeepEqual(action, expected) {
-		t.Errorf("CreateMoveTo() = %v, want %v", action, expected)
-	}
-}
-
-func TestCreateFade(t *testing.T) {
-	action := CreateFade("obj1", 0.5, 1.0)
-
-	expected := eventsourcing.DeltaAction{
-		Type:   "animate",
-		NodeID: "obj1",
-		Animation: &eventsourcing.AnimationSpec{
-			Property: "opacity",
-			To:       0.5,
-			Duration: 1.0,
-		},
-	}
-
-	if !reflect.DeepEqual(action, expected) {
-		t.Errorf("CreateFade() = %v, want %v", action, expected)
+		t.Errorf("LayoutManager with zones = %v, want %v", pos, expected)
 	}
 }

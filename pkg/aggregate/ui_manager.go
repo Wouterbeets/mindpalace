@@ -153,56 +153,62 @@ func (a *ThreeDUIManagerAggregate) handleDomainEvent(event eventsourcing.Event) 
 	}
 }
 
-// Broadcast3DDelta emits DeltaActions for 3D UI events and domain events
-func (a *ThreeDUIManagerAggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourcing.DeltaAction {
+// EmitDelta emits DeltaEnvelope for 3D UI events and domain events
+func (a *ThreeDUIManagerAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.DeltaEnvelope {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()
 
 	switch e := event.(type) {
 	case *eventsourcing.Create3DObjectEvent:
-		obj := ui3d.StandardObject{
-			ID:       e.ObjectID,
-			MeshType: e.MeshType,
-			Position: e.Position,
-			Label:    &ui3d.LabelConfig{Text: e.Label},
-			Theme:    ui3d.DefaultTheme(),
-			Extra: map[string]interface{}{
-				"event_type": "create_3d_object",
-				"material_override": map[string]interface{}{
-					"albedo_color": e.Color,
-				},
+		builder := ui3d.NewDeltaBuilder(ui3d.DefaultTheme())
+		labelPos := ui3d.CalculateLabelPosition(e.Position, e.MeshType)
+		builder.CreateBox(e.ObjectID, e.Position).WithExtra(map[string]interface{}{
+			"event_type": "create_3d_object",
+			"material_override": map[string]interface{}{
+				"albedo_color": e.Color,
 			},
+		})
+		builder.CreateLabel(e.ObjectID+"_label", e.Label, labelPos).WithExtra(map[string]interface{}{
+			"event_type": "create_3d_object",
+		})
+		return &eventsourcing.DeltaEnvelope{
+			Type:      "delta",
+			Aggregate: "ui_manager",
+			EventID:   eventsourcing.ISOTimestamp(),
+			Timestamp: eventsourcing.ISOTimestamp(),
+			Actions:   builder.Build(),
 		}
-		return ui3d.CreateStandardObject(obj)
 	case *eventsourcing.Update3DObjectEvent:
-		actions := []eventsourcing.DeltaAction{}
-		for k, v := range e.Properties {
-			action := eventsourcing.DeltaAction{
-				Type:     "update",
-				NodeID:   e.ObjectID,
-				NodeType: "MeshInstance3D",
-				Properties: map[string]interface{}{
-					k: v,
-				},
-			}
-			actions = append(actions, action)
+		builder := ui3d.NewDeltaBuilder(ui3d.DefaultTheme())
+		builder.Update(e.ObjectID, e.Properties)
+		return &eventsourcing.DeltaEnvelope{
+			Type:      "delta",
+			Aggregate: "ui_manager",
+			EventID:   eventsourcing.ISOTimestamp(),
+			Timestamp: eventsourcing.ISOTimestamp(),
+			Actions:   builder.Build(),
 		}
-		return actions
 	case *eventsourcing.Delete3DObjectEvent:
-		return []eventsourcing.DeltaAction{
-			{Type: "delete", NodeID: e.ObjectID},
-			{Type: "delete", NodeID: e.ObjectID + "_label"},
+		builder := ui3d.NewDeltaBuilder(ui3d.DefaultTheme())
+		builder.Delete(e.ObjectID).Delete(e.ObjectID + "_label")
+		return &eventsourcing.DeltaEnvelope{
+			Type:      "delta",
+			Aggregate: "ui_manager",
+			EventID:   eventsourcing.ISOTimestamp(),
+			Timestamp: eventsourcing.ISOTimestamp(),
+			Actions:   builder.Build(),
 		}
 	case *eventsourcing.Position3DObjectEvent:
-		return []eventsourcing.DeltaAction{
-			{
-				Type:     "update",
-				NodeID:   e.ObjectID,
-				NodeType: "MeshInstance3D",
-				Properties: map[string]interface{}{
-					"position": e.Position,
-				},
-			},
+		builder := ui3d.NewDeltaBuilder(ui3d.DefaultTheme())
+		builder.Update(e.ObjectID, map[string]interface{}{
+			"position": e.Position,
+		})
+		return &eventsourcing.DeltaEnvelope{
+			Type:      "delta",
+			Aggregate: "ui_manager",
+			EventID:   eventsourcing.ISOTimestamp(),
+			Timestamp: eventsourcing.ISOTimestamp(),
+			Actions:   builder.Build(),
 		}
 	default:
 		// Handle domain events
@@ -219,70 +225,40 @@ func (a *ThreeDUIManagerAggregate) Broadcast3DDelta(event eventsourcing.Event) [
 		case "taskmanager_TaskCreated":
 			taskID, _ := raw["task_id"].(string)
 			if obj, exists := a.Objects[taskID]; exists {
-				obj2 := ui3d.StandardObject{
-					ID:       obj.ID,
-					MeshType: obj.MeshType,
-					Position: obj.Position,
-					Label:    &ui3d.LabelConfig{Text: obj.Label},
-					Theme:    ui3d.DefaultTheme(),
-					Extra: map[string]interface{}{
-						"event_type": "create_3d_object",
-						"material_override": map[string]interface{}{
-							"albedo_color": obj.Color,
-						},
+				builder := ui3d.NewDeltaBuilder(ui3d.DefaultTheme())
+				labelPos := ui3d.CalculateLabelPosition(obj.Position, obj.MeshType)
+				builder.CreateBox(obj.ID, obj.Position).WithExtra(map[string]interface{}{
+					"event_type": "create_3d_object",
+					"material_override": map[string]interface{}{
+						"albedo_color": obj.Color,
 					},
+				})
+				builder.CreateLabel(obj.ID+"_label", obj.Label, labelPos).WithExtra(map[string]interface{}{
+					"event_type": "create_3d_object",
+				})
+				return &eventsourcing.DeltaEnvelope{
+					Type:      "delta",
+					Aggregate: "ui_manager",
+					EventID:   eventsourcing.ISOTimestamp(),
+					Timestamp: eventsourcing.ISOTimestamp(),
+					Actions:   builder.Build(),
 				}
-				return ui3d.CreateStandardObject(obj2)
 			}
 
 		case "taskmanager_TaskDeleted":
 			taskID, _ := raw["task_id"].(string)
-			return []eventsourcing.DeltaAction{
-				{Type: "delete", NodeID: taskID},
-				{Type: "delete", NodeID: taskID + "_label"},
+			builder := ui3d.NewDeltaBuilder(ui3d.DefaultTheme())
+			builder.Delete(taskID).Delete(taskID + "_label")
+			return &eventsourcing.DeltaEnvelope{
+				Type:      "delta",
+				Aggregate: "ui_manager",
+				EventID:   eventsourcing.ISOTimestamp(),
+				Timestamp: eventsourcing.ISOTimestamp(),
+				Actions:   builder.Build(),
 			}
 		}
 	}
 	return nil
-}
-
-// GetCurrent3DState returns the current 3D state for full sync
-func (a *ThreeDUIManagerAggregate) GetCurrent3DState() eventsourcing.Signal {
-	a.Mu.RLock()
-	defer a.Mu.RUnlock()
-
-	var actions []eventsourcing.DeltaAction
-	stateSummary := make(map[string]interface{})
-
-	for _, obj := range a.Objects {
-		obj2 := ui3d.StandardObject{
-			ID:       obj.ID,
-			MeshType: obj.MeshType,
-			Position: obj.Position,
-			Label:    &ui3d.LabelConfig{Text: obj.Label},
-			Theme:    ui3d.DefaultTheme(),
-			Extra: map[string]interface{}{
-				"event_type": "create_3d_object",
-				"material_override": map[string]interface{}{
-					"albedo_color": obj.Color,
-				},
-			},
-		}
-		actions = append(actions, ui3d.CreateStandardObject(obj2)...)
-		stateSummary[obj.ID] = map[string]interface{}{
-			"id":       obj.ID,
-			"type":     obj.MeshType,
-			"position": obj.Position,
-			"color":    obj.Color,
-			"zone":     obj.Zone,
-			"label":    obj.Label,
-		}
-	}
-
-	return eventsourcing.Signal{
-		Actions:      actions,
-		StateSummary: stateSummary,
-	}
 }
 
 func (a *ThreeDUIManagerAggregate) Clone() eventsourcing.Aggregate {

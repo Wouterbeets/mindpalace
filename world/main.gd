@@ -385,21 +385,17 @@ func send_ready_signal():
 		
 
 func process_event_message(data: Dictionary):
+	print("GODOT: process_event_message called with data: " + str(data))
 	if not data or typeof(data) != TYPE_DICTIONARY:
+		print("GODOT: Invalid data type, returning")
 		return
 	if not data.has("type") or (data["type"] != "delta" and data["type"] != "signal"):
+		print("GODOT: Invalid or missing type, returning")
 		return
 	if not data.has("actions") or typeof(data["actions"]) != TYPE_ARRAY:
+		print("GODOT: Invalid or missing actions, returning")
 		return
 	print("GODOT: Received event message with " + str(data["actions"].size()) + " actions")
-	# Check if this is a full state reload
-	var is_full_state = (data.has("event_id") and data["event_id"] == "full_state") or (data.has("aggregate") and data["aggregate"] == "full_state")
-	if is_full_state:
-		print("GODOT: Full state received")
-	if is_full_state:
-		if is_dragging:
-			# Reset drag state when full state is reloaded
-			end_drag()
 	# Apply actions to underground for animations
 	for action in data["actions"]:
 		handle_underground_action(action)
@@ -411,19 +407,11 @@ func process_event_message(data: Dictionary):
 	for action in data["actions"]:
 		if action.get("type", "") == "animate":
 			handle_animate_action(action)
-	# Update above ground objects from state summary (only for full state)
-	if is_full_state and data.has("state_summary"):
-		update_above_ground(data["state_summary"])
 	# Send ACK if sequence_id is present
 	print("GODOT: Checking for sequence_id in data: " + str(data.has("sequence_id")))
 	if data.has("sequence_id"):
 		send_delta_ack(data["sequence_id"])
 		print("GODOT: Sent ACK for sequence " + str(data["sequence_id"]))
-	# Start orchestrator animation after full state
-	if is_full_state and not orchestrator_animated:
-		print("GODOT: Full state received, starting orchestrator animation")
-		start_orchestrator_animation()
-		orchestrator_animated = true
 
 func process_transcription_update(data: Dictionary):
 	if not data.has("actions") or typeof(data["actions"]) != TYPE_ARRAY:
@@ -565,7 +553,9 @@ func send_keypress_ack(keys: String, correlation_id: String, result: Dictionary)
 		push_error("Failed to send keypress ACK: ", err)
 
 func send_delta_ack(sequence_id: int):
+	print("GODOT: in send delta ack")
 	if websocket.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		print("GODOT: websocket not open, returning")
 		return
 
 	var ack_msg = {
@@ -1743,10 +1733,6 @@ func send_toggle_mic():
 	var err = websocket.send_text(json_string)
 	if err != OK:
 		push_error("Failed to send toggle mic: ", err)
-
-func _on_test_transcription():
-	print("GODOT: Sending test transcription request")
-	send_request("Please simulate a transcription update with the text 'Hello from test button'")
 
 func show_orchestrator_menu(mouse_pos: Vector2):
 	if orchestrator_menu:

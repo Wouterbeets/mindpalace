@@ -49,9 +49,9 @@ type mockThreeDUIBroadcaster struct {
 func (m *mockThreeDUIBroadcaster) ID() string                   { return m.id }
 func (m *mockThreeDUIBroadcaster) ApplyEvent(event Event) error { return nil }
 
-func (m *mockThreeDUIBroadcaster) Broadcast3DDelta(event Event) []DeltaAction {
+func (m *mockThreeDUIBroadcaster) EmitDelta(event Event) *DeltaEnvelope {
 	m.called = true
-	return m.deltas
+	return &DeltaEnvelope{Actions: m.deltas}
 }
 
 func (m *mockThreeDUIBroadcaster) Clone() Aggregate {

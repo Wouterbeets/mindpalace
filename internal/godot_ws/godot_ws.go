@@ -10,31 +10,38 @@ import (
 
 	"github.com/gorilla/websocket"
 	"mindpalace/internal/audio"
-	"mindpalace/internal/orchestration"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
 )
 
+type Command struct {
+	Name string
+	Data interface{}
+}
+
 type GodotServer struct {
-	upgrader   websocket.Upgrader
-	clients    map[*websocket.Conn]*ClientState
-	clientsMu  sync.RWMutex
-	deltaChan  chan eventsourcing.DeltaEnvelope
-	aggStore   eventsourcing.AggregateStore
-	eventStore eventsourcing.EventStore
+	upgrader  websocket.Upgrader
+	clients   map[*websocket.Conn]*ClientState
+	clientsMu sync.RWMutex
+	deltaChan chan eventsourcing.DeltaEnvelope
 
 	settingsVisible   bool
 	eventBus          eventsourcing.EventBus
+	aggStore          eventsourcing.AggregateStore
+	eventStore        eventsourcing.EventStore
 	pendingKeypresses map[string]chan map[string]interface{}
 	pendingMu         sync.RWMutex
 	transcriber       *audio.VoiceTranscriber
 
-	// ACK-based flow control
-	sequenceCounter int
-	pendingBatches  map[int]eventsourcing.DeltaEnvelope
-	ackChan         chan int
-	batchSize       int
-	ackTimeout      time.Duration
+	ackChan    chan int
+	ackTimeout time.Duration
+
+	commandChan chan Command
+	controlChan chan string
+}
+
+func (s *GodotServer) SetAckChan(ch chan int) {
+	s.ackChan = ch
 }
 
 type ClientState struct {
@@ -73,11 +80,8 @@ func NewGodotServer() *GodotServer {
 		clients:           make(map[*websocket.Conn]*ClientState),
 		deltaChan:         make(chan eventsourcing.DeltaEnvelope, 1000),
 		pendingKeypresses: make(map[string]chan map[string]interface{}),
-		sequenceCounter:   0,
-		pendingBatches:    make(map[int]eventsourcing.DeltaEnvelope),
-		ackChan:           make(chan int, 100),
-		batchSize:         5,
-		ackTimeout:        2 * time.Second,
+		ackTimeout:        5 * time.Second,
+		commandChan:       make(chan Command, 100),
 	}
 }
 
@@ -85,20 +89,28 @@ func (s *GodotServer) SetDeltaChan(ch chan eventsourcing.DeltaEnvelope) {
 	s.deltaChan = ch
 }
 
-func (s *GodotServer) SetAggStore(aggStore eventsourcing.AggregateStore) {
-	s.aggStore = aggStore
-}
-
-func (s *GodotServer) SetEventBus(eb eventsourcing.EventBus) {
-	s.eventBus = eb
-}
-
-func (s *GodotServer) SetEventStore(es eventsourcing.EventStore) {
-	s.eventStore = es
-}
-
 func (s *GodotServer) SetTranscriber(vt *audio.VoiceTranscriber) {
 	s.transcriber = vt
+}
+
+func (s *GodotServer) SetCommandChan(ch chan Command) {
+	s.commandChan = ch
+}
+
+func (s *GodotServer) SetControlChan(ch chan string) {
+	s.controlChan = ch
+}
+
+func (s *GodotServer) SetAggStore(store eventsourcing.AggregateStore) {
+	s.aggStore = store
+}
+
+func (s *GodotServer) SetEventStore(store eventsourcing.EventStore) {
+	s.eventStore = store
+}
+
+func (s *GodotServer) CommandChan() <-chan Command {
+	return s.commandChan
 }
 
 func (s *GodotServer) SendTranscription(text string) {
@@ -122,61 +134,20 @@ func (s *GodotServer) SendTranscription(text string) {
 	s.broadcast(env)
 }
 
-func (s *GodotServer) SendBatchedDelta(env eventsourcing.DeltaEnvelope) {
-	// Split actions into batches
-	for i := 0; i < len(env.Actions); i += s.batchSize {
-		end := i + s.batchSize
-		if end > len(env.Actions) {
-			end = len(env.Actions)
+func (s *GodotServer) SendDelta(env eventsourcing.DeltaEnvelope) {
+	logging.Info("BACKEND: Sending delta envelope: type=%s, aggregate=%s, sequence=%d, actions=%d", env.Type, env.Aggregate, env.SequenceID, len(env.Actions))
+	s.clientsMu.RLock()
+	for _, client := range s.clients {
+		client.writeMu.Lock()
+		logging.Info("BACKEND: Writing delta to client")
+		if err := client.conn.WriteJSON(env); err != nil {
+			logging.Error("Error sending delta: %v", err)
+		} else {
+			logging.Info("BACKEND: Delta sent successfully to client")
 		}
-		batchEnv := eventsourcing.DeltaEnvelope{
-			Type:         env.Type,
-			Aggregate:    env.Aggregate,
-			EventID:      fmt.Sprintf("%s_batch_%d", env.EventID, s.sequenceCounter),
-			Timestamp:    env.Timestamp,
-			IsFullState:  env.IsFullState,
-			StateSummary: env.StateSummary,
-			SequenceID:   s.sequenceCounter,
-			Actions:      env.Actions[i:end],
-		}
-		s.pendingBatches[s.sequenceCounter] = batchEnv
-		s.sequenceCounter++
-
-		// Send batch and wait for ACK
-		s.sendBatchAndWait(batchEnv)
+		client.writeMu.Unlock()
 	}
-}
-
-func (s *GodotServer) sendBatchAndWait(env eventsourcing.DeltaEnvelope) {
-	maxRetries := 3
-	for retry := 0; retry < maxRetries; retry++ {
-		s.clientsMu.RLock()
-		for _, client := range s.clients {
-			client.writeMu.Lock()
-			if err := client.conn.WriteJSON(env); err != nil {
-				logging.Error("Error sending batched delta: %v", err)
-			}
-			client.writeMu.Unlock()
-		}
-		s.clientsMu.RUnlock()
-
-		// Wait for ACK or timeout
-		select {
-		case ackSeq := <-s.ackChan:
-			if ackSeq == env.SequenceID {
-				delete(s.pendingBatches, env.SequenceID)
-				logging.Debug("ACK received for sequence %d", env.SequenceID)
-				return
-			}
-		case <-time.After(s.ackTimeout):
-			logging.Info("ACK timeout for sequence %d, retry %d/%d", env.SequenceID, retry+1, maxRetries)
-			if retry == maxRetries-1 {
-				logging.Error("Max retries reached for sequence %d", env.SequenceID)
-				delete(s.pendingBatches, env.SequenceID)
-				return
-			}
-		}
-	}
+	s.clientsMu.RUnlock()
 }
 
 func (s *GodotServer) SendKeypresses(keyString string) {
@@ -216,15 +187,10 @@ func (s *GodotServer) handleTextMessage(conn *websocket.Conn, message []byte) {
 	switch msgType {
 	case "ready":
 		s.handleReadyMessage(conn, msg)
-
 	case "state_update":
 		s.handleStateUpdate(msg)
 	case "request":
 		s.handleRequestMessage(msg)
-	case "delta":
-		s.handleDeltaMessage(msg)
-	case "ui_Position3DObject":
-		s.handlePosition3DObjectEvent(msg)
 	case "keypress_ack":
 		s.handleKeypressAck(msg)
 	case "toggle_mic":
@@ -255,79 +221,18 @@ func (s *GodotServer) handleRequestMessage(msg map[string]interface{}) {
 		return
 	}
 
-	event := &orchestration.UserRequestReceivedEvent{
-		RequestID:   fmt.Sprintf("godot_req_%d", time.Now().UnixNano()),
-		RequestText: text,
-		Timestamp:   eventsourcing.ISOTimestamp(),
+	command := Command{
+		Name: "ProcessUserRequest",
+		Data: map[string]interface{}{
+			"requestText": text,
+			"requestID":   fmt.Sprintf("godot_req_%d", time.Now().UnixNano()),
+		},
 	}
 
-	if s.eventBus != nil {
-		s.eventBus.Publish(event)
-	} else {
-		logging.Error("EventBus not set")
-	}
-}
-
-func (s *GodotServer) handleDeltaMessage(msg map[string]interface{}) {
-	logging.Debug("Handling delta from Godot: %v", msg)
-	actions, ok := msg["actions"].([]interface{})
-	if !ok {
-		logging.Error("Delta message missing actions")
-		return
-	}
-
-	for _, a := range actions {
-		action, ok := a.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if action["type"] == "update" {
-			if props, ok := action["properties"].(map[string]interface{}); ok {
-				if pos, ok := props["position"].([]interface{}); ok && len(pos) >= 3 {
-					x, _ := pos[0].(float64)
-					y, _ := pos[1].(float64)
-					z, _ := pos[2].(float64)
-					if nodeID, ok := action["node_id"].(string); ok {
-						event := &eventsourcing.Position3DObjectEvent{
-							ObjectID: nodeID,
-							Position: []float64{x, y, z},
-						}
-						if s.eventBus != nil {
-							s.eventBus.Publish(event)
-						} else {
-							logging.Error("EventBus not set")
-						}
-					}
-				}
-			}
-		}
-	}
-}
-
-func (s *GodotServer) handlePosition3DObjectEvent(msg map[string]interface{}) {
-	logging.Debug("Handling Position3DObjectEvent from Godot: %v", msg)
-	objectID, ok := msg["object_id"].(string)
-	if !ok {
-		logging.Error("Position3DObjectEvent missing object_id")
-		return
-	}
-	pos, ok := msg["position"].([]interface{})
-	if !ok || len(pos) < 3 {
-		logging.Error("Position3DObjectEvent missing or invalid position")
-		return
-	}
-	x, _ := pos[0].(float64)
-	y, _ := pos[1].(float64)
-	z, _ := pos[2].(float64)
-
-	event := &eventsourcing.Position3DObjectEvent{
-		ObjectID: objectID,
-		Position: []float64{x, y, z},
-	}
-	if s.eventBus != nil {
-		s.eventBus.Publish(event)
-	} else {
-		logging.Error("EventBus not set")
+	select {
+	case s.commandChan <- command:
+	default:
+		logging.Info("Command channel full, dropping request")
 	}
 }
 
@@ -409,61 +314,14 @@ func (s *GodotServer) handleReadyMessage(conn *websocket.Conn, msg map[string]in
 	}
 	s.clientsMu.Unlock()
 
-	// Send full state immediately now that client is ready
-	go s.sendFullState(conn)
-}
-
-func (s *GodotServer) sendFullState(conn *websocket.Conn) {
-	if s.aggStore == nil || s.eventStore == nil {
-		logging.Error("AggStore or EventStore is nil, cannot send full state")
-		return
-	}
-
-	logging.Info("Sending full state to Godot client")
-	totalActions := 0
-
-	// Send zones first
-	zonesMsg := map[string]interface{}{
-		"type": "zones",
-		"zones": map[string][]float64{
-			"task":     {0, 0, -20},
-			"note":     {-20, 0, 0},
-			"calendar": {20, 0, 0},
-			"default":  {0, 5, 0},
-		},
-	}
-	s.clientsMu.RLock()
-	for _, client := range s.clients {
-		if client.conn == conn {
-			client.writeMu.Lock()
-			conn.WriteJSON(zonesMsg)
-			client.writeMu.Unlock()
-			break
+	// Trigger rebuild after ready
+	if s.controlChan != nil {
+		select {
+		case s.controlChan <- "rebuild_state":
+		default:
+			logging.Info("Control channel full, skipping rebuild trigger")
 		}
 	}
-	s.clientsMu.RUnlock()
-
-	// Collect all actions into one envelope for batching
-	var allActions []eventsourcing.DeltaAction
-	for _, agg := range s.aggStore.AllAggregates() {
-		if broadcaster, ok := agg.(eventsourcing.ThreeDUIBroadcaster); ok {
-			signal := broadcaster.GetCurrent3DState()
-			logging.Info("Aggregate %s collecting %d actions for full state", agg.ID(), len(signal.Actions))
-			totalActions += len(signal.Actions)
-			allActions = append(allActions, signal.Actions...)
-		}
-	}
-	if len(allActions) > 0 {
-		fullEnv := eventsourcing.DeltaEnvelope{
-			Type:         "delta",
-			IsFullState:  true,
-			Aggregate:    "full_state",
-			StateSummary: nil, // No summary for batched full state
-			Actions:      allActions,
-		}
-		s.SendBatchedDelta(fullEnv)
-	}
-	logging.Info("Total actions collected for Godot: %d", totalActions)
 }
 
 func (s *GodotServer) broadcast(env eventsourcing.DeltaEnvelope) {
@@ -538,37 +396,6 @@ func (s *GodotServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Wait for ready signal before sending state
-	// State will be sent when client sends "ready" message
-}
-
-func (s *GodotServer) HandleDebugGodotState(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if s.aggStore == nil {
-		http.Error(w, "Aggregate store not available", http.StatusInternalServerError)
-		return
-	}
-
-	state := make(map[string]interface{})
-
-	// Collect state from all aggregates
-	for _, agg := range s.aggStore.AllAggregates() {
-		if broadcaster, ok := agg.(eventsourcing.ThreeDUIBroadcaster); ok {
-			signal := broadcaster.GetCurrent3DState()
-			aggState := map[string]interface{}{
-				"object_count": len(signal.StateSummary),
-				"objects":      signal.StateSummary,
-			}
-			state[agg.ID()] = aggState
-		}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(state)
 }
 
 func (s *GodotServer) HandleKeypresses(w http.ResponseWriter, r *http.Request) {
@@ -633,16 +460,16 @@ func (s *GodotServer) HandleKeypresses(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *GodotServer) Start() {
-	// Start broadcasting deltas with batching
+	// Start forwarding deltas
 	go func() {
 		for env := range s.deltaChan {
-			s.SendBatchedDelta(env)
+			logging.Info("GODOT_SERVER: Received delta from channel: type=%s, aggregate=%s, sequence=%d", env.Type, env.Aggregate, env.SequenceID)
+			s.SendDelta(env)
 		}
 	}()
 
 	http.HandleFunc("/godot", s.HandleWebSocket)
 	http.HandleFunc("/keypresses", s.HandleKeypresses)
-	http.HandleFunc("/debug/godot-state", s.HandleDebugGodotState)
 	logging.Info("Starting WebSocket server on :8081")
 	err := http.ListenAndServe(":8081", nil)
 	if err != nil {

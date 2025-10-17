@@ -118,7 +118,7 @@ fmt:
 .PHONY: test
 test:
 	@echo "Running tests..."
-	$(GO) test ./... -v
+	PKG_CONFIG_PATH=$(shell pwd)/whisper-cpp/build/lib/pkgconfig:$(PKG_CONFIG_PATH) CGO_LDFLAGS="-Wl,-rpath,$(shell pwd)/whisper-cpp/build/lib" LD_LIBRARY_PATH=$(shell pwd)/whisper-cpp/build/lib:$(LD_LIBRARY_PATH) $(GO) test ./... -v
 
 # Generate documentation
 .PHONY: doc

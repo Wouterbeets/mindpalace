@@ -127,28 +127,22 @@ func TestCalendarAggregate_GetCurrent3DState(t *testing.T) {
 	}
 	agg.ApplyEvent(createEvent)
 
-	signal := agg.GetCurrent3DState()
+	signal := agg.EmitDelta(createEvent)
 	actions := signal.Actions
 
-	// Should have 1 hub + 2 for event (box and label)
-	if len(actions) != 3 {
-		t.Errorf("Expected 3 actions, got %d", len(actions))
-	}
-
-	// Check hub
-	hubAction := actions[0]
-	if hubAction.NodeID != "calendar_hub" {
-		t.Errorf("Expected NodeID 'calendar_hub', got '%s'", hubAction.NodeID)
+	// Should have 2 for event (box and label)
+	if len(actions) != 2 {
+		t.Errorf("Expected 2 actions, got %d", len(actions))
 	}
 
 	// Check event box
-	boxAction := actions[1]
+	boxAction := actions[0]
 	if boxAction.NodeID != "calendar_event_event1" {
 		t.Errorf("Expected NodeID 'calendar_event_event1', got '%s'", boxAction.NodeID)
 	}
 
 	// Check event label
-	labelAction := actions[2]
+	labelAction := actions[1]
 	if labelAction.NodeID != "calendar_event_event1_label" {
 		t.Errorf("Expected NodeID 'calendar_event_event1_label', got '%s'", labelAction.NodeID)
 	}
@@ -167,7 +161,7 @@ func TestCalendarAggregate_Broadcast3DDelta_EventCreated(t *testing.T) {
 	// Apply the event first
 	agg.ApplyEvent(event)
 
-	signal := agg.Broadcast3DDelta(event)
+	signal := agg.EmitDelta(event)
 	actions := signal.Actions
 
 	// Should have 2 actions: box and label
@@ -194,7 +188,7 @@ func TestCalendarAggregate_Broadcast3DDelta_EventDeleted(t *testing.T) {
 		EventID:   "event1",
 	}
 
-	signal := agg.Broadcast3DDelta(event)
+	signal := agg.EmitDelta(event)
 	actions := signal.Actions
 
 	// Should have 2 actions: delete box and delete label

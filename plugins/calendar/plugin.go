@@ -689,7 +689,7 @@ func (p *CalendarPlugin) EventHandlers() map[string]eventsourcing.EventHandler {
 	return nil
 }
 
-func (a *CalendarAggregate) Broadcast3DDelta(event eventsourcing.Event) eventsourcing.Signal {
+func (a *CalendarAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.DeltaEnvelope {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()
 	theme := ui3d.DefaultTheme()
@@ -704,22 +704,29 @@ func (a *CalendarAggregate) Broadcast3DDelta(event eventsourcing.Event) eventsou
 			}
 			i++
 		}
-		pos := ui3d.PositionInGrid(float64(i), 0, 2.0)
-		pos[0] = pos[2] // Move Z spacing to X axis
-		pos[1] = 2.0
-		pos[2] = -8.0
-		// Offset by calendar zone position
-		pos[0] += 20
-		pos[1] += 0
-		pos[2] += 0
-		actions := ui3d.CreateCard(fmt.Sprintf("calendar_event_%s", e.EventID), e.Title, pos, theme)
-		for j := range actions {
-			if actions[j].Properties == nil {
-				actions[j].Properties = make(map[string]interface{})
-			}
-			actions[j].Properties["event_type"] = "calendar_event_created"
+		lm := &ui3d.LayoutManager{
+			Type:    "linear",
+			Spacing: 2.0,
+			Zone:    "calendar",
+			Zones:   map[string][]float64{"calendar": {20, 2, -8}},
+			Counter: i + 1,
 		}
-		return eventsourcing.Signal{Actions: actions}
+		pos := lm.NextPosition()
+		builder := ui3d.NewDeltaBuilder(theme)
+		labelPos := []float64{pos[0], pos[1] + 1.0, pos[2]}
+		builder.CreateBox(fmt.Sprintf("calendar_event_%s", e.EventID), pos).WithExtra(map[string]interface{}{
+			"event_type": "calendar_event_created",
+		})
+		builder.CreateLabel(fmt.Sprintf("calendar_event_%s_label", e.EventID), e.Title, labelPos).WithExtra(map[string]interface{}{
+			"event_type": "calendar_event_created",
+		})
+		return &eventsourcing.DeltaEnvelope{
+			Type:      "delta",
+			Aggregate: "calendar",
+			EventID:   eventsourcing.ISOTimestamp(),
+			Timestamp: eventsourcing.ISOTimestamp(),
+			Actions:   builder.Build(),
+		}
 	case *EventUpdatedEvent:
 		// Get sorted event IDs to determine position
 		sortedIDs := a.getSortedEventIDs()
@@ -730,69 +737,32 @@ func (a *CalendarAggregate) Broadcast3DDelta(event eventsourcing.Event) eventsou
 			}
 			i++
 		}
-		pos := ui3d.PositionInGrid(float64(i), 0, 2.0)
-		pos[0] = pos[2] // Move Z spacing to X axis
-		pos[1] = 2.0
-		pos[2] = -8.0
-		// Offset by calendar zone position
-		pos[0] += 20
-		pos[1] += 0
-		pos[2] += 0
-		// Delete old and create new
-		oldActions := []eventsourcing.DeltaAction{
-			{Type: "delete", NodeID: fmt.Sprintf("calendar_event_%s", e.EventID)},
-			{Type: "delete", NodeID: fmt.Sprintf("calendar_event_%s_label", e.EventID)},
+		lm := &ui3d.LayoutManager{
+			Type:    "linear",
+			Spacing: 2.0,
+			Zone:    "calendar",
+			Zones:   map[string][]float64{"calendar": {20, 2, -8}},
+			Counter: i + 1,
 		}
-		newActions := ui3d.CreateCard(fmt.Sprintf("calendar_event_%s", e.EventID), e.Title, pos, theme)
-		for j := range newActions {
-			if newActions[j].Properties == nil {
-				newActions[j].Properties = make(map[string]interface{})
-			}
-			newActions[j].Properties["event_type"] = "calendar_event_updated"
-		}
-		return eventsourcing.Signal{Actions: append(oldActions, newActions...)}
-	case *EventDeletedEvent:
-		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{
-			{Type: "delete", NodeID: fmt.Sprintf("calendar_event_%s", e.EventID)},
-			{Type: "delete", NodeID: fmt.Sprintf("calendar_event_%s_label", e.EventID)},
-		}}
-	}
-	return eventsourcing.Signal{}
-}
-
-func (a *CalendarAggregate) GetCurrent3DState() eventsourcing.Signal {
-	a.Mu.RLock()
-	defer a.Mu.RUnlock()
-	theme := ui3d.DefaultTheme()
-	actions := []eventsourcing.DeltaAction{ui3d.CreateSphere("calendar_hub", []float64{0.0, 0.0, -10.0}, theme)}
-	stateSummary := make(map[string]interface{})
-	eventSummaries := []map[string]interface{}{}
-	// Add cards for events in sorted order
-	sortedIDs := a.getSortedEventIDs()
-	for i, id := range sortedIDs {
-		event := a.Events[id]
-		pos := ui3d.PositionInGrid(float64(i), 0, 2.0)
-		pos[0] = pos[2] // Move Z spacing to X axis
-		pos[1] = 2.0
-		pos[2] = -8.0
-		cards := ui3d.CreateCard(fmt.Sprintf("calendar_event_%s", id), event.Title, pos, theme)
-		for j := range cards {
-			if cards[j].Properties == nil {
-				cards[j].Properties = make(map[string]interface{})
-			}
-			cards[j].Properties["event_type"] = "calendar_event"
-		}
-		actions = append(actions, cards...)
-		eventSummaries = append(eventSummaries, map[string]interface{}{
-			"id":    id,
-			"title": event.Title,
+		pos := lm.NextPosition()
+		builder := ui3d.NewDeltaBuilder(theme)
+		labelPos := []float64{pos[0], pos[1] + 1.0, pos[2]}
+		// Delete old
+		builder.Delete(fmt.Sprintf("calendar_event_%s", e.EventID)).Delete(fmt.Sprintf("calendar_event_%s_label", e.EventID))
+		// Create new
+		builder.CreateBox(fmt.Sprintf("calendar_event_%s", e.EventID), pos).WithExtra(map[string]interface{}{
+			"event_type": "calendar_event_updated",
 		})
+		builder.CreateLabel(fmt.Sprintf("calendar_event_%s_label", e.EventID), e.Title, labelPos).WithExtra(map[string]interface{}{
+			"event_type": "calendar_event_updated",
+		})
+		return &eventsourcing.DeltaEnvelope{Type: "delta", Aggregate: "calendar", EventID: eventsourcing.ISOTimestamp(), Timestamp: eventsourcing.ISOTimestamp(), Actions: builder.Build()}
+	case *EventDeletedEvent:
+		builder := ui3d.NewDeltaBuilder(theme)
+		builder.Delete(fmt.Sprintf("calendar_event_%s", e.EventID)).Delete(fmt.Sprintf("calendar_event_%s_label", e.EventID))
+		return &eventsourcing.DeltaEnvelope{Type: "delta", Aggregate: "calendar", EventID: eventsourcing.ISOTimestamp(), Timestamp: eventsourcing.ISOTimestamp(), Actions: builder.Build()}
 	}
-	stateSummary["calendar_events"] = eventSummaries
-	return eventsourcing.Signal{
-		Actions:      actions,
-		StateSummary: stateSummary,
-	}
+	return nil
 }
 
 // getSortedEventIDs returns event IDs sorted by start time for consistent positioning

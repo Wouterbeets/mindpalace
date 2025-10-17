@@ -16,19 +16,17 @@ type SimpleEventBus struct {
 	subscribers           map[string][]EventHandler
 	allUpdatesSubscribers []EventHandler
 	aggStore              AggregateStore
-	deltaChan             chan DeltaEnvelope
 }
 
 type AggregateStore interface {
 	AllAggregates() []Aggregate
 }
 
-func NewSimpleEventBus(store EventStore, aggregateStore AggregateStore, deltaChan chan DeltaEnvelope) *SimpleEventBus {
+func NewSimpleEventBus(store EventStore, aggregateStore AggregateStore) *SimpleEventBus {
 	return &SimpleEventBus{
 		store:       store,
 		subscribers: make(map[string][]EventHandler),
 		aggStore:    aggregateStore,
-		deltaChan:   deltaChan,
 	}
 }
 
@@ -54,25 +52,6 @@ func (eb *SimpleEventBus) Publish(event Event) {
 		}
 	}
 
-	// Emit 3D signals
-	for _, agg := range eb.aggStore.AllAggregates() {
-		if broadcaster, ok := agg.(ThreeDUIBroadcaster); ok {
-			signal := broadcaster.Broadcast3DDelta(event)
-			if len(signal.Actions) > 0 {
-				select {
-				case eb.deltaChan <- DeltaEnvelope{
-					Type:         "signal",
-					Aggregate:    agg.ID(),
-					EventID:      ISOTimestamp(),
-					Timestamp:    ISOTimestamp(),
-					StateSummary: signal.StateSummary,
-					Actions:      signal.Actions,
-				}:
-				default: // Drop silently to avoid blocking
-				}
-			}
-		}
-	}
 	for _, handler := range eb.allUpdatesSubscribers {
 		err := handler(event) // frontend updates are triggered from here
 		if err != nil {

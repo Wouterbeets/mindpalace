@@ -100,12 +100,24 @@ type Aggregate interface {
 var idCounter uint64 = 0
 var idMutex sync.Mutex
 
+// Global sequence counter for DeltaEnvelope sequenceIDs
+var sequenceCounter int = 0
+var sequenceMutex sync.Mutex
+
 // GenerateUniqueID generates a unique ID for entities like tasks
 func GenerateUniqueID() uint64 {
 	idMutex.Lock()
 	defer idMutex.Unlock()
 	idCounter++
 	return idCounter
+}
+
+// NextSequenceID generates the next sequence ID for DeltaEnvelope
+func NextSequenceID() int {
+	sequenceMutex.Lock()
+	defer sequenceMutex.Unlock()
+	sequenceCounter++
+	return sequenceCounter
 }
 
 // ISOTimestamp returns the current time as an ISO 8601 formatted string
@@ -168,23 +180,8 @@ type DeltaEnvelope struct {
 	Actions      []DeltaAction          `json:"actions"`
 }
 
-// Signal for Godot: actions to execute + current state summary.
-type Signal struct {
-	Actions      []DeltaAction          `json:"actions"`
-	StateSummary map[string]interface{} `json:"state_summary"`
-}
-
-// FullStateEnvelope for initial syncs/queries.
-type FullStateEnvelope struct {
-	Type      string        `json:"type"` // "full_state"
-	Aggregate string        `json:"aggregate"`
-	Actions   []DeltaAction `json:"actions"`
-}
-
-// ThreeDUIBroadcaster allows aggregates to emit 3D signals on events.
+// ThreeDUIBroadcaster allows aggregates to emit 3D deltas on events.
 // Implement if the aggregate wants 3D UI (e.g., tasks as cubes).
 type ThreeDUIBroadcaster interface {
-	Broadcast3DDelta(event Event) Signal // Returns signal for this event.
-	GetCurrent3DState() Signal           // Returns signal for full current state.
-	Clone() Aggregate                    // Returns a fresh copy for replaying events.
+	EmitDelta(event Event) *DeltaEnvelope // Returns delta envelope for this event, or nil to skip.
 }

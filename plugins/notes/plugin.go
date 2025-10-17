@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"mindpalace/pkg/eventsourcing"
-	"mindpalace/pkg/ui3d"
 )
 
 // Note represents a single note's state
@@ -499,12 +498,12 @@ func (p *NotesPlugin) EventHandlers() map[string]eventsourcing.EventHandler {
 	return nil
 }
 
-func (a *NotesAggregate) Broadcast3DDelta(event eventsourcing.Event) eventsourcing.Signal {
+func (a *NotesAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.DeltaEnvelope {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()
 	switch e := event.(type) {
 	case *NoteCreatedEvent:
-		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{{
+		return &eventsourcing.DeltaEnvelope{Type: "delta", Aggregate: "notes", EventID: eventsourcing.ISOTimestamp(), Timestamp: eventsourcing.ISOTimestamp(), Actions: []eventsourcing.DeltaAction{{
 			Type:     "create",
 			NodeID:   e.NoteID,
 			NodeType: "MeshInstance3D",
@@ -529,7 +528,7 @@ func (a *NotesAggregate) Broadcast3DDelta(event eventsourcing.Event) eventsourci
 			},
 		}}}
 	case *NoteDeletedEvent:
-		return eventsourcing.Signal{Actions: []eventsourcing.DeltaAction{{
+		return &eventsourcing.DeltaEnvelope{Type: "delta", Aggregate: "notes", EventID: eventsourcing.ISOTimestamp(), Timestamp: eventsourcing.ISOTimestamp(), Actions: []eventsourcing.DeltaAction{{
 			Type:   "delete",
 			NodeID: e.NoteID,
 		}, {
@@ -537,42 +536,7 @@ func (a *NotesAggregate) Broadcast3DDelta(event eventsourcing.Event) eventsourci
 			NodeID: e.NoteID + "_label",
 		}}}
 	}
-	return eventsourcing.Signal{}
-}
-
-func (a *NotesAggregate) GetCurrent3DState() eventsourcing.Signal {
-	a.Mu.RLock()
-	defer a.Mu.RUnlock()
-	theme := ui3d.DefaultTheme()
-	actions := make([]eventsourcing.DeltaAction, 0)
-	stateSummary := make(map[string]interface{})
-	noteSummaries := []map[string]interface{}{}
-	i := 0
-	for _, note := range a.Notes {
-		pos := ui3d.PositionInCircle(i, 6.0+float64(i)*0.5, 2.0)
-		// Offset by note zone position
-		pos[0] += -20
-		pos[1] += 0
-		pos[2] += 0
-		cards := ui3d.CreateCard(note.NoteID, note.Title, pos, theme)
-		for j := range cards {
-			if cards[j].Properties == nil {
-				cards[j].Properties = make(map[string]interface{})
-			}
-			cards[j].Properties["event_type"] = "note"
-		}
-		actions = append(actions, cards...)
-		noteSummaries = append(noteSummaries, map[string]interface{}{
-			"id":    note.NoteID,
-			"title": note.Title,
-		})
-		i++
-	}
-	stateSummary["notes"] = noteSummaries
-	return eventsourcing.Signal{
-		Actions:      actions,
-		StateSummary: stateSummary,
-	}
+	return nil
 }
 
 // Helper functions
