@@ -15,6 +15,12 @@ MindPalace will run on a Mac Mini in the trailer, powered by dual lithium-ion ba
 ### Front-End Visualization
 The backend connects to a 3D Godot world front-end that provides radical transparency by visualizing every step the LLM takes, including reasoning processes, data handling, and tool invocations. This builds user trust by making AI behavior observable and understandable. Additionally, it supports dynamic organization of the user's thoughts and ambitions, creating an interactive mindpalace for managing personal goals and reflections.
 
+## Evolved Interaction Model: 3-Layered Tool Usage
+- **Layer 1: Direct UI in 3D World**: Interact via Godot nodes (e.g., drag tasks in a spatial Kanban, visualize drone data in 3D maps). Builds intuition and transparency.
+- **Layer 2: Agent Conversation**: Natural language with specialized agents (e.g., "TaskMaster, prioritize my homeschool todos"). Agents invoke plugins/tools.
+- **Layer 3: Orchestrator Guidance**: High-level directives (e.g., "Orchestrator, plan my week using tasks and calendar"). Routes intelligently across agents/UI.
+This model makes MindPalace a true mind extension: Build tools once, use them fluidly. Godot front-end evolves to visualize all layers (e.g., agent "bubbles" for chats, flow lines for orchestration).
+
 ## Hardware Requirements
 - **Trailer Setup**: Drone docking station, touchscreen, dual lithium-ion batteries, and solar panels.
 - **Estimated Cost**: $5,300–$10,300, aligning with a $10,000 budget.
@@ -47,5 +53,6 @@ The trailer version will include a niche `DronePlugin` for:
 - **MVP Priorities**: Nail transcription, media, audio, and video integration for the Steam version, with plugin generation as the core extensible feature.
 - **Personal Build**: Add drone integration and GPS plugins for the trailer version, leveraging MindPalace’s dynamic plugin loading.
 
+
 ## Vision Statement
-MindPalace empowers users to capture and relive life’s adventures, from epic roadtrips to personal projects, with a local-first AI that’s extensible through user-owned plugins and grounded in radical transparency via its 3D Godot visualization front-end. This front-end demystifies LLM operations and dynamically organizes thoughts and ambitions in a virtual mindpalace, fostering trust and self-management. For the roadtrip, it will preserve every moment in a private, interactive archive, while the Steam version democratizes this power, funding the journey and enabling others to build their own digital legacies.
+MindPalace empowers individuals to extend their minds through collaborative AI, forging human-AI teams that preserve dignity and autonomy in an era of centralized digital dominance. By enabling anyone to build custom tools for their unique endeavors—whether epic family roadtrips, homeschooling adventures, or personal ambitions—this local-first assistant transforms productivity and self-management. Users interact fluidly across three layers: direct manipulation via intuitive 3D interfaces in a Godot-powered virtual mind palace; natural conversations with specialized agents; and high-level guidance from an intelligent orchestrator that routes insights seamlessly. Grounded in radical transparency, the front-end visualizes every LLM reasoning step, data flow, and interaction, demystifying AI to build unbreakable trust. For the roadtrip from Canada to Argentina, it captures and relives every moment in a private, interactive archive, while the Steam version democratizes this power—funding the journey and inspiring others to create their own digital legacies, leaving a world where humanity thrives alongside AI, not beneath it.

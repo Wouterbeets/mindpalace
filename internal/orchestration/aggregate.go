@@ -602,7 +602,7 @@ func (a *OrchestrationAggregate) EmitDelta(event eventsourcing.Event) *eventsour
 
 	// Task events
 	case *eventsourcing.InitiatePluginCreationEvent:
-		pos := []float64{-2, -2, 0} // Underground
+		pos := a.nextPosition()
 		boxID := fmt.Sprintf("plugin_%s", e.PluginName)
 		a.addEventObject(builder, boxID, pos, "plugin_generated", nil, "plugin_generated")
 
