@@ -6,7 +6,6 @@ import (
 	"text/template"
 	"time"
 
-	"mindpalace/internal/godot_ws"
 	"mindpalace/pkg/aggregate"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/llmmodels"
@@ -66,13 +65,13 @@ type RequestOrchestrator struct {
 	eventProcessor   EventProcessorInterface
 	eventBus         EventBusInterface
 	systemPromptTmpl *template.Template // Base template, no plugin specifics here
-	commandChan      <-chan godot_ws.Command
+	commandChan      <-chan eventsourcing.CommandData
 	controlChan      <-chan string
 	aggStore         eventsourcing.AggregateStore
 	events           []eventsourcing.Event
 }
 
-func NewRequestOrchestrator(llmClient LLMClientInterface, pm PluginManagerInterface, agg *OrchestrationAggregate, ep EventProcessorInterface, eb EventBusInterface, commandChan <-chan godot_ws.Command, controlChan <-chan string, aggStore eventsourcing.AggregateStore, events []eventsourcing.Event) *RequestOrchestrator {
+func NewRequestOrchestrator(llmClient LLMClientInterface, pm PluginManagerInterface, agg *OrchestrationAggregate, ep EventProcessorInterface, eb EventBusInterface, commandChan <-chan eventsourcing.CommandData, controlChan <-chan string, aggStore eventsourcing.AggregateStore, events []eventsourcing.Event) *RequestOrchestrator {
 	tmpl, err := template.New("systemPrompt").Parse(systemPromptTemplate)
 	if err != nil {
 		logging.Error("Failed to parse system prompt template: %v", err)

@@ -33,12 +33,22 @@ func (m *mockAggregateStore) AllAggregates() []Aggregate {
 	return m.aggregates
 }
 
+func (m *mockAggregateStore) ApplyEventToAllAggs(event Event) error {
+	for _, agg := range m.aggregates {
+		if err := agg.ApplyEvent(event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type mockAggregate struct {
 	id string
 }
 
-func (m *mockAggregate) ID() string                   { return m.id }
-func (m *mockAggregate) ApplyEvent(event Event) error { return nil }
+func (m *mockAggregate) ID() string                           { return m.id }
+func (m *mockAggregate) ApplyEvent(event Event) error         { return nil }
+func (m *mockAggregate) EmitDelta(event Event) *DeltaEnvelope { return nil }
 
 type mockThreeDUIBroadcaster struct {
 	id     string

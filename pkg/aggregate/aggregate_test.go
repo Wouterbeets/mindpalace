@@ -19,8 +19,14 @@ func (m *MockAggregate) ApplyEvent(event eventsourcing.Event) error {
 	return nil
 }
 
+func (m *MockAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.DeltaEnvelope {
+	return nil
+}
+
 func TestNewAggregateManager(t *testing.T) {
-	manager := NewAggregateManager()
+	deltaChan := make(chan eventsourcing.DeltaEnvelope)
+	ackChan := make(chan int)
+	manager := NewAggregateManager(deltaChan, ackChan)
 	if manager == nil {
 		t.Fatal("NewAggregateManager returned nil")
 	}
@@ -33,7 +39,9 @@ func TestNewAggregateManager(t *testing.T) {
 }
 
 func TestRegisterAggregate(t *testing.T) {
-	manager := NewAggregateManager()
+	deltaChan := make(chan eventsourcing.DeltaEnvelope)
+	ackChan := make(chan int)
+	manager := NewAggregateManager(deltaChan, ackChan)
 	mockAgg := &MockAggregate{id: "test_plugin"}
 
 	manager.RegisterAggregate("test_plugin", mockAgg)
@@ -47,7 +55,9 @@ func TestRegisterAggregate(t *testing.T) {
 }
 
 func TestAggregateByName_Plugin(t *testing.T) {
-	manager := NewAggregateManager()
+	deltaChan := make(chan eventsourcing.DeltaEnvelope)
+	ackChan := make(chan int)
+	manager := NewAggregateManager(deltaChan, ackChan)
 	mockAgg := &MockAggregate{id: "test_plugin"}
 	manager.RegisterAggregate("test_plugin", mockAgg)
 
@@ -61,7 +71,9 @@ func TestAggregateByName_Plugin(t *testing.T) {
 }
 
 func TestAggregateByName_System(t *testing.T) {
-	manager := NewAggregateManager()
+	deltaChan := make(chan eventsourcing.DeltaEnvelope)
+	ackChan := make(chan int)
+	manager := NewAggregateManager(deltaChan, ackChan)
 	mockAgg := &MockAggregate{id: "test_system"}
 	manager.SystemAggregate["test_system"] = mockAgg
 
@@ -75,7 +87,9 @@ func TestAggregateByName_System(t *testing.T) {
 }
 
 func TestAggregateByName_NotFound(t *testing.T) {
-	manager := NewAggregateManager()
+	deltaChan := make(chan eventsourcing.DeltaEnvelope)
+	ackChan := make(chan int)
+	manager := NewAggregateManager(deltaChan, ackChan)
 
 	_, err := manager.AggregateByName("nonexistent")
 	if err == nil {
@@ -84,7 +98,9 @@ func TestAggregateByName_NotFound(t *testing.T) {
 }
 
 func TestAllAggregates(t *testing.T) {
-	manager := NewAggregateManager()
+	deltaChan := make(chan eventsourcing.DeltaEnvelope)
+	ackChan := make(chan int)
+	manager := NewAggregateManager(deltaChan, ackChan)
 	mockAgg1 := &MockAggregate{id: "plugin1"}
 	mockAgg2 := &MockAggregate{id: "plugin2"}
 	mockAgg3 := &MockAggregate{id: "system1"}
@@ -109,7 +125,9 @@ func TestAllAggregates(t *testing.T) {
 }
 
 func TestID(t *testing.T) {
-	manager := NewAggregateManager()
+	deltaChan := make(chan eventsourcing.DeltaEnvelope)
+	ackChan := make(chan int)
+	manager := NewAggregateManager(deltaChan, ackChan)
 	expectedID := "system"
 	if manager.ID() != expectedID {
 		t.Errorf("Expected ID %s, got %s", expectedID, manager.ID())
@@ -117,7 +135,9 @@ func TestID(t *testing.T) {
 }
 
 func TestRebuildState(t *testing.T) {
-	manager := NewAggregateManager()
+	deltaChan := make(chan eventsourcing.DeltaEnvelope)
+	ackChan := make(chan int)
+	manager := NewAggregateManager(deltaChan, ackChan)
 	mockAgg := &MockAggregate{id: "test"}
 	manager.RegisterAggregate("test", mockAgg)
 

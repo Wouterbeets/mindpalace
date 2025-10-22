@@ -14,11 +14,6 @@ import (
 	"mindpalace/pkg/logging"
 )
 
-type Command struct {
-	Name string
-	Data interface{}
-}
-
 type GodotServer struct {
 	upgrader  websocket.Upgrader
 	clients   map[*websocket.Conn]*ClientState
@@ -36,7 +31,7 @@ type GodotServer struct {
 	ackChan    chan int
 	ackTimeout time.Duration
 
-	commandChan chan Command
+	commandChan chan eventsourcing.CommandData
 	controlChan chan string
 }
 
@@ -81,7 +76,7 @@ func NewGodotServer() *GodotServer {
 		deltaChan:         make(chan eventsourcing.DeltaEnvelope, 1000),
 		pendingKeypresses: make(map[string]chan map[string]interface{}),
 		ackTimeout:        5 * time.Second,
-		commandChan:       make(chan Command, 100),
+		commandChan:       make(chan eventsourcing.CommandData, 100),
 	}
 }
 
@@ -93,7 +88,7 @@ func (s *GodotServer) SetTranscriber(vt *audio.VoiceTranscriber) {
 	s.transcriber = vt
 }
 
-func (s *GodotServer) SetCommandChan(ch chan Command) {
+func (s *GodotServer) SetCommandChan(ch chan eventsourcing.CommandData) {
 	s.commandChan = ch
 }
 
@@ -109,7 +104,7 @@ func (s *GodotServer) SetEventStore(store eventsourcing.EventStore) {
 	s.eventStore = store
 }
 
-func (s *GodotServer) CommandChan() <-chan Command {
+func (s *GodotServer) CommandChan() <-chan eventsourcing.CommandData {
 	return s.commandChan
 }
 
@@ -221,7 +216,7 @@ func (s *GodotServer) handleRequestMessage(msg map[string]interface{}) {
 		return
 	}
 
-	command := Command{
+	command := eventsourcing.CommandData{
 		Name: "ProcessUserRequest",
 		Data: map[string]interface{}{
 			"requestText": text,
@@ -232,7 +227,7 @@ func (s *GodotServer) handleRequestMessage(msg map[string]interface{}) {
 	select {
 	case s.commandChan <- command:
 	default:
-		logging.Info("Command channel full, dropping request")
+		logging.Info("eventsourcing.CommandData channel full, dropping request")
 	}
 }
 

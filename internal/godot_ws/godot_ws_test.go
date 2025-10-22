@@ -21,6 +21,15 @@ func (m *mockAggregateStore) AllAggregates() []eventsourcing.Aggregate {
 	return m.aggregates
 }
 
+func (m *mockAggregateStore) ApplyEventToAllAggs(event eventsourcing.Event) error {
+	for _, agg := range m.aggregates {
+		if err := agg.ApplyEvent(event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // MockEventStore for testing
 type mockEventStore struct {
 	events []eventsourcing.Event
@@ -49,6 +58,10 @@ func (m *mockAggregate) ID() string {
 }
 
 func (m *mockAggregate) ApplyEvent(event eventsourcing.Event) error {
+	return nil
+}
+
+func (m *mockAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.DeltaEnvelope {
 	return nil
 }
 

@@ -16,6 +16,7 @@ import (
 	"mindpalace/pkg/aggregate"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
+	"mindpalace/pkg/ui3d"
 	"mindpalace/pkg/world"
 )
 
@@ -98,6 +99,9 @@ func main() {
 	ep.EventBus = eb
 	eventsourcing.SetGlobalEventBus(eb)
 	pluginManager := plugins.NewPluginManager(ep)
+
+	// Set global zones for plugins
+	ui3d.SetGlobalZones((&ui3d.LayoutManager{}).CalculateDynamicZones(plugins.PluginNames))
 
 	// Migrate from old file store if exists
 	oldFilePath := "events.json"

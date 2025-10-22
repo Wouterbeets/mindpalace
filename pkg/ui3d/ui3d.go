@@ -2,6 +2,7 @@ package ui3d
 
 import (
 	"math"
+	"strconv"
 
 	"mindpalace/pkg/eventsourcing"
 )
@@ -340,6 +341,65 @@ func createMeshAction(nodeID, meshType string, position []float64, theme Theme, 
 	}
 }
 
+// CreateZoneLines creates thin cylinders to draw zone boundaries on the floor
+func (db *DeltaBuilder) CreateZoneLines(zones map[string][]float64) *DeltaBuilder {
+	pluginCount := len(zones)
+	if pluginCount == 0 {
+		return db
+	}
+	for i := 0; i < pluginCount; i++ {
+		// Calculate boundary angle between zones
+		boundaryAngle := 2 * math.Pi * (float64(i) + 0.5) / float64(pluginCount)
+		// Draw a line from center outward along the boundary using a thin cylinder
+		center := []float64{0, 0.1, 0} // Slightly above floor
+		end := []float64{100 * math.Cos(boundaryAngle), 0.1, 100 * math.Sin(boundaryAngle)}
+		// Calculate midpoint and rotation
+		midX := (center[0] + end[0]) / 2
+		midZ := (center[2] + end[2]) / 2
+		dx := end[0] - center[0]
+		dz := end[2] - center[2]
+		length := math.Sqrt(dx*dx + dz*dz)
+		angle := math.Atan2(dz, dx)
+		action := eventsourcing.DeltaAction{
+			Type:     "create",
+			NodeID:   "zone_boundary_" + strconv.Itoa(i),
+			NodeType: "MeshInstance3D",
+			Properties: map[string]interface{}{
+				"mesh":     "cylinder",
+				"position": []float64{midX, 0.05, midZ},       // Half height above floor
+				"scale":    []float64{0.05, length / 2, 0.05}, // Thin and long
+				"rotation": []float64{0, angle, math.Pi / 2},  // Rotate to lie flat
+				"material_override": map[string]interface{}{
+					"albedo_color": db.theme.Accent,
+				},
+			},
+		}
+		db.actions = append(db.actions, action)
+	}
+	return db
+}
+
+// CreateZoneLabels creates high aerial labels for each zone
+func (db *DeltaBuilder) CreateZoneLabels(zones map[string][]float64) *DeltaBuilder {
+	for name, offset := range zones {
+		labelPos := []float64{offset[0], 10, offset[2]} // High up
+		action := eventsourcing.DeltaAction{
+			Type:     "create",
+			NodeID:   "zone_label_" + name,
+			NodeType: "Label3D",
+			Properties: map[string]interface{}{
+				"text":             name,
+				"position":         labelPos,
+				"modulate":         db.theme.Text,
+				"outline_modulate": db.theme.Accent,
+				"font_size":        128,
+			},
+		}
+		db.actions = append(db.actions, action)
+	}
+	return db
+}
+
 // CreateLabel creates a DeltaAction for a 3D text label
 func CreateLabel(nodeID string, text string, position []float64, theme Theme) eventsourcing.DeltaAction {
 	return eventsourcing.DeltaAction{
@@ -353,6 +413,25 @@ func CreateLabel(nodeID string, text string, position []float64, theme Theme) ev
 			"outline_modulate": theme.Accent, // Make outline emissive
 		},
 	}
+}
+
+// CalculateDynamicZones computes zone offsets for plugins around the orchestrator
+func (lm *LayoutManager) CalculateDynamicZones(pluginNames []string) map[string][]float64 {
+	pluginCount := len(pluginNames)
+	zones := make(map[string][]float64)
+	if pluginCount == 0 {
+		return zones
+	}
+	baseDistance := 10.0
+	spacing := 5.0
+	distance := baseDistance + float64(pluginCount-1)*spacing
+	for i, name := range pluginNames {
+		angle := 2 * math.Pi * float64(i) / float64(pluginCount)
+		x := distance * math.Cos(angle)
+		z := distance * math.Sin(angle)
+		zones[name] = []float64{x, 0, z}
+	}
+	return zones
 }
 
 // NextPosition computes the next position based on layout type

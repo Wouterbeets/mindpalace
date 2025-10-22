@@ -12,6 +12,9 @@ import (
 	"mindpalace/pkg/logging"
 )
 
+// PluginNames tracks loaded plugin names for dynamic zoning
+var PluginNames []string
+
 // PluginManager handles loading and managing plugins
 type PluginManager struct {
 	plugins        []eventsourcing.Plugin
@@ -60,6 +63,8 @@ func (pm *PluginManager) GetPluginByCommand(commandName string) (eventsourcing.P
 // / LoadPlugins finds, compiles if needed, and loads all plugins from the given directory
 func (pm *PluginManager) LoadPlugins(pluginDir string) {
 	logging.Debug("Starting to load plugins from directory: %s", pluginDir)
+	// Clear PluginNames to avoid duplicates on reload
+	PluginNames = []string{}
 
 	pluginDirs, err := pm.discoverPluginDirectories(pluginDir)
 	if err != nil {
@@ -93,6 +98,7 @@ func (pm *PluginManager) LoadPlugins(pluginDir string) {
 
 		if plugin != nil {
 			pm.plugins = append(pm.plugins, plugin)
+			PluginNames = append(PluginNames, plugin.Name())
 			logging.Info("Successfully loaded plugin: %s", plugin.Name())
 		}
 	}

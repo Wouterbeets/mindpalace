@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"testing"
 
-	"mindpalace/internal/godot_ws"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/llmmodels"
 )
@@ -64,6 +63,15 @@ type mockAggregateStore struct {
 
 func (m *mockAggregateStore) AllAggregates() []eventsourcing.Aggregate {
 	return m.aggregates
+}
+
+func (m *mockAggregateStore) ApplyEventToAllAggs(event eventsourcing.Event) error {
+	for _, agg := range m.aggregates {
+		if err := agg.ApplyEvent(event); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type mockPlugin struct {
@@ -151,6 +159,14 @@ func TestNewOrchestrationAggregate(t *testing.T) {
 
 func TestApplyEvent_UserRequestReceived(t *testing.T) {
 	agg := NewOrchestrationAggregate()
+	deltaChan := make(chan eventsourcing.DeltaEnvelope, 10)
+	ackChan := make(chan int, 10)
+	agg.SetChannels(deltaChan, ackChan)
+	go func() {
+		for envelope := range deltaChan {
+			ackChan <- envelope.SequenceID
+		}
+	}()
 	event := &UserRequestReceivedEvent{
 		RequestID:   "req1",
 		RequestText: "Test request",
@@ -172,6 +188,14 @@ func TestApplyEvent_UserRequestReceived(t *testing.T) {
 
 func TestApplyEvent_ToolCallRequestPlaced(t *testing.T) {
 	agg := NewOrchestrationAggregate()
+	deltaChan := make(chan eventsourcing.DeltaEnvelope, 10)
+	ackChan := make(chan int, 10)
+	agg.SetChannels(deltaChan, ackChan)
+	go func() {
+		for envelope := range deltaChan {
+			ackChan <- envelope.SequenceID
+		}
+	}()
 	// First add an agent state
 	agg.AgentStates["req1"] = &AgentState{
 		RequestID:     "req1",
@@ -205,6 +229,14 @@ func TestApplyEvent_ToolCallRequestPlaced(t *testing.T) {
 
 func TestApplyEvent_ToolCallCompleted(t *testing.T) {
 	agg := NewOrchestrationAggregate()
+	deltaChan := make(chan eventsourcing.DeltaEnvelope, 10)
+	ackChan := make(chan int, 10)
+	agg.SetChannels(deltaChan, ackChan)
+	go func() {
+		for envelope := range deltaChan {
+			ackChan <- envelope.SequenceID
+		}
+	}()
 	// Setup tool call state
 	agg.ToolCallStates["tool1"] = &ToolCallState{
 		RequestID:   "req1",
@@ -242,6 +274,14 @@ func TestApplyEvent_ToolCallCompleted(t *testing.T) {
 
 func TestApplyEvent_AgentCallDecided(t *testing.T) {
 	agg := NewOrchestrationAggregate()
+	deltaChan := make(chan eventsourcing.DeltaEnvelope, 10)
+	ackChan := make(chan int, 10)
+	agg.SetChannels(deltaChan, ackChan)
+	go func() {
+		for envelope := range deltaChan {
+			ackChan <- envelope.SequenceID
+		}
+	}()
 	event := &AgentCallDecidedEvent{
 		RequestID: "req1",
 		AgentName: "testAgent",
@@ -259,6 +299,14 @@ func TestApplyEvent_AgentCallDecided(t *testing.T) {
 
 func TestApplyEvent_RequestCompleted(t *testing.T) {
 	agg := NewOrchestrationAggregate()
+	deltaChan := make(chan eventsourcing.DeltaEnvelope, 10)
+	ackChan := make(chan int, 10)
+	agg.SetChannels(deltaChan, ackChan)
+	go func() {
+		for envelope := range deltaChan {
+			ackChan <- envelope.SequenceID
+		}
+	}()
 	agg.AgentStates["req1"] = &AgentState{
 		RequestID: "req1",
 		Status:    "executing",
@@ -303,6 +351,7 @@ func TestClone(t *testing.T) {
 
 func TestBroadcast3DDelta(t *testing.T) {
 	agg := NewOrchestrationAggregate()
+	agg.OrchestratorAICreated = true // Prevent extra action for orchestrator creation
 	event := &ToolCallRequestPlaced{
 		RequestID:  "req1",
 		ToolCallID: "tool1",
@@ -311,8 +360,8 @@ func TestBroadcast3DDelta(t *testing.T) {
 	}
 	envelope := agg.EmitDelta(event)
 	actions := envelope.Actions
-	if len(actions) != 3 {
-		t.Errorf("Expected 3 actions, got %d", len(actions))
+	if len(actions) != 2 {
+		t.Errorf("Expected 2 actions, got %d", len(actions))
 	}
 	if actions[0].NodeType != "MeshInstance3D" {
 		t.Errorf("Expected first action to be MeshInstance3D, got %s", actions[0].NodeType)
@@ -331,10 +380,24 @@ func TestOrchestrationFlow_UserRequestToCompletion(t *testing.T) {
 	agg := NewOrchestrationAggregate()
 	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
 	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
-	commandChan := make(chan godot_ws.Command, 10)
+	commandChan := make(chan eventsourcing.CommandData, 10)
 	controlChan := make(chan string, 10)
 	aggStore := &mockAggregateStore{}
 	events := []eventsourcing.Event{}
+
+	// Set up channels for delta communication
+	deltaChan := make(chan eventsourcing.DeltaEnvelope, 10)
+	ackChan := make(chan int, 10)
+	agg.SetChannels(deltaChan, ackChan)
+
+	// Collect received envelopes
+	var receivedEnvelopes []eventsourcing.DeltaEnvelope
+	go func() {
+		for envelope := range deltaChan {
+			receivedEnvelopes = append(receivedEnvelopes, envelope)
+			ackChan <- envelope.SequenceID
+		}
+	}()
 
 	// Create orchestrator
 	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb, commandChan, controlChan, aggStore, events)
@@ -425,7 +488,7 @@ func TestOrchestrationFlow_WithToolCalls(t *testing.T) {
 	agg := NewOrchestrationAggregate()
 	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
 	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
-	commandChan := make(chan godot_ws.Command, 10)
+	commandChan := make(chan eventsourcing.CommandData, 10)
 	controlChan := make(chan string, 10)
 	aggStore := &mockAggregateStore{}
 	events := []eventsourcing.Event{}
@@ -497,7 +560,7 @@ func TestEventTriggersCommand(t *testing.T) {
 	agg := NewOrchestrationAggregate()
 	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
 	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
-	commandChan := make(chan godot_ws.Command, 10)
+	commandChan := make(chan eventsourcing.CommandData, 10)
 	controlChan := make(chan string, 10)
 	aggStore := &mockAggregateStore{}
 	events := []eventsourcing.Event{}
@@ -636,6 +699,14 @@ func TestAgentName(t *testing.T) {
 
 func TestApplyEvent_ToolCallFailed(t *testing.T) {
 	agg := NewOrchestrationAggregate()
+	deltaChan := make(chan eventsourcing.DeltaEnvelope, 10)
+	ackChan := make(chan int, 10)
+	agg.SetChannels(deltaChan, ackChan)
+	go func() {
+		for envelope := range deltaChan {
+			ackChan <- envelope.SequenceID
+		}
+	}()
 	agg.ToolCallStates["tool1"] = &ToolCallState{
 		RequestID:   "req1",
 		ToolCallID:  "tool1",
@@ -670,6 +741,14 @@ func TestApplyEvent_ToolCallFailed(t *testing.T) {
 
 func TestApplyEvent_AgentExecutionFailed(t *testing.T) {
 	agg := NewOrchestrationAggregate()
+	deltaChan := make(chan eventsourcing.DeltaEnvelope, 10)
+	ackChan := make(chan int, 10)
+	agg.SetChannels(deltaChan, ackChan)
+	go func() {
+		for envelope := range deltaChan {
+			ackChan <- envelope.SequenceID
+		}
+	}()
 	agg.AgentStates["req1"] = &AgentState{
 		RequestID: "req1",
 		Status:    "executing",
@@ -714,6 +793,7 @@ func TestBroadcast3DDelta_UserRequestReceived(t *testing.T) {
 
 func TestBroadcast3DDelta_AgentCallDecided(t *testing.T) {
 	agg := NewOrchestrationAggregate()
+	agg.OrchestratorAICreated = true
 	event := &AgentCallDecidedEvent{
 		RequestID: "req1",
 		AgentName: "test",
@@ -728,6 +808,7 @@ func TestBroadcast3DDelta_AgentCallDecided(t *testing.T) {
 
 func TestBroadcast3DDelta_ToolCallRequestPlaced(t *testing.T) {
 	agg := NewOrchestrationAggregate()
+	agg.OrchestratorAICreated = true
 	event := &ToolCallRequestPlaced{
 		RequestID:  "req1",
 		ToolCallID: "tool1",
@@ -736,13 +817,14 @@ func TestBroadcast3DDelta_ToolCallRequestPlaced(t *testing.T) {
 	}
 	envelope := agg.EmitDelta(event)
 	actions := envelope.Actions
-	if len(actions) != 3 {
-		t.Errorf("Expected 3 actions, got %d", len(actions))
+	if len(actions) != 2 {
+		t.Errorf("Expected 2 actions, got %d", len(actions))
 	}
 }
 
 func TestBroadcast3DDelta_ToolCallStarted(t *testing.T) {
 	agg := NewOrchestrationAggregate()
+	agg.OrchestratorAICreated = true
 	event := &ToolCallStarted{
 		RequestID:  "req1",
 		ToolCallID: "tool1",
@@ -761,6 +843,7 @@ func TestBroadcast3DDelta_ToolCallStarted(t *testing.T) {
 
 func TestBroadcast3DDelta_ToolCallCompleted(t *testing.T) {
 	agg := NewOrchestrationAggregate()
+	agg.OrchestratorAICreated = true
 	event := &ToolCallCompleted{
 		RequestID:  "req1",
 		ToolCallID: "tool1",
@@ -769,13 +852,14 @@ func TestBroadcast3DDelta_ToolCallCompleted(t *testing.T) {
 	}
 	envelope := agg.EmitDelta(event)
 	actions := envelope.Actions
-	if len(actions) != 2 {
-		t.Errorf("Expected 2 actions, got %d", len(actions))
+	if len(actions) != 1 {
+		t.Errorf("Expected 1 action, got %d", len(actions))
 	}
 }
 
 func TestBroadcast3DDelta_ToolCallFailedEvent(t *testing.T) {
 	agg := NewOrchestrationAggregate()
+	agg.OrchestratorAICreated = true
 	event := &ToolCallFailedEvent{
 		RequestID:  "req1",
 		ToolCallID: "tool1",
@@ -791,6 +875,7 @@ func TestBroadcast3DDelta_ToolCallFailedEvent(t *testing.T) {
 
 func TestBroadcast3DDelta_AgentExecutionFailedEvent(t *testing.T) {
 	agg := NewOrchestrationAggregate()
+	agg.OrchestratorAICreated = true
 	agg.AgentStates["req1"] = &AgentState{AgentName: "test"}
 	event := &AgentExecutionFailedEvent{
 		RequestID: "req1",
@@ -805,6 +890,7 @@ func TestBroadcast3DDelta_AgentExecutionFailedEvent(t *testing.T) {
 
 func TestBroadcast3DDelta_RequestCompletedEvent(t *testing.T) {
 	agg := NewOrchestrationAggregate()
+	agg.OrchestratorAICreated = true
 	event := &RequestCompletedEvent{
 		RequestID:    "req1",
 		ResponseText: "test",
@@ -823,7 +909,7 @@ func TestProcessUserRequestCommand(t *testing.T) {
 	agg := NewOrchestrationAggregate()
 	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
 	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
-	commandChan := make(chan godot_ws.Command, 10)
+	commandChan := make(chan eventsourcing.CommandData, 10)
 	controlChan := make(chan string, 10)
 	aggStore := &mockAggregateStore{}
 	events := []eventsourcing.Event{}
@@ -851,7 +937,7 @@ func TestDecideAgentCallCommand_NoAgents(t *testing.T) {
 	agg := NewOrchestrationAggregate()
 	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
 	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
-	commandChan := make(chan godot_ws.Command, 10)
+	commandChan := make(chan eventsourcing.CommandData, 10)
 	controlChan := make(chan string, 10)
 	aggStore := &mockAggregateStore{}
 	events := []eventsourcing.Event{}
@@ -881,7 +967,7 @@ func TestExecuteToolCallCommand_NoPlugin(t *testing.T) {
 	agg := NewOrchestrationAggregate()
 	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
 	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
-	commandChan := make(chan godot_ws.Command, 10)
+	commandChan := make(chan eventsourcing.CommandData, 10)
 	controlChan := make(chan string, 10)
 	aggStore := &mockAggregateStore{}
 	events := []eventsourcing.Event{}
@@ -913,7 +999,7 @@ func TestCompleteRequestCommand_Pending(t *testing.T) {
 	agg.PendingToolCalls["req1"] = map[string]struct{}{"tool1": {}}
 	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
 	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
-	commandChan := make(chan godot_ws.Command, 10)
+	commandChan := make(chan eventsourcing.CommandData, 10)
 	controlChan := make(chan string, 10)
 	aggStore := &mockAggregateStore{}
 	events := []eventsourcing.Event{}
@@ -941,7 +1027,7 @@ func TestCompleteRequestWithErrorCommand(t *testing.T) {
 	agg := NewOrchestrationAggregate()
 	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
 	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
-	commandChan := make(chan godot_ws.Command, 10)
+	commandChan := make(chan eventsourcing.CommandData, 10)
 	controlChan := make(chan string, 10)
 	aggStore := &mockAggregateStore{}
 	events := []eventsourcing.Event{}

@@ -735,15 +735,12 @@ func (a *TaskAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.Delt
 			}
 			i++
 		}
+		zones := ui3d.GetGlobalZones()
 		lm := &ui3d.LayoutManager{
 			Type:    "circle",
 			Spacing: 6.0 + float64(i)*0.5,
-			Zone:    e.Status,
-			Zones: map[string][]float64{
-				"todo":        {0, 0, 20},
-				"in_progress": {15, 0, 20},
-				"done":        {30, 0, 20},
-			},
+			Zone:    a.ID(),
+			Zones:   zones,
 			Counter: i + 1,
 		}
 		pos := lm.NextPosition()
@@ -760,6 +757,10 @@ func (a *TaskAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.Delt
 		builder.CreateLabel(e.TaskID+"_label", e.Title, labelPos).WithExtra(map[string]interface{}{
 			"event_type": "task_created",
 		})
+		// Add zone visualization if this is the first task
+		if i == 0 {
+			builder.CreateZoneLines(lm.Zones).CreateZoneLabels(lm.Zones)
+		}
 		actions := builder.Build()
 		if len(actions) > 0 {
 			actions[0].Metadata = map[string]interface{}{
@@ -778,15 +779,12 @@ func (a *TaskAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.Delt
 			}
 			i++
 		}
+		zones := ui3d.GetGlobalZones()
 		lm := &ui3d.LayoutManager{
 			Type:    "circle",
 			Spacing: 6.0 + float64(i)*0.5,
-			Zone:    a.Tasks[e.TaskID].Status,
-			Zones: map[string][]float64{
-				"todo":        {0, 0, 20},
-				"in_progress": {15, 0, 20},
-				"done":        {30, 0, 20},
-			},
+			Zone:    a.ID(),
+			Zones:   zones,
 			Counter: i + 1,
 		}
 		pos := lm.NextPosition()

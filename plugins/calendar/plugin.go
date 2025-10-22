@@ -709,11 +709,12 @@ func (a *CalendarAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.
 			}
 			i++
 		}
+		zones := ui3d.GetGlobalZones()
 		lm := &ui3d.LayoutManager{
 			Type:    "linear",
 			Spacing: 2.0,
-			Zone:    "calendar",
-			Zones:   map[string][]float64{"calendar": {20, 2, -8}},
+			Zone:    a.ID(),
+			Zones:   zones,
 			Counter: i + 1,
 		}
 		pos := lm.NextPosition()
@@ -742,11 +743,12 @@ func (a *CalendarAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.
 			}
 			i++
 		}
+		zones := ui3d.GetGlobalZones()
 		lm := &ui3d.LayoutManager{
 			Type:    "linear",
 			Spacing: 2.0,
-			Zone:    "calendar",
-			Zones:   map[string][]float64{"calendar": {20, 2, -8}},
+			Zone:    a.ID(),
+			Zones:   zones,
 			Counter: i + 1,
 		}
 		pos := lm.NextPosition()

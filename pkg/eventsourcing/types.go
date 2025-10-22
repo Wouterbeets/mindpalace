@@ -75,6 +75,11 @@ const (
 
 type PluginType string
 
+type CommandData struct {
+	Name string
+	Data interface{}
+}
+
 // Plugin defines the interface for plugins in the system
 type Plugin interface {
 	Commands() map[string]CommandHandler
