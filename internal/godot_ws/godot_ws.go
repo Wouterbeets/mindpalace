@@ -12,6 +12,7 @@ import (
 	"mindpalace/internal/audio"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
+	"mindpalace/pkg/ui3d"
 )
 
 type GodotServer struct {
@@ -130,15 +131,15 @@ func (s *GodotServer) SendTranscription(text string) {
 }
 
 func (s *GodotServer) SendDelta(env eventsourcing.DeltaEnvelope) {
-	logging.Info("BACKEND: Sending delta envelope: type=%s, aggregate=%s, sequence=%d, actions=%d", env.Type, env.Aggregate, env.SequenceID, len(env.Actions))
+	logging.Debug("BACKEND: Sending delta envelope: type=%s, aggregate=%s, sequence=%d, actions=%d", env.Type, env.Aggregate, env.SequenceID, len(env.Actions))
 	s.clientsMu.RLock()
 	for _, client := range s.clients {
 		client.writeMu.Lock()
-		logging.Info("BACKEND: Writing delta to client")
+		logging.Debug("BACKEND: Writing delta to client")
 		if err := client.conn.WriteJSON(env); err != nil {
 			logging.Error("Error sending delta: %v", err)
 		} else {
-			logging.Info("BACKEND: Delta sent successfully to client")
+			logging.Debug("BACKEND: Delta sent successfully to client")
 		}
 		client.writeMu.Unlock()
 	}
@@ -309,6 +310,24 @@ func (s *GodotServer) handleReadyMessage(conn *websocket.Conn, msg map[string]in
 	}
 	s.clientsMu.Unlock()
 
+	// Send zones to Godot
+	zones := ui3d.GetGlobalZones()
+	setupZonesPayload := map[string]interface{}{
+		"type":  "setup_zones",
+		"zones": zones,
+	}
+	payloadBytes, err := json.Marshal(setupZonesPayload)
+	if err != nil {
+		logging.Info("Marshal setup_zones: %v", err)
+	} else {
+		setupMsg := map[string]interface{}{
+			"type":    "setup_zones",
+			"payload": string(payloadBytes),
+		}
+		conn.WriteJSON(setupMsg)
+		logging.Info("Sent setup_zones with %d zones", len(zones))
+	}
+
 	// Trigger rebuild after ready
 	if s.controlChan != nil {
 		select {
@@ -458,7 +477,7 @@ func (s *GodotServer) Start() {
 	// Start forwarding deltas
 	go func() {
 		for env := range s.deltaChan {
-			logging.Info("GODOT_SERVER: Received delta from channel: type=%s, aggregate=%s, sequence=%d", env.Type, env.Aggregate, env.SequenceID)
+			logging.Debug("GODOT_SERVER: Received delta from channel: type=%s, aggregate=%s, sequence=%d", env.Type, env.Aggregate, env.SequenceID)
 			s.SendDelta(env)
 		}
 	}()

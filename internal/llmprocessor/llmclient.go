@@ -1,39 +1,35 @@
 package llmprocessor
 
 import (
-	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mindpalace/pkg/llmmodels"
 	"mindpalace/pkg/logging"
 	"net/http"
-	"strings"
 )
 
 const (
 	ollamaModel       = "gpt-oss:20b"
 	ollamaAPIEndpoint = "http://localhost:11434/api/chat"
+	defaultShimmyPort = 11435
 )
 
-type LLMClient struct{}
+type OllamaClient struct{}
 
-func NewLLMClient() *LLMClient {
-	return &LLMClient{}
-}
-
-func (c *LLMClient) CallLLM(messages []llmmodels.Message, tools []llmmodels.Tool, requestID string, model string) (*llmmodels.OllamaResponse, error) {
-	logging.Trace("in call llm, len messages: %i", len(messages))
+func (c *OllamaClient) ChatCompletion(ctx context.Context, messages []Message, tools []Tool, stream bool) (*ChatResponse, error) {
+	logging.Trace("in chat completion, len messages: %d", len(messages))
 	for i, m := range messages {
 		runes := []rune(m.Content)
 		limit := len(runes)
 		if len(runes) > 30 {
 			limit = 30
 		}
-		logging.Trace("message index: %i, Role: %s, Context: %s", i, m.Role, string(runes[:limit]))
+		logging.Trace("message index: %d, Role: %s, Context: %s", i, m.Role, string(runes[:limit]))
 	}
-	logging.Info("Sending %d messages to LLM for request %s", len(messages), requestID)
+	logging.Info("Sending %d messages to Ollama", len(messages))
 	for i, m := range messages {
 		contentPreview := m.Content
 		if len(m.Content) > 100 {
@@ -42,29 +38,48 @@ func (c *LLMClient) CallLLM(messages []llmmodels.Message, tools []llmmodels.Tool
 		logging.Info("Message %d: Role=%s, Content=%s", i, m.Role, contentPreview)
 	}
 	if len(tools) > 0 {
-		logging.Info("Sending %d tools to LLM", len(tools))
+		logging.Info("Sending %d tools to Ollama", len(tools))
 	}
-	// Use specified model or default to ollamaModel
-	if model == "" {
-		model = ollamaModel
+
+	// Convert tools to llmmodels.Tool
+	llmTools := make([]llmmodels.Tool, len(tools))
+	for i, t := range tools {
+		llmTools[i] = llmmodels.Tool{
+			Type: t.Type,
+			Function: map[string]interface{}{
+				"name":        t.Function.Name,
+				"description": t.Function.Description,
+				"parameters":  t.Function.Parameters,
+			},
+		}
 	}
+
+	// Convert messages to llmmodels.Message
+	llmMessages := make([]llmmodels.Message, len(messages))
+	for i, m := range messages {
+		llmMessages[i] = llmmodels.Message{
+			Role:    m.Role,
+			Content: m.Content,
+		}
+	}
+
 	req := llmmodels.OllamaRequest{
-		Model:    model,
-		Messages: messages,
-		Stream:   true,
-		Tools:    tools,
-		NumCtx:   131072, // Set context window size to 131,072 tokens
+		Model:    ollamaModel,
+		Messages: llmMessages,
+		Stream:   false, // Non-stream for POC
+		Tools:    llmTools,
+		NumCtx:   131072,
 	}
 
 	reqBody, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %v", err)
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
-	logging.Info("LLM Request JSON: %s", string(reqBody))
+	logging.Info("Ollama Request JSON: %s", string(reqBody))
 
 	resp, err := http.Post(ollamaAPIEndpoint, "application/json", bytes.NewBuffer(reqBody))
 	if err != nil {
-		return nil, fmt.Errorf("failed to call Ollama API: %v", err)
+		return nil, fmt.Errorf("failed to call Ollama API: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -73,26 +88,143 @@ func (c *LLMClient) CallLLM(messages []llmmodels.Message, tools []llmmodels.Tool
 		return nil, fmt.Errorf("Ollama API error: %d, %s", resp.StatusCode, body)
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
-	var fullContent strings.Builder
-	var toolCalls []llmmodels.OllamaToolCall
-	for scanner.Scan() {
-		var chunk llmmodels.OllamaResponse
-		if err := json.Unmarshal(scanner.Bytes(), &chunk); err != nil {
-			continue
-		}
-		fullContent.WriteString(chunk.Message.Content)
-		toolCalls = append(toolCalls, chunk.Message.ToolCalls...)
-		if chunk.Done {
-			return &llmmodels.OllamaResponse{
-				Message: llmmodels.OllamaMessage{
-					Role:      "assistant",
-					Content:   fullContent.String(),
-					ToolCalls: toolCalls,
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var ollamaResp llmmodels.OllamaResponse
+	if err := json.Unmarshal(body, &ollamaResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	// Map to ChatResponse
+	chatResp := &ChatResponse{
+		Choices: []Choice{
+			{
+				Message: Message{
+					Role:    ollamaResp.Message.Role,
+					Content: ollamaResp.Message.Content,
 				},
-				Done: true,
-			}, nil
+				ToolCalls: make([]ToolCall, len(ollamaResp.Message.ToolCalls)),
+			},
+		},
+	}
+	for i, tc := range ollamaResp.Message.ToolCalls {
+		args, _ := json.Marshal(tc.Function.Arguments)
+		chatResp.Choices[0].ToolCalls[i] = ToolCall{
+			ID:   fmt.Sprintf("call-%d", i), // Ollama doesn't provide ID, generate one
+			Type: "function",
+			Function: FunctionCall{
+				Name:      tc.Function.Name,
+				Arguments: args,
+			},
 		}
 	}
-	return nil, fmt.Errorf("no complete response received")
+
+	return chatResp, nil
+}
+
+func (c *OllamaClient) Close() error {
+	return nil
+}
+
+type ShimmyClient struct {
+	baseURL string
+	apiKey  string
+}
+
+func NewShimmyClient(baseURL, apiKey string) *ShimmyClient {
+	return &ShimmyClient{baseURL: baseURL, apiKey: apiKey}
+}
+
+func (c *ShimmyClient) ChatCompletion(ctx context.Context, messages []Message, tools []Tool, stream bool) (*ChatResponse, error) {
+	// Build OpenAI compatible request
+	reqBody := map[string]interface{}{
+		"model":       "gpt-oss:20b",
+		"messages":    messages,
+		"tools":       tools,
+		"stream":      false,
+		"max_tokens":  4096,
+		"temperature": 0.7,
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/chat/completions", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call Shimmy API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("Shimmy API error: %d, %s", resp.StatusCode, body)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var openaiResp struct {
+		Choices []struct {
+			Message struct {
+				Role      string     `json:"role"`
+				Content   string     `json:"content"`
+				ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &openaiResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	if len(openaiResp.Choices) == 0 {
+		return nil, fmt.Errorf("no choices in response")
+	}
+
+	choice := openaiResp.Choices[0]
+	chatResp := &ChatResponse{
+		Choices: []Choice{
+			{
+				Message: Message{
+					Role:    choice.Message.Role,
+					Content: choice.Message.Content,
+				},
+				ToolCalls: choice.Message.ToolCalls,
+			},
+		},
+	}
+
+	return chatResp, nil
+}
+
+func (c *ShimmyClient) Close() error {
+	return nil
+}
+
+func NewLLMClient(inference, model string, shimmyPort int) LLMClient {
+	switch inference {
+	case "shimmy":
+		baseURL := fmt.Sprintf("http://127.0.0.1:%d/v1", shimmyPort)
+		apiKey := "sk-local"
+		client := NewShimmyClient(baseURL, apiKey)
+		// Note: model is not used in ShimmyClient yet, hardcoded
+		return client
+	case "ollama":
+		fallthrough
+	default:
+		return &OllamaClient{}
+	}
 }

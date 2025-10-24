@@ -735,32 +735,21 @@ func (a *TaskAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.Delt
 			}
 			i++
 		}
+		// Get zone for positioning
 		zones := ui3d.GetGlobalZones()
-		lm := &ui3d.LayoutManager{
-			Type:    "circle",
-			Spacing: 6.0 + float64(i)*0.5,
-			Zone:    a.ID(),
-			Zones:   zones,
-			Counter: i + 1,
-		}
-		pos := lm.NextPosition()
-		pos[1] = 2.0 // Set Y position
-		color := priorityColor(e.Priority)
+		zone := zones[a.ID()]
+		// Map to grid: 1x3x10, so relX = i % 3, relZ = i / 3 + 1, relY = 0 (start from radius 1 to avoid center)
+		relX := i % zone.GridCols
+		relZ := i/zone.GridCols + 1
+		relY := 0
+		pos := zone.ToPosition(relX, relY, relZ)
 		builder := ui3d.NewDeltaBuilder(theme)
-		labelPos := []float64{pos[0], pos[1] + 1.0, pos[2]}
-		builder.CreateBox(e.TaskID, pos).WithExtra(map[string]interface{}{
-			"event_type": "task_created",
-			"material_override": map[string]interface{}{
-				"albedo_color": color,
-			},
-		})
+		labelPos := []float64{pos[0], pos[1] + 1.5, pos[2]} // Adjust for card height
+		builder.CreateTaskCard(e.TaskID, e.Title, string(e.Priority), pos)
 		builder.CreateLabel(e.TaskID+"_label", e.Title, labelPos).WithExtra(map[string]interface{}{
 			"event_type": "task_created",
 		})
-		// Add zone visualization if this is the first task
-		if i == 0 {
-			builder.CreateZoneLines(lm.Zones).CreateZoneLabels(lm.Zones)
-		}
+		// Zone visualization handled by Godot
 		actions := builder.Build()
 		if len(actions) > 0 {
 			actions[0].Metadata = map[string]interface{}{
@@ -779,28 +768,20 @@ func (a *TaskAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.Delt
 			}
 			i++
 		}
+		// Get zone for positioning
 		zones := ui3d.GetGlobalZones()
-		lm := &ui3d.LayoutManager{
-			Type:    "circle",
-			Spacing: 6.0 + float64(i)*0.5,
-			Zone:    a.ID(),
-			Zones:   zones,
-			Counter: i + 1,
-		}
-		pos := lm.NextPosition()
-		pos[1] = 2.0 // Set Y position
-		color := priorityColor(a.Tasks[e.TaskID].Priority)
+		zone := zones[a.ID()]
+		// Map to grid: 1x3x10, so relX = i % 3, relZ = i / 3 + 1, relY = 0 (start from radius 1 to avoid center)
+		relX := i % zone.GridCols
+		relZ := i/zone.GridCols + 1
+		relY := 0
+		pos := zone.ToPosition(relX, relY, relZ)
 		builder := ui3d.NewDeltaBuilder(theme)
-		labelPos := []float64{pos[0], pos[1] + 1.0, pos[2]}
+		labelPos := []float64{pos[0], pos[1] + 1.5, pos[2]}
 		// Delete old
 		builder.Delete(e.TaskID).Delete(e.TaskID + "_label")
 		// Create new
-		builder.CreateBox(e.TaskID, pos).WithExtra(map[string]interface{}{
-			"event_type": "task_updated",
-			"material_override": map[string]interface{}{
-				"albedo_color": color,
-			},
-		})
+		builder.CreateTaskCard(e.TaskID, a.Tasks[e.TaskID].Title, string(a.Tasks[e.TaskID].Priority), pos)
 		builder.CreateLabel(e.TaskID+"_label", a.Tasks[e.TaskID].Title, labelPos).WithExtra(map[string]interface{}{
 			"event_type": "task_updated",
 		})

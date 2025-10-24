@@ -29,14 +29,6 @@ type ThreeDObject struct {
 
 // NewThreeDUIManagerAggregate creates a new 3D UI manager aggregate
 func NewThreeDUIManagerAggregate() *ThreeDUIManagerAggregate {
-	zones := ui3d.GetGlobalZones()
-	staticZones := map[string][]float64{
-		"task":    {0, 0, 20},
-		"default": {0, 5, 0},
-	}
-	for k, v := range zones {
-		staticZones[k] = v
-	}
 	return &ThreeDUIManagerAggregate{
 		Objects: make(map[string]*ThreeDObject),
 		layoutMgr: &ui3d.LayoutManager{
@@ -44,7 +36,7 @@ func NewThreeDUIManagerAggregate() *ThreeDUIManagerAggregate {
 			Spacing: 5.0,
 			Zone:    "default",
 			Counter: 0,
-			Zones:   staticZones,
+			Zones:   nil,
 		},
 	}
 }

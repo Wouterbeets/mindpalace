@@ -40,7 +40,7 @@ var (
 func GetLogger() *Logger {
 	once.Do(func() {
 		globalLogger = &Logger{
-			level:   LogLevelInfo, // Default level
+			level:   LogLevelError, // Default level
 			handler: os.Stdout,
 			logger:  log.New(os.Stdout, "", log.LstdFlags),
 		}

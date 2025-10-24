@@ -1,11 +1,13 @@
 package orchestration
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"text/template"
 	"time"
 
+	"mindpalace/internal/llmprocessor"
 	"mindpalace/pkg/aggregate"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/llmmodels"
@@ -14,7 +16,8 @@ import (
 
 // Interfaces for testability
 type LLMClientInterface interface {
-	CallLLM(messages []llmmodels.Message, tools []llmmodels.Tool, requestID, model string) (*llmmodels.OllamaResponse, error)
+	ChatCompletion(ctx context.Context, messages []llmprocessor.Message, tools []llmprocessor.Tool, stream bool) (*llmprocessor.ChatResponse, error)
+	Close() error
 }
 
 type PluginManagerInterface interface {
@@ -109,23 +112,45 @@ func (ro *RequestOrchestrator) DecideAgentCallCommand(event *UserRequestReceived
 	}
 
 	// Get LLM context with fresh plugin data
-	messages := ro.agg.chatState.GetChatManager().GetLLMContext(pluginNames)
-	resp, err := ro.llmClient.CallLLM(messages, ro.gatherAgentTools(), event.RequestID, "")
+	llmMessages := ro.agg.chatState.GetChatManager().GetLLMContext(pluginNames)
+	// Convert messages
+	messages := make([]llmprocessor.Message, len(llmMessages))
+	for i, m := range llmMessages {
+		messages[i] = llmprocessor.Message{
+			Role:    m.Role,
+			Content: m.Content,
+		}
+	}
+	// Convert tools
+	llmTools := ro.gatherAgentTools()
+	tools := make([]llmprocessor.Tool, len(llmTools))
+	for i, t := range llmTools {
+		funcMap := t.Function
+		params, _ := json.Marshal(funcMap["parameters"])
+		tools[i] = llmprocessor.Tool{
+			Type: t.Type,
+			Function: llmprocessor.FunctionDef{
+				Name:        funcMap["name"].(string),
+				Description: funcMap["description"].(string),
+				Parameters:  params,
+			},
+		}
+	}
+	resp, err := ro.llmClient.ChatCompletion(context.Background(), messages, tools, false)
 	if err != nil {
 		return nil, fmt.Errorf("LLM call failed: %v", err)
 	}
 
 	var events []eventsourcing.Event
-	if len(resp.Message.ToolCalls) > 0 {
-		for _, call := range resp.Message.ToolCalls {
+	if len(resp.Choices[0].ToolCalls) > 0 {
+		for _, call := range resp.Choices[0].ToolCalls {
 			plug, err := ro.pluginManager.GetPlugin(call.Function.Name)
 			if err != nil {
 				return nil, fmt.Errorf("requested plugin does not exist: %w", err)
 			}
-			queryBytes, err := json.Marshal(call.Function.Arguments)
-			if err != nil {
-				return nil, fmt.Errorf("failed to marshal tool call arguments: %v", err)
-			}
+			var args map[string]interface{}
+			json.Unmarshal(call.Function.Arguments, &args)
+			queryBytes, _ := json.Marshal(args)
 			query := string(queryBytes)
 			agentCallEvent := &AgentCallDecidedEvent{
 				RequestID: event.RequestID,
@@ -143,7 +168,7 @@ func (ro *RequestOrchestrator) DecideAgentCallCommand(event *UserRequestReceived
 
 	events = append(events, &RequestCompletedEvent{
 		RequestID:    event.RequestID,
-		ResponseText: resp.Message.Content,
+		ResponseText: resp.Choices[0].Message.Content,
 		CompletedAt:  eventsourcing.ISOTimestamp(),
 	})
 	return events, nil
@@ -505,11 +530,13 @@ func (ro *RequestOrchestrator) ExecuteAgentCall(event *AgentCallDecidedEvent) ([
 		}}, nil
 	}
 
-	for i, toolCall := range resp.Message.ToolCalls {
+	for i, toolCall := range resp.Choices[0].ToolCalls {
+		var args map[string]interface{}
+		json.Unmarshal(toolCall.Function.Arguments, &args)
 		events = append(events, &ToolCallRequestPlaced{
 			RequestID:  event.RequestID,
 			Function:   toolCall.Function.Name,
-			Arguments:  toolCall.Function.Arguments,
+			Arguments:  args,
 			Timestamp:  eventsourcing.ISOTimestamp(),
 			ToolCallID: fmt.Sprintf("toolrequest-%d", i),
 		})
@@ -518,7 +545,7 @@ func (ro *RequestOrchestrator) ExecuteAgentCall(event *AgentCallDecidedEvent) ([
 		events = append(events, &RequestCompletedEvent{
 			EventType:    "orchestration_RequestCompleted",
 			RequestID:    event.RequestID,
-			ResponseText: resp.Message.Content,
+			ResponseText: resp.Choices[0].Message.Content,
 			CompletedAt:  eventsourcing.ISOTimestamp(),
 		})
 	}
@@ -527,7 +554,7 @@ func (ro *RequestOrchestrator) ExecuteAgentCall(event *AgentCallDecidedEvent) ([
 }
 
 // CallPluginAgent calls a plugin-specific agent with appropriate context and prompt
-func (ro *RequestOrchestrator) CallPluginAgent(plugin eventsourcing.Plugin, requestText string, requestID string) (*llmmodels.OllamaResponse, error) {
+func (ro *RequestOrchestrator) CallPluginAgent(plugin eventsourcing.Plugin, requestText string, requestID string) (*llmprocessor.ChatResponse, error) {
 	// Get plugin state from its aggregate
 	agg := plugin.Aggregate()
 	stateJSON, err := json.Marshal(agg)
@@ -539,14 +566,27 @@ func (ro *RequestOrchestrator) CallPluginAgent(plugin eventsourcing.Plugin, requ
 	// Build dynamic prompt with plugin state
 	prompt := fmt.Sprintf("%s\n\nCurrent State:\n%s", plugin.SystemPrompt(), string(stateJSON))
 
-	messages := []llmmodels.Message{
+	messages := []llmprocessor.Message{
 		{Role: "system", Content: prompt},
 		{Role: "user", Content: requestText},
 	}
 
 	// Use plugin-specific model and tools
-	tools := ro.gatherPluginTools(plugin)
-	return ro.llmClient.CallLLM(messages, tools, requestID, plugin.AgentModel())
+	llmTools := ro.gatherPluginTools(plugin)
+	tools := make([]llmprocessor.Tool, len(llmTools))
+	for i, t := range llmTools {
+		funcMap := t.Function
+		params, _ := json.Marshal(funcMap["parameters"])
+		tools[i] = llmprocessor.Tool{
+			Type: t.Type,
+			Function: llmprocessor.FunctionDef{
+				Name:        funcMap["name"].(string),
+				Description: funcMap["description"].(string),
+				Parameters:  params,
+			},
+		}
+	}
+	return ro.llmClient.ChatCompletion(context.Background(), messages, tools, false)
 }
 
 // CompleteRequestCommand checks if all tool calls are done and finalizes the request
@@ -559,14 +599,17 @@ func (ro *RequestOrchestrator) CompleteRequestCommand(event *ToolCallCompleted) 
 		return nil, nil
 	}
 
-	model := "gpt-oss:20b"
-	if agentState, exists := ro.agg.AgentStates[requestID]; exists {
-		model = agentState.Model
-	}
 	// Use tag-based context selection for better relevance
 	relevantTags := []string{"task", "completion", "response"} // Basic tags for completion context
-	messages := ro.agg.chatState.GetChatManager().GetLLMContextWithTags(nil, relevantTags)
-	resp, err := ro.llmClient.CallLLM(messages, nil, requestID, model)
+	llmMessages := ro.agg.chatState.GetChatManager().GetLLMContextWithTags(nil, relevantTags)
+	messages := make([]llmprocessor.Message, len(llmMessages))
+	for i, m := range llmMessages {
+		messages[i] = llmprocessor.Message{
+			Role:    m.Role,
+			Content: m.Content,
+		}
+	}
+	resp, err := ro.llmClient.ChatCompletion(context.Background(), messages, nil, false)
 	if err != nil {
 		return nil, fmt.Errorf("error calling llm client: %w", err)
 	}
@@ -575,7 +618,7 @@ func (ro *RequestOrchestrator) CompleteRequestCommand(event *ToolCallCompleted) 
 	completedEvent := &RequestCompletedEvent{
 		EventType:    "orchestration_RequestCompleted",
 		RequestID:    requestID,
-		ResponseText: resp.Message.Content,
+		ResponseText: resp.Choices[0].Message.Content,
 		CompletedAt:  eventsourcing.ISOTimestamp(),
 	}
 	marsh, _ := completedEvent.Marshal()

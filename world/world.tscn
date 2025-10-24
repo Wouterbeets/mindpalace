@@ -3,6 +3,7 @@
 [ext_resource type="PackedScene" uid="uid://2wmloc3b7m4j" path="res://player.tscn" id="1_2qnao"]
 [ext_resource type="Shader" path="res://world.gdshader" id="1_swcde"]
 [ext_resource type="Script" path="res://main.gd" id="2_main"]
+[ext_resource type="Script" path="res://zone_visualizer.gd" id="3_zone"]
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_aowa2"]
 size = Vector3(60, 0.2, 60)
@@ -80,6 +81,9 @@ transform = Transform3D(0.707107, -0.5, 0.5, 0, 0.707107, 0.707107, -0.707107, -
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Environment_lscom")
+
+[node name="ZoneVisualizer" type="Node3D" parent="."]
+script = ExtResource("3_zone")
 
 [node name="Player" parent="." instance=ExtResource("1_2qnao")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, 0)

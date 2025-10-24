@@ -78,6 +78,44 @@ func (db *DeltaBuilder) CreateCapsule(nodeID string, position []float64) *DeltaB
 	return db
 }
 
+// CreateTaskCard adds a card-like plane mesh for tasks
+func (db *DeltaBuilder) CreateTaskCard(nodeID string, title string, priority string, position []float64) *DeltaBuilder {
+	// Determine color based on priority
+	var color []float64
+	switch priority {
+	case "high":
+		color = []float64{1.0, 0.2, 0.2, 1.0} // Red
+	case "medium":
+		color = []float64{1.0, 1.0, 0.2, 1.0} // Yellow
+	case "low":
+		color = []float64{0.2, 1.0, 0.2, 1.0} // Green
+	default:
+		color = []float64{0.5, 0.5, 0.5, 1.0} // Gray
+	}
+
+	action := eventsourcing.DeltaAction{
+		Type:     "create",
+		NodeID:   nodeID,
+		NodeType: "MeshInstance3D",
+		Properties: map[string]interface{}{
+			"mesh":     "plane",
+			"position": position,
+			"scale":    []float64{2.0, 3.0, 1.0}, // Card aspect ratio
+			"material_override": map[string]interface{}{
+				"albedo_color":     color,
+				"emission_enabled": true,
+				"emission":         []float64{0.1, 0.1, 0.1, 1.0}, // Subtle glow
+			},
+			"display_info": map[string]interface{}{
+				"title": title,
+				"type":  "task",
+			},
+		},
+	}
+	db.actions = append(db.actions, action)
+	return db
+}
+
 // CreateLabel adds a 3D text label to the builder
 func (db *DeltaBuilder) CreateLabel(nodeID string, text string, position []float64) *DeltaBuilder {
 	action := eventsourcing.DeltaAction{
@@ -416,20 +454,39 @@ func CreateLabel(nodeID string, text string, position []float64, theme Theme) ev
 }
 
 // CalculateDynamicZones computes zone offsets for plugins around the orchestrator
-func (lm *LayoutManager) CalculateDynamicZones(pluginNames []string) map[string][]float64 {
+func (lm *LayoutManager) CalculateDynamicZones(pluginNames []string) map[string]Zone {
 	pluginCount := len(pluginNames)
-	zones := make(map[string][]float64)
+	zones := make(map[string]Zone)
 	if pluginCount == 0 {
 		return zones
 	}
-	baseDistance := 10.0
+	baseDistance := 100.0
 	spacing := 5.0
 	distance := baseDistance + float64(pluginCount-1)*spacing
 	for i, name := range pluginNames {
-		angle := 2 * math.Pi * float64(i) / float64(pluginCount)
-		x := distance * math.Cos(angle)
-		z := distance * math.Sin(angle)
-		zones[name] = []float64{x, 0, z}
+		angleRad := 2 * math.Pi * float64(i) / float64(pluginCount)
+		angleDeg := angleRad * 180 / math.Pi
+
+		// Set grid dimensions based on plugin
+		var rows, cols, depth int
+		switch name {
+		case "taskmanager":
+			rows, cols, depth = 1, 3, 10
+		case "calendar":
+			rows, cols, depth = 1, 5, 5
+		case "plugingenerator":
+			rows, cols, depth = 1, 2, 2
+		default:
+			rows, cols, depth = 1, 1, 1
+		}
+
+		zones[name] = Zone{
+			Angle:     angleDeg,
+			Radius:    distance,
+			GridRows:  rows,
+			GridCols:  cols,
+			GridDepth: depth,
+		}
 	}
 	return zones
 }

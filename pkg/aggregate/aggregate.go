@@ -72,22 +72,22 @@ func (m *AggregateManager) ApplyEventToAllAggs(event eventsourcing.Event) error 
 		// Emit delta if needed
 		if envelope := agg.EmitDelta(event); envelope != nil {
 			envelope.SequenceID = eventsourcing.NextSequenceID()
-			logging.Info("AGGREGATE: Sending delta envelope to channel: type=%s, aggregate=%s, sequence=%d, actions=%d", envelope.Type, envelope.Aggregate, envelope.SequenceID, len(envelope.Actions))
+			logging.Debug("AGGREGATE: Sending delta envelope to channel: type=%s, aggregate=%s, sequence=%d, actions=%d", envelope.Type, envelope.Aggregate, envelope.SequenceID, len(envelope.Actions))
 			select {
 			case m.deltaChan <- *envelope:
-				logging.Info("AGGREGATE: Delta envelope sent to channel successfully")
+				logging.Debug("AGGREGATE: Delta envelope sent to channel successfully")
 			case <-time.After(10 * time.Second):
 				logging.Error("Timeout sending delta envelope for event %s", event.Type())
 				return nil // or return error?
 			}
 			// Wait for ACK
-			logging.Info("AGGREGATE: Waiting for ack")
+			logging.Debug("AGGREGATE: Waiting for ack")
 			select {
 			case ackSeq := <-m.ackChan:
 				if ackSeq != envelope.SequenceID {
 					logging.Error("ACK sequence mismatch: expected %d, got %d", envelope.SequenceID, ackSeq)
 				}
-				logging.Info("AGGREGATE: ack received for sequence %d", envelope.SequenceID)
+				logging.Debug("AGGREGATE: ack received for sequence %d", envelope.SequenceID)
 			case <-time.After(5 * time.Second):
 				logging.Error("ACK timeout for sequence %d", envelope.SequenceID)
 			}
@@ -98,14 +98,14 @@ func (m *AggregateManager) ApplyEventToAllAggs(event eventsourcing.Event) error 
 
 // ApplyEvent routes the event to the appropriate plugin aggregate or handles core events.
 func (m *AggregateManager) RebuildState(events []eventsourcing.Event) error {
-	logging.Info("Rebuilding state for %d events across %d aggregates", len(events), len(m.AllAggregates()))
+	logging.Debug("Rebuilding state for %d events across %d aggregates", len(events), len(m.AllAggregates()))
 	for i, event := range events {
-		logging.Info("Applied %d / %d events", i, len(events))
+		logging.Debug("Applied %d / %d events", i, len(events))
 		logging.Debug("Applying event %s", event.Type())
 		if err := m.ApplyEventToAllAggs(event); err != nil {
 			return err
 		}
 	}
-	logging.Info("RebuildState completed")
+	logging.Debug("RebuildState completed")
 	return nil
 }

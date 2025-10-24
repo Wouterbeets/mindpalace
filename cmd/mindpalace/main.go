@@ -30,6 +30,9 @@ func main() {
 		versionFlag  bool
 		headlessFlag bool
 		storagePath  string
+		inference    string
+		model        string
+		shimmyPort   int
 	)
 
 	// Parse command-line flags
@@ -40,6 +43,9 @@ func main() {
 	flag.BoolVar(&versionFlag, "version", false, "Show version information")
 	flag.BoolVar(&headlessFlag, "headless", false, "Run in headless mode (no UI, web server only)")
 	flag.StringVar(&storagePath, "storage", "events.db", "Path to the events storage database")
+	flag.StringVar(&inference, "inference", "ollama", "Inference engine: ollama or shimmy")
+	flag.StringVar(&model, "model", "gpt-oss:20b", "Model name")
+	flag.IntVar(&shimmyPort, "shimmy-port", 11435, "Port for Shimmy server")
 	flag.Parse()
 
 	// Show help if requested
@@ -69,7 +75,7 @@ func main() {
 		logging.SetVerbosity(logging.LogLevelInfo)
 		logging.Info("Verbose logging enabled")
 	} else {
-		logging.SetVerbosity(logging.LogLevelInfo)
+		logging.SetVerbosity(logging.LogLevelError)
 		logging.Info("MindPalace starting with minimal logging")
 	}
 
@@ -88,7 +94,7 @@ func main() {
 	defer store.Close()
 
 	// Create command and control channels
-	commandChan := make(chan godot_ws.Command, 10)
+	commandChan := make(chan eventsourcing.CommandData, 10)
 	controlChan := make(chan string, 10)
 	ackChan := make(chan int, 10)
 	deltaChan := make(chan eventsourcing.DeltaEnvelope, 10)
@@ -137,8 +143,9 @@ func main() {
 		logging.Info("  - Aggregate: %s", agg.ID())
 	}
 
-	// Create real LLM client (Ollama)
-	llmClient := llmprocessor.NewLLMClient()
+	// Create LLM client
+	llmClient := llmprocessor.NewLLMClient(inference, model, shimmyPort)
+	logging.Info("Using %s inference (model: %s)", inference, model)
 
 	// Create and start orchestrator
 	ro := orchestration.NewRequestOrchestrator(llmClient, pluginManager, orchAgg, ep, eb, commandChan, controlChan, aggManager, events)
@@ -206,7 +213,7 @@ func main() {
 	go func() {
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
-			logging.Info("[Godot] %s", scanner.Text())
+			logging.Debug("[Godot] %s", scanner.Text())
 		}
 		if err := scanner.Err(); err != nil {
 			logging.Error("Error reading Godot stdout: %v", err)
@@ -216,7 +223,7 @@ func main() {
 	go func() {
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
-			logging.Info("[Godot] %s", scanner.Text())
+			logging.Debug("[Godot] %s", scanner.Text())
 		}
 		if err := scanner.Err(); err != nil {
 			logging.Error("Error reading Godot stderr: %v", err)

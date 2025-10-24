@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"mindpalace/pkg/ui3d"
 )
 
 func TestTaskAggregate_ApplyEvent_TaskCreated(t *testing.T) {
@@ -183,6 +185,12 @@ func TestTaskAggregate_Broadcast3DDelta_TaskCreated(t *testing.T) {
 
 	// Apply the event first to add to aggregate
 	agg.ApplyEvent(event)
+
+	// Set up zones for testing
+	zones := map[string]ui3d.Zone{
+		"taskmanager": {Angle: 0, Radius: 100, GridRows: 1, GridCols: 3, GridDepth: 10},
+	}
+	ui3d.SetGlobalZones(zones)
 
 	signal := agg.EmitDelta(event)
 	actions := signal.Actions

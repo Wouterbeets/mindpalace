@@ -226,22 +226,22 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 	// Emit delta if needed
 	if envelope := a.EmitDelta(event); envelope != nil {
 		envelope.SequenceID = eventsourcing.NextSequenceID()
-		logging.Info("AGGREGATE: Sending delta envelope to channel: type=%s, aggregate=%s, sequence=%d, actions=%d", envelope.Type, envelope.Aggregate, envelope.SequenceID, len(envelope.Actions))
+		logging.Debug("AGGREGATE: Sending delta envelope to channel: type=%s, aggregate=%s, sequence=%d, actions=%d", envelope.Type, envelope.Aggregate, envelope.SequenceID, len(envelope.Actions))
 		select {
 		case a.deltaChan <- *envelope:
-			logging.Info("AGGREGATE: Delta envelope sent to channel successfully")
+			logging.Debug("AGGREGATE: Delta envelope sent to channel successfully")
 		case <-time.After(10 * time.Second):
 			logging.Error("Timeout sending delta envelope for event %s", event.Type())
 			return nil // or return error?
 		}
 		// Wait for ACK
-		logging.Info("AGGREGATE: Waiting for ack")
+		logging.Debug("AGGREGATE: Waiting for ack")
 		select {
 		case ackSeq := <-a.ackChan:
 			if ackSeq != envelope.SequenceID {
 				logging.Error("ACK sequence mismatch: expected %d, got %d", envelope.SequenceID, ackSeq)
 			}
-			logging.Info("AGGREGATE: ack received for sequence %d", envelope.SequenceID)
+			logging.Debug("AGGREGATE: ack received for sequence %d", envelope.SequenceID)
 		case <-time.After(5 * time.Second):
 			logging.Error("ACK timeout for sequence %d", envelope.SequenceID)
 		}

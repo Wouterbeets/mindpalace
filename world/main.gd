@@ -2,6 +2,7 @@ extends Node3D
 
 @onready var mesh_instance: MeshInstance3D = $Floor/MeshInstance3D
 @onready var camera: Camera3D = $Player/Camera
+@onready var zone_visualizer: Node3D = $ZoneVisualizer
 
 var websocket = WebSocketPeer.new()
 const WS_URL = "ws://localhost:8081/godot"
@@ -183,16 +184,7 @@ func _ready():
 	ambient_particles.lifetime = 10.0
 	add_child(ambient_particles)
 
-	# Add transcription display
-	var transcription_label = Label3D.new()
-	transcription_label.name = "transcription_display"
-	transcription_label.text = "🎤 Voice transcription will appear here when you speak to the orchestrator..."
-	transcription_label.position = Vector3(0, 2, -3)
-	transcription_label.font_size = 64
-	transcription_label.modulate = Color(1, 1, 0)  # Yellow text
-	transcription_label.outline_modulate = Color(0, 0, 0)  # Black outline
-	transcription_label.outline_size = 4
-	add_child(transcription_label)
+
 
 	# Create underground node for event animations
 	underground_node = Node3D.new()
@@ -364,6 +356,8 @@ func _on_websocket_message(message: String):
 				process_keypresses(data)
 			elif data["type"] == "transcription_update":
 				process_transcription_update(data)
+			elif data["type"] == "setup_zones":
+				process_setup_zones(data)
 			else:
 				process_event_message(data)
 
@@ -417,6 +411,30 @@ func process_transcription_update(data: Dictionary):
 	print("GODOT: Processing transcription update with " + str(data["actions"].size()) + " actions")
 	for action in data["actions"]:
 		handle_underground_action(action)
+
+func process_setup_zones(data: Dictionary):
+	if not data.has("payload") or typeof(data["payload"]) != TYPE_STRING:
+		push_error("Invalid setup_zones message: missing or invalid 'payload' field")
+		return
+	var payload_json = JSON.new()
+	var parse_result = payload_json.parse(data["payload"])
+	if parse_result != OK:
+		push_error("Failed to parse setup_zones payload: ", parse_result)
+		return
+	var payload_data = payload_json.data
+	if not payload_data.has("zones") or typeof(payload_data["zones"]) != TYPE_DICTIONARY:
+		push_error("Invalid setup_zones payload: missing or invalid 'zones' field")
+		return
+	var zones = payload_data["zones"]
+	print("GODOT: Received setup_zones message with ", zones.size(), " zones")
+	for zone_name in zones.keys():
+		var zone_data = zones[zone_name]
+		print("GODOT: Zone '", zone_name, "' - angle: ", zone_data.get("angle", "N/A"), ", radius: ", zone_data.get("radius", "N/A"))
+	# Set zone count for sector calculation
+	set_meta("zone_count", zones.size())
+	print("GODOT: Calling zone_visualizer.draw_zones()")
+	zone_visualizer.draw_zones(zones)
+	print("GODOT: Zone setup complete")
 
 func process_keypresses(data: Dictionary):
 	if not data.has("keys") or typeof(data["keys"]) != TYPE_STRING:
@@ -674,21 +692,7 @@ func handle_underground_action(action: Dictionary):
 		return
 	var properties = action.get("properties", {})
 
-	# Special handling for transcription updates
-	if node_id == "transcription_display" and action_type == "update" and properties.has("text"):
-		print("GODOT: Updating transcription_display with text: '" + properties["text"] + "'")
-		var transcription_node = get_node_or_null("transcription_display")
-		if transcription_node:
-			transcription_node.text = format_with_line_breaks(properties["text"], 80)
-			print("GODOT: Updated 3D transcription label")
-		else:
-			print("GODOT: transcription_display node not found")
-		if user_request_input:
-			user_request_input.text = properties["text"]
-			print("GODOT: Updated user_request_input textbox")
-		else:
-			print("GODOT: user_request_input is null")
-		return
+
 
 
 
@@ -796,6 +800,19 @@ func create_node(node_id: String, node_type: String, properties: Dictionary):
 		node.position.x = clamp(float(backend_pos[0]), -1000.0, 1000.0)
 		node.position.y = clamp(float(backend_pos[1]), -1000.0, 1000.0)
 		node.position.z = clamp(float(backend_pos[2]), -1000.0, 1000.0)
+		print("GODOT: Set position for ", node_id, " to ", node.position)
+		# Make nodes face the center like zone labels
+		if node is MeshInstance3D:
+			print("GODOT: Node position: ", node.position, ", target: (0,0,0)")
+			var dir = (Vector3(0, 0, 0) - node.position).normalized()
+			var up = Vector3.UP
+			var right = dir.cross(up).normalized()
+			up = right.cross(dir).normalized()
+			# For plane mesh, normal is +Y, so set basis.y = dir (normal towards center)
+			# basis.x = right, basis.z = up
+			node.transform.basis = Basis(right, dir, up)
+			print("GODOT: Set basis - right: ", right, ", dir (normal): ", dir, ", up: ", up)
+			print("GODOT: Final basis.z: ", node.transform.basis.z, ", basis.y: ", node.transform.basis.y)
 	if properties.has("scale"):
 		var scl = properties["scale"]
 		if scl is Array and scl.size() >= 3:
@@ -934,18 +951,7 @@ func create_node(node_id: String, node_type: String, properties: Dictionary):
 
 func update_node(node_id: String, properties: Dictionary):
 	var node = event_cubes.get(node_id, {}).get("node", null)
-	if node_id == "transcription_display":
-		# Special handling for transcription display
-		var transcription_node = get_node_or_null("transcription_display")
-		if transcription_node and properties.has("text"):
-			transcription_node.text = format_with_line_breaks(properties["text"], 80)
-			# Ensure readability
-			if not transcription_node.has_theme_override("font_size"):
-				transcription_node.add_theme_font_size_override("font_size", 64)
-			transcription_node.outline_size = 4
-			transcription_node.outline_modulate = Color.BLACK
 
-		return
 	if node:
 		if node is Label3D:
 			if properties.has("text"):
