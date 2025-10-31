@@ -113,6 +113,8 @@ func (db *DeltaBuilder) CreateTaskCard(nodeID string, title string, priority str
 		},
 	}
 	db.actions = append(db.actions, action)
+	// Use GLTF model if available, fallback to primitive
+	db.WithModel("res://models/task.glb")
 	return db
 }
 
@@ -143,6 +145,18 @@ func (db *DeltaBuilder) WithExtra(extra map[string]interface{}) *DeltaBuilder {
 		for k, v := range extra {
 			last.Properties[k] = v
 		}
+	}
+	return db
+}
+
+// WithModel sets the GLTF model path for the last added action
+func (db *DeltaBuilder) WithModel(modelPath string) *DeltaBuilder {
+	if len(db.actions) > 0 {
+		last := &db.actions[len(db.actions)-1]
+		if last.Properties == nil {
+			last.Properties = make(map[string]interface{})
+		}
+		last.Properties["model_path"] = modelPath
 	}
 	return db
 }
@@ -534,4 +548,19 @@ func (lm *LayoutManager) NextPosition() []float64 {
 		}
 	}
 	return pos
+}
+
+// UIComponent defines an interactive UI element sent from backend to front-end.
+type UIComponent interface {
+	Type() string
+	Properties() map[string]interface{}
+	Actions() map[string]Action
+	Serialize() map[string]interface{}
+}
+
+// Action represents an interaction that triggers a backend command.
+type Action struct {
+	Type    string                 `json:"type"`
+	Data    map[string]interface{} `json:"data"`
+	Trigger string                 `json:"trigger"`
 }

@@ -53,6 +53,11 @@ func (a *PluginGeneratorAggregate) EmitDelta(event eventsourcing.Event) *eventso
 	return nil
 }
 
+// Reset satisfies the ResettableAggregate interface; no state to clear yet.
+func (a *PluginGeneratorAggregate) Reset() {
+	// Intentionally left blank; aggregate maintains no in-memory state.
+}
+
 func (p *PluginGeneratorPlugin) Commands() map[string]eventsourcing.CommandHandler {
 	return p.aggregate.commands
 }

@@ -71,27 +71,38 @@ func (m *AggregateManager) ApplyEventToAllAggs(event eventsourcing.Event) error 
 
 		// Emit delta if needed
 		if envelope := agg.EmitDelta(event); envelope != nil {
-			envelope.SequenceID = eventsourcing.NextSequenceID()
-			logging.Debug("AGGREGATE: Sending delta envelope to channel: type=%s, aggregate=%s, sequence=%d, actions=%d", envelope.Type, envelope.Aggregate, envelope.SequenceID, len(envelope.Actions))
-			select {
-			case m.deltaChan <- *envelope:
-				logging.Debug("AGGREGATE: Delta envelope sent to channel successfully")
-			case <-time.After(10 * time.Second):
-				logging.Error("Timeout sending delta envelope for event %s", event.Type())
-				return nil // or return error?
-			}
-			// Wait for ACK
-			logging.Debug("AGGREGATE: Waiting for ack")
-			select {
-			case ackSeq := <-m.ackChan:
-				if ackSeq != envelope.SequenceID {
-					logging.Error("ACK sequence mismatch: expected %d, got %d", envelope.SequenceID, ackSeq)
-				}
-				logging.Debug("AGGREGATE: ack received for sequence %d", envelope.SequenceID)
-			case <-time.After(5 * time.Second):
-				logging.Error("ACK timeout for sequence %d", envelope.SequenceID)
+			if err := m.broadcastEnvelope(envelope); err != nil {
+				logging.Error("Failed to broadcast envelope for aggregate %s: %v", agg.ID(), err)
 			}
 		}
+	}
+	return nil
+}
+
+func (m *AggregateManager) broadcastEnvelope(envelope *eventsourcing.DeltaEnvelope) error {
+	if envelope == nil {
+		return nil
+	}
+	if envelope.SequenceID == 0 {
+		envelope.SequenceID = eventsourcing.NextSequenceID()
+	}
+	logging.Debug("AGGREGATE: Sending envelope: type=%s, aggregate=%s, sequence=%d, actions=%d", envelope.Type, envelope.Aggregate, envelope.SequenceID, len(envelope.Actions))
+	select {
+	case m.deltaChan <- *envelope:
+		logging.Debug("AGGREGATE: Envelope sent to channel successfully")
+	case <-time.After(10 * time.Second):
+		return fmt.Errorf("timeout sending envelope for aggregate %s", envelope.Aggregate)
+	}
+
+	logging.Debug("AGGREGATE: Waiting for ack")
+	select {
+	case ackSeq := <-m.ackChan:
+		if ackSeq != envelope.SequenceID {
+			logging.Error("ACK sequence mismatch: expected %d, got %d", envelope.SequenceID, ackSeq)
+		}
+		logging.Debug("AGGREGATE: ack received for sequence %d", envelope.SequenceID)
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("ack timeout for sequence %d", envelope.SequenceID)
 	}
 	return nil
 }
@@ -99,6 +110,28 @@ func (m *AggregateManager) ApplyEventToAllAggs(event eventsourcing.Event) error 
 // ApplyEvent routes the event to the appropriate plugin aggregate or handles core events.
 func (m *AggregateManager) RebuildState(events []eventsourcing.Event) error {
 	logging.Debug("Rebuilding state for %d events across %d aggregates", len(events), len(m.AllAggregates()))
+
+	for _, agg := range m.AllAggregates() {
+		if resettable, ok := agg.(eventsourcing.ResettableAggregate); ok {
+			logging.Debug("Resetting aggregate %s prior to replay", agg.ID())
+			resettable.Reset()
+		}
+	}
+
+	// Notify frontend to clear existing objects before replay
+	resetEnvelope := &eventsourcing.DeltaEnvelope{
+		Type:      "signal",
+		Aggregate: "system",
+		EventID:   eventsourcing.ISOTimestamp(),
+		Timestamp: eventsourcing.ISOTimestamp(),
+		StateSummary: map[string]interface{}{
+			"signal": "reset_scene",
+		},
+	}
+	if err := m.broadcastEnvelope(resetEnvelope); err != nil {
+		logging.Error("Failed to broadcast reset signal: %v", err)
+	}
+
 	for i, event := range events {
 		logging.Debug("Applied %d / %d events", i, len(events))
 		logging.Debug("Applying event %s", event.Type())

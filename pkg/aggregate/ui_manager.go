@@ -51,6 +51,16 @@ func (a *ThreeDUIManagerAggregate) ID() string {
 	return "ui_manager"
 }
 
+// Reset clears all tracked 3D objects so the aggregate can rebuild from a replay.
+func (a *ThreeDUIManagerAggregate) Reset() {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	a.Objects = make(map[string]*ThreeDObject)
+	if a.layoutMgr != nil {
+		a.layoutMgr.Counter = 0
+	}
+}
+
 // ApplyEvent applies 3D UI events to update state
 func (a *ThreeDUIManagerAggregate) ApplyEvent(event eventsourcing.Event) error {
 	a.Mu.Lock()
@@ -93,10 +103,7 @@ func (a *ThreeDUIManagerAggregate) ApplyEvent(event eventsourcing.Event) error {
 		}
 	case *eventsourcing.Delete3DObjectEvent:
 		delete(a.Objects, e.ObjectID)
-	case *eventsourcing.Position3DObjectEvent:
-		if obj, exists := a.Objects[e.ObjectID]; exists {
-			obj.Position = e.Position
-		}
+
 	default:
 		// Handle domain events to emit 3D UI events
 		a.handleDomainEvent(event)
@@ -193,18 +200,7 @@ func (a *ThreeDUIManagerAggregate) EmitDelta(event eventsourcing.Event) *eventso
 			Timestamp: eventsourcing.ISOTimestamp(),
 			Actions:   builder.Build(),
 		}
-	case *eventsourcing.Position3DObjectEvent:
-		builder := ui3d.NewDeltaBuilder(ui3d.DefaultTheme())
-		builder.Update(e.ObjectID, map[string]interface{}{
-			"position": e.Position,
-		})
-		return &eventsourcing.DeltaEnvelope{
-			Type:      "delta",
-			Aggregate: "ui_manager",
-			EventID:   eventsourcing.ISOTimestamp(),
-			Timestamp: eventsourcing.ISOTimestamp(),
-			Actions:   builder.Build(),
-		}
+
 	default:
 		// Handle domain events
 		data, err := json.Marshal(event)

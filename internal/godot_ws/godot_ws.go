@@ -15,16 +15,23 @@ import (
 	"mindpalace/pkg/ui3d"
 )
 
+type EventProcessorInterface interface {
+	RegisterCommand(name string, handler eventsourcing.CommandHandler)
+	ExecuteCommand(name string, data interface{}) error
+}
+
 type GodotServer struct {
-	upgrader  websocket.Upgrader
-	clients   map[*websocket.Conn]*ClientState
-	clientsMu sync.RWMutex
-	deltaChan chan eventsourcing.DeltaEnvelope
+	upgrader   websocket.Upgrader
+	clients    map[*websocket.Conn]*ClientState
+	clientsMu  sync.RWMutex
+	deltaChan  chan eventsourcing.DeltaEnvelope
+	sequenceMu sync.RWMutex
 
 	settingsVisible   bool
 	eventBus          eventsourcing.EventBus
 	aggStore          eventsourcing.AggregateStore
 	eventStore        eventsourcing.EventStore
+	eventProcessor    eventsourcing.EventProcessorInterface // Added for direct command execution
 	pendingKeypresses map[string]chan map[string]interface{}
 	pendingMu         sync.RWMutex
 	transcriber       *audio.VoiceTranscriber
@@ -32,40 +39,39 @@ type GodotServer struct {
 	ackChan    chan int
 	ackTimeout time.Duration
 
+	lastBroadcastSequence int
+
 	commandChan chan eventsourcing.CommandData
 	controlChan chan string
+}
+
+func (s *GodotServer) SetEventProcessor(ep eventsourcing.EventProcessorInterface) {
+	s.eventProcessor = ep
 }
 
 func (s *GodotServer) SetAckChan(ch chan int) {
 	s.ackChan = ch
 }
 
+func (s *GodotServer) getLastBroadcastSequence() int {
+	s.sequenceMu.RLock()
+	defer s.sequenceMu.RUnlock()
+	return s.lastBroadcastSequence
+}
+
+func (s *GodotServer) setLastBroadcastSequence(seq int) {
+	s.sequenceMu.Lock()
+	s.lastBroadcastSequence = seq
+	s.sequenceMu.Unlock()
+}
+
 type ClientState struct {
-	conn      *websocket.Conn
-	ready     bool
-	lastReady time.Time
-	writeMu   sync.Mutex
-}
-
-type TaskPositionUpdatedEvent struct {
-	EventType string  `json:"event_type"`
-	TaskID    string  `json:"task_id"`
-	PositionX float64 `json:"position_x"`
-	PositionY float64 `json:"position_y"`
-	PositionZ float64 `json:"position_z"`
-}
-
-func (e *TaskPositionUpdatedEvent) Type() string {
-	return "taskmanager_TaskPositionUpdated"
-}
-
-func (e *TaskPositionUpdatedEvent) Marshal() ([]byte, error) {
-	e.EventType = e.Type()
-	return json.Marshal(e)
-}
-
-func (e *TaskPositionUpdatedEvent) Unmarshal(data []byte) error {
-	return json.Unmarshal(data, e)
+	conn           *websocket.Conn
+	ready          bool
+	lastReady      time.Time
+	lastSequenceID int
+	synced         bool
+	writeMu        sync.Mutex
 }
 
 func NewGodotServer() *GodotServer {
@@ -132,8 +138,14 @@ func (s *GodotServer) SendTranscription(text string) {
 
 func (s *GodotServer) SendDelta(env eventsourcing.DeltaEnvelope) {
 	logging.Debug("BACKEND: Sending delta envelope: type=%s, aggregate=%s, sequence=%d, actions=%d", env.Type, env.Aggregate, env.SequenceID, len(env.Actions))
-	s.clientsMu.RLock()
+	if env.SequenceID > 0 {
+		s.setLastBroadcastSequence(env.SequenceID)
+	}
+	s.clientsMu.Lock()
 	for _, client := range s.clients {
+		if env.SequenceID > 0 && client.lastSequenceID < env.SequenceID {
+			client.synced = false
+		}
 		client.writeMu.Lock()
 		logging.Debug("BACKEND: Writing delta to client")
 		if err := client.conn.WriteJSON(env); err != nil {
@@ -143,7 +155,7 @@ func (s *GodotServer) SendDelta(env eventsourcing.DeltaEnvelope) {
 		}
 		client.writeMu.Unlock()
 	}
-	s.clientsMu.RUnlock()
+	s.clientsMu.Unlock()
 }
 
 func (s *GodotServer) SendKeypresses(keyString string) {
@@ -187,6 +199,8 @@ func (s *GodotServer) handleTextMessage(conn *websocket.Conn, message []byte) {
 		s.handleStateUpdate(msg)
 	case "request":
 		s.handleRequestMessage(msg)
+	case "ui_action":
+		s.handleUIAction(msg)
 	case "keypress_ack":
 		s.handleKeypressAck(msg)
 	case "toggle_mic":
@@ -194,7 +208,7 @@ func (s *GodotServer) handleTextMessage(conn *websocket.Conn, message []byte) {
 	case "debug_info":
 		s.handleDebugInfo(msg)
 	case "delta_ack":
-		s.handleDeltaAck(msg)
+		s.handleDeltaAck(conn, msg)
 
 	default:
 		logging.Info("Unknown message type from Godot: %s", msgType)
@@ -282,16 +296,54 @@ func (s *GodotServer) handleToggleMic(msg map[string]interface{}) {
 	}
 }
 
+func (s *GodotServer) handleUIAction(msg map[string]interface{}) {
+	logging.Debug("Handling UI action from Godot: %v", msg)
+	actionData, ok := msg["action"].(map[string]interface{})
+	if !ok {
+		logging.Error("Invalid ui_action: missing action data")
+		return
+	}
+
+	cmd, ok1 := actionData["command"].(string)
+	data, ok2 := actionData["data"].(map[string]interface{})
+	if !ok1 || !ok2 {
+		logging.Error("Invalid ui_action: missing command or data")
+		return
+	}
+
+	if s.eventProcessor == nil {
+		logging.Error("EventProcessor not set")
+		return
+	}
+
+	err := s.eventProcessor.ExecuteCommand(cmd, data)
+	if err != nil {
+		logging.Error("Failed to execute command '%s': %v", cmd, err)
+	} else {
+		logging.Info("Successfully executed UI action for command '%s'", cmd)
+	}
+}
+
 func (s *GodotServer) handleDebugInfo(msg map[string]interface{}) {
 	logging.Debug("Handling debug info from Godot: %v", msg)
 	// For now, just log it. Could store in a field for the debug endpoint if needed.
 }
 
-func (s *GodotServer) handleDeltaAck(msg map[string]interface{}) {
+func (s *GodotServer) handleDeltaAck(conn *websocket.Conn, msg map[string]interface{}) {
 	seqID, ok := msg["sequence_id"].(float64)
 	if !ok {
 		logging.Error("Invalid sequence_id in delta_ack")
 		return
+	}
+	if conn != nil {
+		s.clientsMu.Lock()
+		if client, exists := s.clients[conn]; exists {
+			if client.lastSequenceID < int(seqID) {
+				client.lastSequenceID = int(seqID)
+			}
+			client.synced = true
+		}
+		s.clientsMu.Unlock()
 	}
 	select {
 	case s.ackChan <- int(seqID):
@@ -303,10 +355,38 @@ func (s *GodotServer) handleDeltaAck(msg map[string]interface{}) {
 func (s *GodotServer) handleReadyMessage(conn *websocket.Conn, msg map[string]interface{}) {
 	logging.Info("BACKEND: Received ready signal from Godot client")
 
+	var clientSeq int
+	if info, ok := msg["client_info"].(map[string]interface{}); ok {
+		if seqVal, ok := info["last_sequence_id"].(float64); ok {
+			clientSeq = int(seqVal)
+		}
+	}
+	currentSeq := s.getLastBroadcastSequence()
+
+	var needsRebuild bool
 	s.clientsMu.Lock()
 	if client, exists := s.clients[conn]; exists {
 		client.ready = true
 		client.lastReady = time.Now()
+		if client.lastSequenceID < clientSeq {
+			client.lastSequenceID = clientSeq
+		}
+
+		switch {
+		case currentSeq == 0 && !client.synced:
+			needsRebuild = true
+		case clientSeq == 0 && currentSeq > 0:
+			needsRebuild = true
+			client.synced = false
+		case clientSeq < currentSeq:
+			needsRebuild = true
+			client.synced = false
+		case clientSeq == currentSeq && currentSeq != 0:
+			client.synced = true
+			needsRebuild = false
+		default:
+			needsRebuild = !client.synced
+		}
 	}
 	s.clientsMu.Unlock()
 
@@ -329,12 +409,15 @@ func (s *GodotServer) handleReadyMessage(conn *websocket.Conn, msg map[string]in
 	}
 
 	// Trigger rebuild after ready
-	if s.controlChan != nil {
+	if s.controlChan != nil && needsRebuild {
+		logging.Info("Triggering state rebuild for client (client_seq=%d, current_seq=%d)", clientSeq, currentSeq)
 		select {
 		case s.controlChan <- "rebuild_state":
 		default:
 			logging.Info("Control channel full, skipping rebuild trigger")
 		}
+	} else if !needsRebuild {
+		logging.Info("Client already in sync (client_seq=%d, current_seq=%d); skipping rebuild", clientSeq, currentSeq)
 	}
 }
 
@@ -350,6 +433,9 @@ func (s *GodotServer) broadcast(env eventsourcing.DeltaEnvelope) {
 			logging.Error("Error broadcasting to Godot client: %v", err)
 			// Optionally remove the client if error
 		}
+	}
+	if env.SequenceID > 0 {
+		s.setLastBroadcastSequence(env.SequenceID)
 	}
 }
 
@@ -375,8 +461,10 @@ func (s *GodotServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	s.clientsMu.Lock()
 	s.clients[conn] = &ClientState{
-		conn:  conn,
-		ready: false,
+		conn:           conn,
+		ready:          false,
+		lastSequenceID: 0,
+		synced:         false,
 	}
 	s.clientsMu.Unlock()
 	logging.Info("Godot client connected")

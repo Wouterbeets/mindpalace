@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"text/template"
 	"time"
 
@@ -136,41 +137,57 @@ func (ro *RequestOrchestrator) DecideAgentCallCommand(event *UserRequestReceived
 			},
 		}
 	}
-	resp, err := ro.llmClient.ChatCompletion(context.Background(), messages, tools, false)
+	ctx := context.WithValue(context.Background(), "request_id", event.RequestID)
+	resp, err := ro.llmClient.ChatCompletion(ctx, messages, tools, false)
 	if err != nil {
 		return nil, fmt.Errorf("LLM call failed: %v", err)
 	}
 
+	choice := resp.Choices[0]
 	var events []eventsourcing.Event
-	if len(resp.Choices[0].ToolCalls) > 0 {
-		for _, call := range resp.Choices[0].ToolCalls {
-			plug, err := ro.pluginManager.GetPlugin(call.Function.Name)
-			if err != nil {
-				return nil, fmt.Errorf("requested plugin does not exist: %w", err)
-			}
-			var args map[string]interface{}
-			json.Unmarshal(call.Function.Arguments, &args)
-			queryBytes, _ := json.Marshal(args)
-			query := string(queryBytes)
-			agentCallEvent := &AgentCallDecidedEvent{
-				RequestID: event.RequestID,
-				AgentName: plug.Name(),
-				Timestamp: eventsourcing.ISOTimestamp(),
-				Model:     plug.AgentModel(),
-				Query:     query,
-			}
-			fmt.Println(agentCallEvent)
-			events = append(events, agentCallEvent)
-		}
-		fmt.Println("In DecideAgentCallCommand", len(events), "were generated")
+
+	if len(choice.ToolCalls) == 0 {
+		now := eventsourcing.ISOTimestamp()
+		events = append(events, &AgentCallDecidedEvent{
+			RequestID:    event.RequestID,
+			AgentName:    "",
+			CallAgent:    false,
+			Timestamp:    now,
+			ResponseText: choice.Message.Content,
+			RawResponse:  choice.Message.Content,
+		})
+		events = append(events, &RequestCompletedEvent{
+			RequestID:    event.RequestID,
+			ResponseText: choice.Message.Content,
+			CompletedAt:  now,
+		})
 		return events, nil
 	}
 
-	events = append(events, &RequestCompletedEvent{
-		RequestID:    event.RequestID,
-		ResponseText: resp.Choices[0].Message.Content,
-		CompletedAt:  eventsourcing.ISOTimestamp(),
-	})
+	for _, call := range choice.ToolCalls {
+		plug, err := ro.pluginManager.GetPlugin(call.Function.Name)
+		if err != nil {
+			return nil, fmt.Errorf("requested plugin does not exist: %w", err)
+		}
+		var args map[string]interface{}
+		if err := json.Unmarshal(call.Function.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal arguments for plugin %s: %w", plug.Name(), err)
+		}
+		queryBytes, _ := json.Marshal(args)
+		query := string(queryBytes)
+		agentCallEvent := &AgentCallDecidedEvent{
+			RequestID:   event.RequestID,
+			AgentName:   plug.Name(),
+			CallAgent:   true,
+			Timestamp:   eventsourcing.ISOTimestamp(),
+			Model:       plug.AgentModel(),
+			Query:       query,
+			RawResponse: choice.Message.Content,
+		}
+		logging.Debug("agent call event: %v", agentCallEvent)
+		events = append(events, agentCallEvent)
+	}
+	logging.Info("DecideAgentCallCommand generated %d events", len(events))
 	return events, nil
 }
 
@@ -285,6 +302,10 @@ func (ro *RequestOrchestrator) initializeCommandsAndSubscriptions() {
 			eventType: "orchestration_AgentCallDecided",
 			handler: func(event eventsourcing.Event) error {
 				if e, ok := event.(*AgentCallDecidedEvent); ok {
+					if !e.CallAgent {
+						logging.Debug("Agent decision for request %s resolved without downstream agent call", e.RequestID)
+						return nil
+					}
 					return ro.eventProcessor.ExecuteCommand("ExecuteAgentCall", e)
 				}
 				return nil
@@ -370,6 +391,7 @@ func (ro *RequestOrchestrator) ExecuteToolCallCommand(event *ToolCallRequestPlac
 		RequestID:  event.RequestID,
 		ToolCallID: event.ToolCallID,
 		Function:   event.Function,
+		AgentName:  event.AgentName,
 		Timestamp:  eventsourcing.ISOTimestamp(),
 	})
 
@@ -383,6 +405,7 @@ func (ro *RequestOrchestrator) ExecuteToolCallCommand(event *ToolCallRequestPlac
 			RequestID:  event.RequestID,
 			ToolCallID: event.ToolCallID,
 			Function:   event.Function,
+			AgentName:  event.AgentName,
 			ErrorMsg:   errorMsg,
 			Timestamp:  eventsourcing.ISOTimestamp(),
 		})
@@ -400,6 +423,7 @@ func (ro *RequestOrchestrator) ExecuteToolCallCommand(event *ToolCallRequestPlac
 			RequestID:  event.RequestID,
 			ToolCallID: event.ToolCallID,
 			Function:   event.Function,
+			AgentName:  event.AgentName,
 			ErrorMsg:   errorMsg,
 			Timestamp:  eventsourcing.ISOTimestamp(),
 		})
@@ -419,6 +443,7 @@ func (ro *RequestOrchestrator) ExecuteToolCallCommand(event *ToolCallRequestPlac
 			RequestID:  event.RequestID,
 			ToolCallID: event.ToolCallID,
 			Function:   event.Function,
+			AgentName:  event.AgentName,
 			ErrorMsg:   errorMsg,
 			Timestamp:  eventsourcing.ISOTimestamp(),
 		})
@@ -470,7 +495,7 @@ func (ro *RequestOrchestrator) ExecuteToolCallCommand(event *ToolCallRequestPlac
 		return events, nil
 	}
 	for _, toolEvent := range toolEvents {
-		fmt.Println("tool call returned event:", toolEvent)
+		logging.Debug("tool call returned event: %v", toolEvent)
 	}
 	// Step 6: Append results and complete the tool call
 	events = append(events, toolEvents...)
@@ -478,10 +503,11 @@ func (ro *RequestOrchestrator) ExecuteToolCallCommand(event *ToolCallRequestPlac
 		RequestID:  event.RequestID,
 		ToolCallID: event.ToolCallID,
 		Function:   event.Function,
+		AgentName:  event.AgentName,
 		Results:    map[string]interface{}{"success": true, "result": toolEvents},
 		Timestamp:  eventsourcing.ISOTimestamp(),
 	})
-	fmt.Println("added tool call completed event")
+	logging.Info("added tool call completed event")
 
 	return events, nil
 }
@@ -503,6 +529,11 @@ func (ro *RequestOrchestrator) gatherPluginTools(plugin eventsourcing.Plugin) []
 }
 
 func (ro *RequestOrchestrator) ExecuteAgentCall(event *AgentCallDecidedEvent) ([]eventsourcing.Event, error) {
+	if !event.CallAgent {
+		logging.Debug("ExecuteAgentCall skipped for request %s: decision resolved without agent", event.RequestID)
+		return nil, nil
+	}
+
 	var events []eventsourcing.Event
 	plugin, err := ro.pluginManager.GetPlugin(event.AgentName)
 	if err != nil {
@@ -530,18 +561,38 @@ func (ro *RequestOrchestrator) ExecuteAgentCall(event *AgentCallDecidedEvent) ([
 		}}, nil
 	}
 
-	for i, toolCall := range resp.Choices[0].ToolCalls {
+	responseText := resp.Choices[0].Message.Content
+	stage := "pre_tool"
+	if len(resp.Choices[0].ToolCalls) == 0 {
+		stage = "final"
+	}
+	if strings.TrimSpace(responseText) != "" {
+		events = append(events, &AgentResponseEvent{
+			RequestID:    event.RequestID,
+			AgentName:    event.AgentName,
+			ResponseText: responseText,
+			RawResponse:  responseText,
+			Stage:        stage,
+			Timestamp:    eventsourcing.ISOTimestamp(),
+		})
+	}
+
+	toolCalls := resp.Choices[0].ToolCalls
+	for i, toolCall := range toolCalls {
 		var args map[string]interface{}
-		json.Unmarshal(toolCall.Function.Arguments, &args)
+		if err := json.Unmarshal(toolCall.Function.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("failed to decode tool call arguments for %s: %w", toolCall.Function.Name, err)
+		}
 		events = append(events, &ToolCallRequestPlaced{
 			RequestID:  event.RequestID,
 			Function:   toolCall.Function.Name,
 			Arguments:  args,
 			Timestamp:  eventsourcing.ISOTimestamp(),
-			ToolCallID: fmt.Sprintf("toolrequest-%d", i),
+			ToolCallID: fmt.Sprintf("%s-toolcall-%d", event.RequestID, i),
+			AgentName:  event.AgentName,
 		})
 	}
-	if len(events) == 0 {
+	if len(toolCalls) == 0 {
 		events = append(events, &RequestCompletedEvent{
 			EventType:    "orchestration_RequestCompleted",
 			RequestID:    event.RequestID,
@@ -586,7 +637,8 @@ func (ro *RequestOrchestrator) CallPluginAgent(plugin eventsourcing.Plugin, requ
 			},
 		}
 	}
-	return ro.llmClient.ChatCompletion(context.Background(), messages, tools, false)
+	ctx := context.WithValue(context.Background(), "request_id", requestID)
+	return ro.llmClient.ChatCompletion(ctx, messages, tools, false)
 }
 
 // CompleteRequestCommand checks if all tool calls are done and finalizes the request
@@ -601,7 +653,11 @@ func (ro *RequestOrchestrator) CompleteRequestCommand(event *ToolCallCompleted) 
 
 	// Use tag-based context selection for better relevance
 	relevantTags := []string{"task", "completion", "response"} // Basic tags for completion context
-	llmMessages := ro.agg.chatState.GetChatManager().GetLLMContextWithTags(nil, relevantTags)
+	var activeAgents []string
+	if agentState, exists := ro.agg.AgentStates[requestID]; exists && agentState.AgentName != "" {
+		activeAgents = append(activeAgents, agentState.AgentName)
+	}
+	llmMessages := ro.agg.chatState.GetChatManager().GetLLMContextWithTags(activeAgents, relevantTags)
 	messages := make([]llmprocessor.Message, len(llmMessages))
 	for i, m := range llmMessages {
 		messages[i] = llmprocessor.Message{

@@ -126,7 +126,7 @@ doc:
 .PHONY: lint
 lint:
 	@echo "Running linter..."
-	golangci-lint run ./...
+	CGO_ENABLED=1 PKG_CONFIG_PATH=$(shell pwd)/whisper-cpp/build/lib/pkgconfig:$(PKG_CONFIG_PATH) CGO_LDFLAGS="-Wl,-rpath,$(shell pwd)/whisper-cpp/build/lib" golangci-lint run ./...
 
 # Build everything and create a release package
 .PHONY: release

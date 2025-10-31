@@ -67,23 +67,3 @@ func (e *Delete3DObjectEvent) Marshal() ([]byte, error) {
 func (e *Delete3DObjectEvent) Unmarshal(data []byte) error {
 	return json.Unmarshal(data, e)
 }
-
-// Position3DObjectEvent represents a position update for a 3D object (e.g., from dragging)
-type Position3DObjectEvent struct {
-	EventType string    `json:"event_type"`
-	ObjectID  string    `json:"object_id"`
-	Position  []float64 `json:"position"`
-}
-
-func (e *Position3DObjectEvent) Type() string {
-	return "ui_Position3DObject"
-}
-
-func (e *Position3DObjectEvent) Marshal() ([]byte, error) {
-	e.EventType = e.Type()
-	return json.Marshal(e)
-}
-
-func (e *Position3DObjectEvent) Unmarshal(data []byte) error {
-	return json.Unmarshal(data, e)
-}

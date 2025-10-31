@@ -9,6 +9,8 @@ import (
 	"mindpalace/pkg/llmmodels"
 	"mindpalace/pkg/logging"
 	"net/http"
+	"os"
+	"time"
 )
 
 const (
@@ -17,7 +19,9 @@ const (
 	defaultShimmyPort = 11435
 )
 
-type OllamaClient struct{}
+type OllamaClient struct {
+	client *http.Client
+}
 
 func (c *OllamaClient) ChatCompletion(ctx context.Context, messages []Message, tools []Tool, stream bool) (*ChatResponse, error) {
 	logging.Trace("in chat completion, len messages: %d", len(messages))
@@ -77,7 +81,13 @@ func (c *OllamaClient) ChatCompletion(ctx context.Context, messages []Message, t
 	}
 	logging.Info("Ollama Request JSON: %s", string(reqBody))
 
-	resp, err := http.Post(ollamaAPIEndpoint, "application/json", bytes.NewBuffer(reqBody))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", ollamaAPIEndpoint, bytes.NewBuffer(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call Ollama API: %w", err)
 	}
@@ -132,10 +142,15 @@ func (c *OllamaClient) Close() error {
 type ShimmyClient struct {
 	baseURL string
 	apiKey  string
+	client  *http.Client
 }
 
 func NewShimmyClient(baseURL, apiKey string) *ShimmyClient {
-	return &ShimmyClient{baseURL: baseURL, apiKey: apiKey}
+	return &ShimmyClient{
+		baseURL: baseURL,
+		apiKey:  apiKey,
+		client:  &http.Client{Timeout: 30 * time.Second},
+	}
 }
 
 func (c *ShimmyClient) ChatCompletion(ctx context.Context, messages []Message, tools []Tool, stream bool) (*ChatResponse, error) {
@@ -161,7 +176,7 @@ func (c *ShimmyClient) ChatCompletion(ctx context.Context, messages []Message, t
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call Shimmy API: %w", err)
 	}
@@ -218,13 +233,16 @@ func NewLLMClient(inference, model string, shimmyPort int) LLMClient {
 	switch inference {
 	case "shimmy":
 		baseURL := fmt.Sprintf("http://127.0.0.1:%d/v1", shimmyPort)
-		apiKey := "sk-local"
+		apiKey := os.Getenv("SHIMMY_API_KEY")
+		if apiKey == "" {
+			apiKey = "sk-local"
+		}
 		client := NewShimmyClient(baseURL, apiKey)
 		// Note: model is not used in ShimmyClient yet, hardcoded
 		return client
 	case "ollama":
 		fallthrough
 	default:
-		return &OllamaClient{}
+		return &OllamaClient{client: &http.Client{Timeout: 30 * time.Second}}
 	}
 }

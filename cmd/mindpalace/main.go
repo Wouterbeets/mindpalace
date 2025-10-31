@@ -168,6 +168,7 @@ func main() {
 	server.SetCommandChan(commandChan)
 	server.SetControlChan(controlChan)
 	server.SetAckChan(ackChan)
+	server.SetEventProcessor(ep)
 
 	// Start the voice transcriber (for processing, without auto-capture)
 	err = transcriber.Start(func(text string) {

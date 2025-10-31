@@ -1,30 +1,40 @@
 package orchestration
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
+	"mindpalace/internal/llmprocessor"
 	"mindpalace/pkg/eventsourcing"
-	"mindpalace/pkg/llmmodels"
 )
 
 // Mock implementations for testing
 
 type mockLLMClient struct {
-	responses map[string]*llmmodels.OllamaResponse
+	responses map[string]*llmprocessor.ChatResponse
 }
 
-func (m *mockLLMClient) CallLLM(messages []llmmodels.Message, tools []llmmodels.Tool, requestID, model string) (*llmmodels.OllamaResponse, error) {
-	if resp, ok := m.responses[requestID]; ok {
+func (m *mockLLMClient) ChatCompletion(ctx context.Context, messages []llmprocessor.Message, tools []llmprocessor.Tool, stream bool) (*llmprocessor.ChatResponse, error) {
+	if resp, ok := m.responses[ctx.Value("request_id").(string)]; ok {
 		return resp, nil
 	}
 	// Default response
-	return &llmmodels.OllamaResponse{
-		Message: llmmodels.OllamaMessage{
-			Content: "Mock response",
+	return &llmprocessor.ChatResponse{
+		Choices: []llmprocessor.Choice{
+			{
+				Message: llmprocessor.Message{
+					Role:    "assistant",
+					Content: "Mock response",
+				},
+			},
 		},
-		Done: true,
 	}, nil
+}
+
+func (m *mockLLMClient) Close() error {
+	return nil
 }
 
 type mockPluginManager struct {
@@ -209,6 +219,7 @@ func TestApplyEvent_ToolCallRequestPlaced(t *testing.T) {
 		RequestID:  "req1",
 		ToolCallID: "tool1",
 		Function:   "testFunc",
+		AgentName:  "testAgent",
 		Arguments:  map[string]interface{}{"arg": "value"},
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
@@ -243,6 +254,7 @@ func TestApplyEvent_ToolCallCompleted(t *testing.T) {
 		ToolCallID:  "tool1",
 		Function:    "testFunc",
 		Status:      "started",
+		AgentName:   "testAgent",
 		LastUpdated: "2023-01-01T00:00:00Z",
 	}
 	agg.AgentStates["req1"] = &AgentState{
@@ -254,6 +266,7 @@ func TestApplyEvent_ToolCallCompleted(t *testing.T) {
 		RequestID:  "req1",
 		ToolCallID: "tool1",
 		Function:   "testFunc",
+		AgentName:  "testAgent",
 		Results:    map[string]interface{}{"result": "success"},
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
@@ -286,6 +299,7 @@ func TestApplyEvent_AgentCallDecided(t *testing.T) {
 		RequestID: "req1",
 		AgentName: "testAgent",
 		Model:     "gpt-4",
+		CallAgent: true,
 		Timestamp: "2023-01-01T00:00:00Z",
 	}
 	err := agg.ApplyEvent(event)
@@ -356,6 +370,7 @@ func TestBroadcast3DDelta(t *testing.T) {
 		RequestID:  "req1",
 		ToolCallID: "tool1",
 		Function:   "test",
+		AgentName:  "testAgent",
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
 	envelope := agg.EmitDelta(event)
@@ -458,14 +473,21 @@ func TestOrchestrationFlow_UserRequestToCompletion(t *testing.T) {
 func TestOrchestrationFlow_WithToolCalls(t *testing.T) {
 	// Integration test with tool calls
 	llmClient := &mockLLMClient{
-		responses: map[string]*llmmodels.OllamaResponse{
-			"req1": {
-				Message: llmmodels.OllamaMessage{
-					ToolCalls: []llmmodels.OllamaToolCall{
-						{
-							Function: llmmodels.OllamaFunction{
-								Name:      "testPlugin",
-								Arguments: map[string]interface{}{"query": "test"},
+		responses: map[string]*llmprocessor.ChatResponse{
+			"req1": &llmprocessor.ChatResponse{
+				Choices: []llmprocessor.Choice{
+					{
+						Message: llmprocessor.Message{
+							Role: "assistant",
+						},
+						ToolCalls: []llmprocessor.ToolCall{
+							{
+								ID:   "call1",
+								Type: "function",
+								Function: llmprocessor.FunctionCall{
+									Name:      "testPlugin",
+									Arguments: json.RawMessage(`{"query": "test"}`),
+								},
 							},
 						},
 					},
@@ -525,10 +547,15 @@ func TestOrchestrationFlow_WithToolCalls(t *testing.T) {
 	// Execute agent call (normally triggered by event)
 	// Mock the CallPluginAgent to return no tool calls
 	ro.llmClient = &mockLLMClient{
-		responses: map[string]*llmmodels.OllamaResponse{
-			"req1": {
-				Message: llmmodels.OllamaMessage{
-					Content: "Plugin response",
+		responses: map[string]*llmprocessor.ChatResponse{
+			"req1": &llmprocessor.ChatResponse{
+				Choices: []llmprocessor.Choice{
+					{
+						Message: llmprocessor.Message{
+							Role:    "assistant",
+							Content: "Plugin response",
+						},
+					},
 				},
 			},
 		},
@@ -537,15 +564,19 @@ func TestOrchestrationFlow_WithToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecuteAgentCall failed: %v", err)
 	}
-	if len(executeEvents) != 1 {
-		t.Fatalf("Expected 1 event, got %d", len(executeEvents))
+	if len(executeEvents) != 2 {
+		t.Fatalf("Expected 2 events, got %d", len(executeEvents))
 	}
-	if _, ok := executeEvents[0].(*RequestCompletedEvent); !ok {
-		t.Errorf("Expected RequestCompletedEvent, got %v", executeEvents[0])
+	if _, ok := executeEvents[0].(*AgentResponseEvent); !ok {
+		t.Errorf("Expected AgentResponseEvent, got %T", executeEvents[0])
+	}
+	if _, ok := executeEvents[1].(*RequestCompletedEvent); !ok {
+		t.Errorf("Expected RequestCompletedEvent, got %T", executeEvents[1])
 	}
 
-	// Apply completion
+	// Apply agent response and completion
 	agg.ApplyEvent(executeEvents[0])
+	agg.ApplyEvent(executeEvents[1])
 
 	// Check state
 	if agg.AgentStates["req1"].Status != "completed" {
@@ -712,6 +743,7 @@ func TestApplyEvent_ToolCallFailed(t *testing.T) {
 		ToolCallID:  "tool1",
 		Function:    "testFunc",
 		Status:      "started",
+		AgentName:   "testAgent",
 		LastUpdated: "2023-01-01T00:00:00Z",
 	}
 	agg.AgentStates["req1"] = &AgentState{
@@ -724,6 +756,7 @@ func TestApplyEvent_ToolCallFailed(t *testing.T) {
 		RequestID:  "req1",
 		ToolCallID: "tool1",
 		Function:   "testFunc",
+		AgentName:  "testAgent",
 		ErrorMsg:   "error",
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
@@ -797,6 +830,7 @@ func TestBroadcast3DDelta_AgentCallDecided(t *testing.T) {
 	event := &AgentCallDecidedEvent{
 		RequestID: "req1",
 		AgentName: "test",
+		CallAgent: true,
 		Timestamp: "2023-01-01T00:00:00Z",
 	}
 	envelope := agg.EmitDelta(event)
@@ -813,6 +847,7 @@ func TestBroadcast3DDelta_ToolCallRequestPlaced(t *testing.T) {
 		RequestID:  "req1",
 		ToolCallID: "tool1",
 		Function:   "test",
+		AgentName:  "test",
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
 	envelope := agg.EmitDelta(event)
@@ -829,6 +864,7 @@ func TestBroadcast3DDelta_ToolCallStarted(t *testing.T) {
 		RequestID:  "req1",
 		ToolCallID: "tool1",
 		Function:   "test",
+		AgentName:  "test",
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
 	envelope := agg.EmitDelta(event)
@@ -848,6 +884,7 @@ func TestBroadcast3DDelta_ToolCallCompleted(t *testing.T) {
 		RequestID:  "req1",
 		ToolCallID: "tool1",
 		Function:   "test",
+		AgentName:  "test",
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
 	envelope := agg.EmitDelta(event)
@@ -864,6 +901,7 @@ func TestBroadcast3DDelta_ToolCallFailedEvent(t *testing.T) {
 		RequestID:  "req1",
 		ToolCallID: "tool1",
 		Function:   "test",
+		AgentName:  "test",
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
 	envelope := agg.EmitDelta(event)
@@ -953,11 +991,14 @@ func TestDecideAgentCallCommand_NoAgents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("Expected 1 event, got %d", len(events))
+	if len(events) != 2 {
+		t.Fatalf("Expected 2 events, got %d", len(events))
 	}
-	if _, ok := events[0].(*RequestCompletedEvent); !ok {
-		t.Errorf("Expected RequestCompletedEvent, got %T", events[0])
+	if decision, ok := events[0].(*AgentCallDecidedEvent); !ok || decision.CallAgent {
+		t.Errorf("Expected AgentCallDecidedEvent with CallAgent false, got %#v", events[0])
+	}
+	if _, ok := events[1].(*RequestCompletedEvent); !ok {
+		t.Errorf("Expected RequestCompletedEvent, got %T", events[1])
 	}
 }
 
@@ -978,6 +1019,7 @@ func TestExecuteToolCallCommand_NoPlugin(t *testing.T) {
 		RequestID:  "req1",
 		ToolCallID: "tool1",
 		Function:   "nonexistent",
+		AgentName:  "testAgent",
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
 	events, err := ro.ExecuteToolCallCommand(event)
@@ -1010,6 +1052,7 @@ func TestCompleteRequestCommand_Pending(t *testing.T) {
 		RequestID:  "req1",
 		ToolCallID: "tool1",
 		Function:   "test",
+		AgentName:  "testAgent",
 		Timestamp:  "2023-01-01T00:00:00Z",
 	}
 	events, err := ro.CompleteRequestCommand(event)

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -59,6 +60,13 @@ func NewTaskAggregate() *TaskAggregate {
 // ID returns the aggregate's identifier
 func (a *TaskAggregate) ID() string {
 	return "taskmanager"
+}
+
+// Reset clears in-memory task state while preserving registered command handlers.
+func (a *TaskAggregate) Reset() {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	a.Tasks = make(map[string]*Task)
 }
 
 // ApplyEvent updates the aggregate state based on task-related events
@@ -136,11 +144,6 @@ func (a *TaskAggregate) ApplyEvent(event eventsourcing.Event) error {
 		}
 		delete(a.Tasks, e.TaskID)
 
-	case "taskmanager_TaskPositionUpdated":
-		var e TaskPositionUpdatedEvent
-		if err := json.Unmarshal(data, &e); err != nil {
-			return fmt.Errorf("failed to unmarshal TaskPositionUpdated: %v", err)
-		}
 		// Position updates don't change task state, just acknowledge
 
 	default:
@@ -182,7 +185,7 @@ func NewPlugin() eventsourcing.Plugin {
 	eventsourcing.RegisterEvent("taskmanager_TaskCompleted", func() eventsourcing.Event { return &TaskCompletedEvent{} })
 	eventsourcing.RegisterEvent("taskmanager_TasksListed", func() eventsourcing.Event { return &TasksListedEvent{} })
 	eventsourcing.RegisterEvent("taskmanager_TaskDeleted", func() eventsourcing.Event { return &TaskDeletedEvent{} })
-	eventsourcing.RegisterEvent("taskmanager_TaskPositionUpdated", func() eventsourcing.Event { return &TaskPositionUpdatedEvent{} })
+
 	return p
 }
 
@@ -500,19 +503,6 @@ func (e *TaskDeletedEvent) Marshal() ([]byte, error) {
 }
 func (e *TaskDeletedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
 
-type TaskPositionUpdatedEvent struct {
-	EventType string    `json:"event_type"`
-	TaskID    string    `json:"task_id"`
-	Position  []float64 `json:"position"`
-}
-
-func (e *TaskPositionUpdatedEvent) Type() string { return "taskmanager_TaskPositionUpdated" }
-func (e *TaskPositionUpdatedEvent) Marshal() ([]byte, error) {
-	e.EventType = e.Type()
-	return json.Marshal(e)
-}
-func (e *TaskPositionUpdatedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
-
 // Utility functions
 func generateTaskID() string {
 	return fmt.Sprintf("task_%d", time.Now().UnixNano())
@@ -720,10 +710,24 @@ func (p *TaskPlugin) listTasksHandler(input *ListTasksInput) ([]eventsourcing.Ev
 	return []eventsourcing.Event{event}, nil
 }
 
+var statusOffset = map[string]float64{
+	StatusPending:    0,
+	StatusInProgress: 10,
+	StatusCompleted:  20,
+	StatusBlocked:    30,
+}
+
 func (a *TaskAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.DeltaEnvelope {
 	a.Mu.RLock()
 	defer a.Mu.RUnlock()
 	theme := ui3d.DefaultTheme()
+	zones := ui3d.GetGlobalZones()
+	zone, ok := zones[a.ID()]
+	if !ok {
+		zone = ui3d.Zone{Angle: 0, Radius: 0, GridRows: 1, GridCols: 1, GridDepth: 1} // Fallback
+	}
+	basePos := []float64{zone.Radius * math.Cos(zone.Angle*math.Pi/180), 0, zone.Radius * math.Sin(zone.Angle*math.Pi/180)} // Zone center approx
+
 	switch e := event.(type) {
 	case *TaskCreatedEvent:
 		// Find the index of this task in the sorted list
@@ -735,21 +739,19 @@ func (a *TaskAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.Delt
 			}
 			i++
 		}
-		// Get zone for positioning
-		zones := ui3d.GetGlobalZones()
-		zone := zones[a.ID()]
 		// Map to grid: 1x3x10, so relX = i % 3, relZ = i / 3 + 1, relY = 0 (start from radius 1 to avoid center)
 		relX := i % zone.GridCols
 		relZ := i/zone.GridCols + 1
 		relY := 0
 		pos := zone.ToPosition(relX, relY, relZ)
+		offset, _ := statusOffset[e.Status]
+		pos[0] += offset // Apply status offset
 		builder := ui3d.NewDeltaBuilder(theme)
 		labelPos := []float64{pos[0], pos[1] + 1.5, pos[2]} // Adjust for card height
 		builder.CreateTaskCard(e.TaskID, e.Title, string(e.Priority), pos)
 		builder.CreateLabel(e.TaskID+"_label", e.Title, labelPos).WithExtra(map[string]interface{}{
 			"event_type": "task_created",
 		})
-		// Zone visualization handled by Godot
 		actions := builder.Build()
 		if len(actions) > 0 {
 			actions[0].Metadata = map[string]interface{}{
@@ -757,9 +759,45 @@ func (a *TaskAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.Delt
 				"status": e.Status,
 			}
 		}
-		return &eventsourcing.DeltaEnvelope{Type: "delta", Aggregate: "taskmanager", EventID: eventsourcing.ISOTimestamp(), Timestamp: eventsourcing.ISOTimestamp(), Actions: actions}
+		component := &TaskCardComponent{
+			TaskID:   e.TaskID,
+			Title:    e.Title,
+			Status:   e.Status,
+			Priority: e.Priority,
+			Position: pos,
+			Theme:    theme,
+		}
+		return &eventsourcing.DeltaEnvelope{
+			Type:       "delta",
+			Aggregate:  "taskmanager",
+			EventID:    eventsourcing.ISOTimestamp(),
+			Timestamp:  eventsourcing.ISOTimestamp(),
+			SequenceID: eventsourcing.NextSequenceID(),
+			Actions:    actions,
+			Components: []interface{}{component},
+		}
 	case *TaskUpdatedEvent:
-		// For updates, recreate the task at the correct position
+		task, exists := a.Tasks[e.TaskID]
+		if !exists {
+			return nil
+		}
+		if e.Status != "" { // Status change: animate to new position
+			newOffset, _ := statusOffset[task.Status] // Use updated status
+			newPos := make([]float64, 3)
+			copy(newPos, basePos)
+			newPos[0] += newOffset
+			newPos[1] = 0 // Ground level
+			newPos[2] = 0 // Simplified z for columns
+
+			builder := ui3d.NewDeltaBuilder(theme)
+			// Animate card
+			builder.AnimateMoveTo(e.TaskID, newPos, 0.5, "ease_in_out")
+			// Animate label
+			labelPos := []float64{newPos[0], newPos[1] + 1.5, newPos[2]}
+			builder.AnimateMoveTo(e.TaskID+"_label", labelPos, 0.5, "ease_in_out")
+			return &eventsourcing.DeltaEnvelope{Type: "delta", Aggregate: "taskmanager", EventID: eventsourcing.ISOTimestamp(), Timestamp: eventsourcing.ISOTimestamp(), SequenceID: eventsourcing.NextSequenceID(), Actions: builder.Build()}
+		}
+		// For other updates, recreate as before
 		sortedIDs := a.getSortedTaskIDs()
 		i := 0
 		for _, id := range sortedIDs {
@@ -768,28 +806,41 @@ func (a *TaskAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.Delt
 			}
 			i++
 		}
-		// Get zone for positioning
-		zones := ui3d.GetGlobalZones()
-		zone := zones[a.ID()]
-		// Map to grid: 1x3x10, so relX = i % 3, relZ = i / 3 + 1, relY = 0 (start from radius 1 to avoid center)
 		relX := i % zone.GridCols
 		relZ := i/zone.GridCols + 1
 		relY := 0
 		pos := zone.ToPosition(relX, relY, relZ)
+		offset, _ := statusOffset[task.Status]
+		pos[0] += offset
 		builder := ui3d.NewDeltaBuilder(theme)
 		labelPos := []float64{pos[0], pos[1] + 1.5, pos[2]}
-		// Delete old
 		builder.Delete(e.TaskID).Delete(e.TaskID + "_label")
-		// Create new
-		builder.CreateTaskCard(e.TaskID, a.Tasks[e.TaskID].Title, string(a.Tasks[e.TaskID].Priority), pos)
-		builder.CreateLabel(e.TaskID+"_label", a.Tasks[e.TaskID].Title, labelPos).WithExtra(map[string]interface{}{
+		builder.CreateTaskCard(e.TaskID, task.Title, task.Priority, pos)
+		builder.CreateLabel(e.TaskID+"_label", task.Title, labelPos).WithExtra(map[string]interface{}{
 			"event_type": "task_updated",
 		})
-		return &eventsourcing.DeltaEnvelope{Type: "delta", Aggregate: "taskmanager", EventID: eventsourcing.ISOTimestamp(), Timestamp: eventsourcing.ISOTimestamp(), Actions: builder.Build()}
+		actions := builder.Build()
+		component := &TaskCardComponent{
+			TaskID:   task.TaskID,
+			Title:    task.Title,
+			Status:   task.Status,
+			Priority: task.Priority,
+			Position: pos,
+			Theme:    theme,
+		}
+		return &eventsourcing.DeltaEnvelope{
+			Type:       "delta",
+			Aggregate:  "taskmanager",
+			EventID:    eventsourcing.ISOTimestamp(),
+			Timestamp:  eventsourcing.ISOTimestamp(),
+			SequenceID: eventsourcing.NextSequenceID(),
+			Actions:    actions,
+			Components: []interface{}{component},
+		}
 	case *TaskCompletedEvent:
 		builder := ui3d.NewDeltaBuilder(theme)
 		builder.Delete(e.TaskID).Delete(e.TaskID + "_label")
-		return &eventsourcing.DeltaEnvelope{Type: "delta", Aggregate: "taskmanager", EventID: eventsourcing.ISOTimestamp(), Timestamp: eventsourcing.ISOTimestamp(), Actions: builder.Build()}
+		return &eventsourcing.DeltaEnvelope{Type: "delta", Aggregate: "taskmanager", EventID: eventsourcing.ISOTimestamp(), Timestamp: eventsourcing.ISOTimestamp(), SequenceID: eventsourcing.NextSequenceID(), Actions: builder.Build()}
 		// ... similar for Update/Delete
 	}
 	return nil
@@ -935,4 +986,54 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+// TaskCardComponent implements ui3d.UIComponent for task cards.
+type TaskCardComponent struct {
+	TaskID   string
+	Title    string
+	Status   string
+	Priority string
+	Position []float64
+	Theme    ui3d.Theme
+}
+
+func (t *TaskCardComponent) Type() string { return "TaskCard" }
+
+func (t *TaskCardComponent) Properties() map[string]interface{} {
+	color := priorityColor(t.Priority)
+	return map[string]interface{}{
+		"task_id":  t.TaskID,
+		"title":    t.Title,
+		"status":   t.Status,
+		"position": t.Position,
+		"scale":    []float64{2.0, 3.0, 1.0},
+		"material_override": map[string]interface{}{
+			"albedo_color":     color,
+			"emission_enabled": true,
+			"emission":         []float64{0.1, 0.1, 0.1, 1.0},
+		},
+		"display_info": map[string]interface{}{
+			"title": t.Title,
+			"type":  "task",
+		},
+	}
+}
+
+func (t *TaskCardComponent) Actions() map[string]ui3d.Action {
+	return map[string]ui3d.Action{
+		"change_status": {
+			Type:    "command",
+			Data:    map[string]interface{}{"command": "UpdateTask", "data": map[string]interface{}{"TaskID": t.TaskID, "Status": "$NEW_STATUS"}},
+			Trigger: "dropdown_select",
+		},
+	}
+}
+
+func (t *TaskCardComponent) Serialize() map[string]interface{} {
+	return map[string]interface{}{
+		"type":       t.Type(),
+		"properties": t.Properties(),
+		"actions":    t.Actions(),
+	}
 }

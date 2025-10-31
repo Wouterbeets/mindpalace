@@ -53,6 +53,7 @@ var targeting_hud_label: Label
 var targeted_object = null
 var targeting_reticle: ColorRect
 
+var last_sequence_id: int = 0
 
 
 # Microphone settings menu
@@ -369,7 +370,8 @@ func send_ready_signal():
 			"timestamp": Time.get_unix_time_from_system(),
 			"client_info": {
 				"version": "1.0",
-				"platform": "godot"
+				"platform": "godot",
+				"last_sequence_id": last_sequence_id
 			}
 		}
 		var json_string = JSON.stringify(ready_msg)
@@ -383,9 +385,23 @@ func process_event_message(data: Dictionary):
 	if not data or typeof(data) != TYPE_DICTIONARY:
 		print("GODOT: Invalid data type, returning")
 		return
-	if not data.has("type") or (data["type"] != "delta" and data["type"] != "signal"):
-		print("GODOT: Invalid or missing type, returning")
+	if not data.has("type"):
+		print("GODOT: Missing type in event message")
 		return
+
+	var message_type = data["type"]
+	if message_type == "signal":
+		handle_signal_message(data)
+		return
+
+	if message_type != "delta":
+		print("GODOT: Unsupported message type: " + str(message_type))
+		return
+
+	if data.has("is_full_state") and data["is_full_state"]:
+		print("GODOT: Received full state snapshot, resetting scene")
+		reset_scene()
+
 	if not data.has("actions") or typeof(data["actions"]) != TYPE_ARRAY:
 		print("GODOT: Invalid or missing actions, returning")
 		return
@@ -401,8 +417,26 @@ func process_event_message(data: Dictionary):
 	# Send ACK if sequence_id is present
 	print("GODOT: Checking for sequence_id in data: " + str(data.has("sequence_id")))
 	if data.has("sequence_id"):
+		last_sequence_id = int(data["sequence_id"])
 		send_delta_ack(data["sequence_id"])
 		print("GODOT: Sent ACK for sequence " + str(data["sequence_id"]))
+
+func handle_signal_message(data: Dictionary):
+	var summary = data.get("state_summary", {})
+	var handled = false
+	if typeof(summary) == TYPE_DICTIONARY:
+		var signal_name = summary.get("signal", "")
+		if signal_name == "reset_scene":
+			print("GODOT: Received reset_scene signal, clearing scene")
+			reset_scene()
+			handled = true
+	if not handled:
+		print("GODOT: Received signal message with no handler: " + str(summary))
+
+	if data.has("sequence_id"):
+		last_sequence_id = int(data["sequence_id"])
+		send_delta_ack(data["sequence_id"])
+		print("GODOT: Sent ACK for signal sequence " + str(data["sequence_id"]))
 
 func process_transcription_update(data: Dictionary):
 	if not data.has("actions") or typeof(data["actions"]) != TYPE_ARRAY:
@@ -692,8 +726,120 @@ func handle_underground_action(action: Dictionary):
 		return
 	var properties = action.get("properties", {})
 
+	if typeof(properties) != TYPE_DICTIONARY:
+		return
+	if properties.get("layer", "") != "underground":
+		return
+
+	var node = underground_node.get_node_or_null(node_id)
+	if action_type == "delete":
+		if node:
+			node.queue_free()
+		return
+
+	if action_type != "create":
+		return
+
+	if node:
+		return
+
+	var mesh_type = action.get("node_type", "MeshInstance3D")
+	var new_node
+	if mesh_type == "MeshInstance3D":
+		new_node = MeshInstance3D.new()
+	elif mesh_type == "Label3D":
+		new_node = Label3D.new()
+		if properties.has("text"):
+			new_node.text = str(properties["text"])
+		new_node.add_theme_font_size_override("font_size", 32)
+		new_node.outline_size = 2
+		if properties.has("modulate") and properties["modulate"] is Array:
+			var c = properties["modulate"]
+			if c.size() >= 3:
+				var r = clamp(float(c[0]), 0.0, 1.0)
+				var g = clamp(float(c[1]), 0.0, 1.0)
+				var b = clamp(float(c[2]), 0.0, 1.0)
+				var a = 1.0
+				if c.size() > 3:
+					a = clamp(float(c[3]), 0.0, 1.0)
+				new_node.modulate = Color(r, g, b, a)
+	else:
+		new_node = Node3D.new()
+
+	if mesh_type == "MeshInstance3D":
+		var mesh_name = properties.get("mesh", "box")
+		match mesh_name:
+			"box":
+				var mesh = BoxMesh.new()
+				mesh.size = Vector3(0.6, 0.6, 0.6)
+				new_node.mesh = mesh
+			"sphere":
+				var mesh = SphereMesh.new()
+				mesh.radius = 0.3
+				new_node.mesh = mesh
+			_:
+				new_node.mesh = BoxMesh.new()
+				new_node.mesh.size = Vector3(0.6, 0.6, 0.6)
+		if properties.has("material_override"):
+			var material = StandardMaterial3D.new()
+			var override = properties["material_override"]
+			if override is Dictionary and override.has("albedo_color"):
+				var color_arr = override["albedo_color"]
+				if color_arr is Array and color_arr.size() >= 3:
+					var r = float(color_arr[0])
+					var g = float(color_arr[1])
+					var b = float(color_arr[2])
+					var a = 1.0
+					if color_arr.size() > 3:
+						a = float(color_arr[3])
+					material.albedo_color = Color(r, g, b, a)
+			new_node.material_override = material
+		elif new_node.material_override == null:
+			var default_material = StandardMaterial3D.new()
+			default_material.albedo_color = Color(0.4, 0.6, 0.9, 1.0)
+			new_node.material_override = default_material
+
+	var pos_array = properties.get("position", [])
+	if pos_array is Array and pos_array.size() >= 3:
+		new_node.position = Vector3(float(pos_array[0]), float(pos_array[1]), float(pos_array[2]))
+
+	var rot_array = properties.get("rotation", [])
+	if rot_array is Array and rot_array.size() >= 3:
+		new_node.rotation = Vector3(float(rot_array[0]), float(rot_array[1]), float(rot_array[2]))
+
+	var scale_array = properties.get("scale", [])
+	if scale_array is Array and scale_array.size() >= 3:
+		new_node.scale = Vector3(float(scale_array[0]), float(scale_array[1]), float(scale_array[2]))
+
+	if properties.has("event_type"):
+		new_node.set_meta("event_type", properties["event_type"])
+
+	underground_node.add_child(new_node)
+	new_node.name = node_id
 
 
+
+func reset_scene():
+	print("GODOT: Clearing existing 3D nodes")
+	var keys = event_cubes.keys()
+	for node_id in keys:
+		var entry = event_cubes.get(node_id, {})
+		var node = entry.get("node", null)
+		if node and node.is_inside_tree():
+			node.queue_free()
+	event_cubes.clear()
+
+	if underground_node:
+		for child in underground_node.get_children():
+			child.queue_free()
+
+	targeted_object = null
+	clear_targeting_hud()
+	if typeof(targeting_reticle) != TYPE_NIL:
+		targeting_reticle.color = Color.WHITE
+	is_dragging = false
+	dragged_object = null
+	dragged_node_id = ""
 
 
 func update_above_ground(state_summary: Dictionary):

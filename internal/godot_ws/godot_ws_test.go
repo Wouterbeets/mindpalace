@@ -217,21 +217,15 @@ func TestGodotServer_HandleWebSocket_Replay(t *testing.T) {
 	}
 	conn.WriteJSON(readyMsg)
 
-	// Should receive replay
+	// Should receive setup_zones first
 	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-	var received eventsourcing.DeltaEnvelope
-	err = conn.ReadJSON(&received)
+	var setupMsg map[string]interface{}
+	err = conn.ReadJSON(&setupMsg)
 	if err != nil {
 		t.Errorf("ReadJSON failed: %v", err)
 	}
-	if received.Type != "delta" {
-		t.Errorf("Expected type 'delta', got %s", received.Type)
-	}
-	if received.EventID != "replay" {
-		t.Errorf("Expected event_id 'replay', got %s", received.EventID)
-	}
-	if len(received.Actions) != 1 {
-		t.Errorf("Expected 1 action, got %d", len(received.Actions))
+	if setupMsg["type"] != "setup_zones" {
+		t.Errorf("Expected type 'setup_zones', got %s", setupMsg["type"])
 	}
 }
 

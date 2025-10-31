@@ -23,6 +23,27 @@ func (m *MockAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.Delt
 	return nil
 }
 
+type ResettableMockAggregate struct {
+	id         string
+	resetCount int
+}
+
+func (m *ResettableMockAggregate) ID() string {
+	return m.id
+}
+
+func (m *ResettableMockAggregate) ApplyEvent(event eventsourcing.Event) error {
+	return nil
+}
+
+func (m *ResettableMockAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.DeltaEnvelope {
+	return nil
+}
+
+func (m *ResettableMockAggregate) Reset() {
+	m.resetCount++
+}
+
 func TestNewAggregateManager(t *testing.T) {
 	deltaChan := make(chan eventsourcing.DeltaEnvelope)
 	ackChan := make(chan int)
@@ -135,11 +156,16 @@ func TestID(t *testing.T) {
 }
 
 func TestRebuildState(t *testing.T) {
-	deltaChan := make(chan eventsourcing.DeltaEnvelope)
-	ackChan := make(chan int)
+	deltaChan := make(chan eventsourcing.DeltaEnvelope, 1)
+	ackChan := make(chan int, 1)
 	manager := NewAggregateManager(deltaChan, ackChan)
 	mockAgg := &MockAggregate{id: "test"}
 	manager.RegisterAggregate("test", mockAgg)
+
+	go func() {
+		env := <-deltaChan
+		ackChan <- env.SequenceID
+	}()
 
 	// Mock events - since ApplyEvent returns nil, no actual events needed
 	events := []eventsourcing.Event{}
@@ -147,5 +173,26 @@ func TestRebuildState(t *testing.T) {
 	err := manager.RebuildState(events)
 	if err != nil {
 		t.Errorf("RebuildState failed: %v", err)
+	}
+}
+
+func TestRebuildStateResetsAggregates(t *testing.T) {
+	deltaChan := make(chan eventsourcing.DeltaEnvelope, 1)
+	ackChan := make(chan int, 1)
+	manager := NewAggregateManager(deltaChan, ackChan)
+	resetAgg := &ResettableMockAggregate{id: "reset"}
+	manager.RegisterAggregate("reset", resetAgg)
+
+	go func() {
+		env := <-deltaChan
+		ackChan <- env.SequenceID
+	}()
+
+	err := manager.RebuildState(nil)
+	if err != nil {
+		t.Fatalf("RebuildState failed: %v", err)
+	}
+	if resetAgg.resetCount != 1 {
+		t.Errorf("Expected reset to be called once, got %d", resetAgg.resetCount)
 	}
 }

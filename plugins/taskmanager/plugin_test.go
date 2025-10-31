@@ -278,3 +278,61 @@ func TestTaskAggregate_GetCurrent3DState(t *testing.T) {
 	// 	t.Errorf("Expected 1 task in summary, got %v", signal.StateSummary)
 	// }
 }
+
+func TestTaskStatusUpdateTriggersPositionAnimation(t *testing.T) {
+	agg := NewTaskAggregate()
+
+	// Set up mock zones to avoid panic
+	zones := map[string]ui3d.Zone{
+		"taskmanager": {Angle: 0, Radius: 100, GridRows: 1, GridCols: 3, GridDepth: 10},
+	}
+	ui3d.SetGlobalZones(zones)
+
+	// Create a task in Pending
+	createEvent := &TaskCreatedEvent{
+		EventType: "taskmanager_TaskCreated",
+		TaskID:    "task1",
+		Title:     "Test Task",
+		Status:    StatusPending,
+		Priority:  PriorityMedium,
+	}
+	agg.ApplyEvent(createEvent)
+
+	// Update to In Progress
+	updateEvent := &TaskUpdatedEvent{
+		EventType: "taskmanager_TaskUpdated",
+		TaskID:    "task1",
+		Status:    StatusInProgress,
+	}
+	agg.ApplyEvent(updateEvent)
+
+	// Emit delta for update
+	signal := agg.EmitDelta(updateEvent)
+	if signal == nil {
+		t.Fatal("Expected non-nil delta for status update")
+	}
+
+	// Should have animation actions for move (at least 1 for card, expect 2 with label)
+	if len(signal.Actions) < 1 {
+		t.Errorf("Expected at least 1 animation action, got %d", len(signal.Actions))
+	}
+
+	// Check first action is animate for task card
+	animAction := signal.Actions[0]
+	if animAction.Type != "animate" || animAction.NodeID != "task1" {
+		t.Errorf("Expected animate for 'task1', got %v", animAction)
+	}
+	if animAction.Animation.Property != "position" {
+		t.Errorf("Expected position animation, got %s", animAction.Animation.Property)
+	}
+
+	// Target position should be different (e.g., x-offset for In Progress)
+	targetPos, ok := animAction.Animation.To.([]float64)
+	if !ok || len(targetPos) != 3 {
+		t.Errorf("Expected 3D position in To, got %v", animAction.Animation.To)
+	}
+	x := targetPos[0]
+	if x < 5.0 { // Assume In Progress at x>=5
+		t.Errorf("Expected new x position >=5 for In Progress, got %f", x)
+	}
+}

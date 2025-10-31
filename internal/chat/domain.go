@@ -20,19 +20,33 @@ type UserRequestReceivedEvent struct {
 }
 
 type ToolCallCompleted struct {
-	RequestID string
-	Function  string
-	Results   map[string]interface{}
+	RequestID  string
+	ToolCallID string
+	Function   string
+	AgentName  string
+	Results    map[string]interface{}
 }
 
 type ToolCallFailedEvent struct {
-	RequestID string
-	ErrorMsg  string
+	RequestID  string
+	ToolCallID string
+	Function   string
+	AgentName  string
+	ErrorMsg   string
 }
 
 type AgentCallDecidedEvent struct {
 	RequestID string
 	AgentName string
+	CallAgent bool
+}
+
+type AgentResponseEvent struct {
+	RequestID    string
+	AgentName    string
+	ResponseText string
+	RawResponse  string
+	Stage        string
 }
 
 type AgentExecutionFailedEvent struct {
@@ -46,8 +60,10 @@ type RequestCompletedEvent struct {
 }
 
 type ToolCallStarted struct {
-	RequestID string
-	Function  string
+	RequestID  string
+	ToolCallID string
+	Function   string
+	AgentName  string
 }
 
 // Role defines the explicit roles a message can have
@@ -338,15 +354,36 @@ func (cm *ChatManager) ApplyChatEvent(event interface{}) error {
 		cm.AddMessage(RoleUser, e.RequestText, e.RequestID, "", nil)
 	case *ToolCallCompleted:
 		bytes, _ := json.Marshal(e.Results)
-		agentName := "" // Will be set by caller if needed
+		agentName := e.AgentName
 		cm.AddMessage(RoleTool, string(bytes), e.RequestID, agentName, map[string]interface{}{
 			"function": e.Function,
+			"tool_id":  e.ToolCallID,
 		})
 	case *ToolCallFailedEvent:
-		agentName := "" // Will be set by caller if needed
+		agentName := e.AgentName
 		cm.AddMessage(RoleSystem, fmt.Sprintf("Tool Call failed '%s'", e.ErrorMsg), e.RequestID, agentName, nil)
 	case *AgentCallDecidedEvent:
-		cm.AddMessage(RoleSystem, fmt.Sprintf("Calling agent '%s'...", e.AgentName), e.RequestID, e.AgentName, nil)
+		if e.CallAgent {
+			cm.AddMessage(RoleSystem, fmt.Sprintf("Calling agent '%s'...", e.AgentName), e.RequestID, e.AgentName, nil)
+		} else {
+			cm.AddMessage(RoleSystem, "Handling request directly.", e.RequestID, "", nil)
+		}
+	case *AgentResponseEvent:
+		thinks, regular := ParseResponseText(e.ResponseText)
+		for _, think := range thinks {
+			cm.AddMessage(RoleHidden, think, e.RequestID, e.AgentName, map[string]interface{}{
+				"stage": e.Stage,
+			})
+		}
+		if strings.TrimSpace(regular) != "" {
+			role := RoleAgent
+			if e.AgentName == "" {
+				role = RoleMindPalace
+			}
+			cm.AddMessage(role, regular, e.RequestID, e.AgentName, map[string]interface{}{
+				"stage": e.Stage,
+			})
+		}
 	case *AgentExecutionFailedEvent:
 		agentName := "" // Will be set by caller if needed
 		cm.AddMessage(RoleMindPalace, fmt.Sprintf("Error %s", e.ErrorMsg), e.RequestID, agentName, nil)
@@ -360,7 +397,9 @@ func (cm *ChatManager) ApplyChatEvent(event interface{}) error {
 			cm.AddMessage(RoleMindPalace, regular, e.RequestID, agentName, nil)
 		}
 	case *ToolCallStarted:
-		cm.AddMessage(RoleSystem, fmt.Sprintf("Tool Call started'%s'", e.Function), e.RequestID, "", nil)
+		cm.AddMessage(RoleSystem, fmt.Sprintf("Tool Call started '%s'", e.Function), e.RequestID, e.AgentName, map[string]interface{}{
+			"tool_id": e.ToolCallID,
+		})
 	default:
 		return fmt.Errorf("unsupported event type: %T", event)
 	}

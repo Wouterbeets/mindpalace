@@ -41,6 +41,16 @@ func (cs *ChatState) ApplyEvent(event interface{}) error {
 		chatEvent := &chat.AgentCallDecidedEvent{
 			RequestID: e.RequestID,
 			AgentName: e.AgentName,
+			CallAgent: e.CallAgent,
+		}
+		return cs.manager.ApplyChatEvent(chatEvent)
+	case *AgentResponseEvent:
+		chatEvent := &chat.AgentResponseEvent{
+			RequestID:    e.RequestID,
+			AgentName:    e.AgentName,
+			ResponseText: e.ResponseText,
+			RawResponse:  e.RawResponse,
+			Stage:        e.Stage,
 		}
 		return cs.manager.ApplyChatEvent(chatEvent)
 	case *AgentExecutionFailedEvent:

@@ -59,6 +59,13 @@ func (a *CalendarAggregate) ID() string {
 	return "calendar"
 }
 
+// Reset clears tracked calendar events while preserving command handlers.
+func (a *CalendarAggregate) Reset() {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	a.Events = make(map[string]*CalendarEvent)
+}
+
 // ApplyEvent updates the aggregate state based on event-related events
 func (a *CalendarAggregate) ApplyEvent(event eventsourcing.Event) error {
 	a.Mu.Lock()
@@ -721,7 +728,7 @@ func (a *CalendarAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.
 		labelPos := []float64{pos[0], pos[1] + 1.0, pos[2]}
 		builder.CreateBox(fmt.Sprintf("calendar_event_%s", e.EventID), pos).WithExtra(map[string]interface{}{
 			"event_type": "calendar_event_created",
-		})
+		}).WithModel("res://models/calendar.glb")
 		builder.CreateLabel(fmt.Sprintf("calendar_event_%s_label", e.EventID), e.Title, labelPos).WithExtra(map[string]interface{}{
 			"event_type": "calendar_event_created",
 		})
@@ -757,7 +764,7 @@ func (a *CalendarAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.
 		// Create new
 		builder.CreateBox(fmt.Sprintf("calendar_event_%s", e.EventID), pos).WithExtra(map[string]interface{}{
 			"event_type": "calendar_event_updated",
-		})
+		}).WithModel("res://models/calendar.glb")
 		builder.CreateLabel(fmt.Sprintf("calendar_event_%s_label", e.EventID), e.Title, labelPos).WithExtra(map[string]interface{}{
 			"event_type": "calendar_event_updated",
 		})

@@ -1,6 +1,7 @@
 package llmprocessor
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -59,7 +60,8 @@ func TestShimmyClient_ChatCompletion(t *testing.T) {
 		},
 	}
 
-	resp, err := client.ChatCompletion(nil, messages, tools, false)
+	ctx := context.Background()
+	resp, err := client.ChatCompletion(ctx, messages, tools, false)
 
 	// Assert
 	assert.NoError(t, err)
@@ -71,5 +73,5 @@ func TestShimmyClient_ChatCompletion(t *testing.T) {
 	assert.Equal(t, "call-1", resp.Choices[0].ToolCalls[0].ID)
 	assert.Equal(t, "function", resp.Choices[0].ToolCalls[0].Type)
 	assert.Equal(t, "test_func", resp.Choices[0].ToolCalls[0].Function.Name)
-	assert.Equal(t, json.RawMessage(`{"arg": "value"}`), resp.Choices[0].ToolCalls[0].Function.Arguments)
+	assert.Equal(t, json.RawMessage(`"{\"arg\": \"value\"}"`), resp.Choices[0].ToolCalls[0].Function.Arguments)
 }

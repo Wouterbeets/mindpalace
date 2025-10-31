@@ -99,6 +99,13 @@ type Aggregate interface {
 	EmitDelta(event Event) *DeltaEnvelope
 }
 
+// ResettableAggregate optionally allows aggregates to clear their in-memory state
+// prior to a replay. Aggregates that maintain derived caches should implement Reset.
+type ResettableAggregate interface {
+	Aggregate
+	Reset()
+}
+
 // Counter for generating unique IDs
 var idCounter uint64 = 0
 var idMutex sync.Mutex
@@ -160,6 +167,7 @@ type DeltaAction struct {
 	Properties map[string]interface{} `json:"properties,omitempty"` // Key-value props (e.g., {"position": [0,1,0]})
 	Animation  *AnimationSpec         `json:"animation,omitempty"`  // For "animate" type
 	Metadata   map[string]interface{} `json:"metadata,omitempty"`   // Aggregate-specific (e.g., {"task_id": "123"})
+	ModelPath  string                 `json:"model_path,omitempty"` // Path to GLTF model for 3D objects
 }
 
 // AnimationSpec for tween-like effects.
@@ -180,6 +188,13 @@ type DeltaEnvelope struct {
 	StateSummary map[string]interface{} `json:"state_summary,omitempty"` // Current state summary
 	SequenceID   int                    `json:"sequence_id"`             // For ACK-based flow control
 	Actions      []DeltaAction          `json:"actions"`
+	Components   []interface{}          `json:"components,omitempty"` // Stateful interactive components (serialized)
+}
+
+// EventProcessorInterface interface
+type EventProcessorInterface interface {
+	RegisterCommand(name string, handler CommandHandler)
+	ExecuteCommand(name string, data interface{}) error
 }
 
 // ThreeDUIBroadcaster allows aggregates to emit 3D deltas on events.
