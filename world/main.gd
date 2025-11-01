@@ -42,10 +42,17 @@ const EVENT_COLORS = {
 
 # Store cubes by event ID for updates/deletes
 var event_cubes = {}
+var model_cache := {}
 
 # UI for info panel
 var info_panel: Panel
 var info_label: Label
+var conversation_panel: Panel
+var conversation_title_label: Label
+var conversation_history: RichTextLabel
+var conversation_input: LineEdit
+var conversation_send_button: Button
+var current_conversation_agent: String = ""
 
 # Targeting HUD
 var targeting_hud_panel: Panel
@@ -130,6 +137,44 @@ func _ready():
 	info_label.size = Vector2(280, 180)
 	info_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	info_panel.add_child(info_label)
+
+	conversation_panel = Panel.new()
+	conversation_panel.size = Vector2(420, 360)
+	conversation_panel.position = Vector2(20, get_viewport().size.y - 380)
+	conversation_panel.visible = false
+	var convo_style = StyleBoxFlat.new()
+	convo_style.bg_color = Color(0.08, 0.08, 0.1, 0.92)
+	conversation_panel.add_theme_stylebox_override("panel", convo_style)
+	canvas_layer.add_child(conversation_panel)
+
+	conversation_title_label = Label.new()
+	conversation_title_label.position = Vector2(12, 12)
+	conversation_title_label.size = Vector2(396, 28)
+	conversation_title_label.add_theme_font_size_override("font_size", 22)
+	conversation_title_label.add_theme_color_override("font_color", Color(1, 1, 1, 1))
+	conversation_panel.add_child(conversation_title_label)
+
+	conversation_history = RichTextLabel.new()
+	conversation_history.position = Vector2(12, 50)
+	conversation_history.size = Vector2(396, 230)
+	conversation_history.scroll_active = true
+	conversation_history.scroll_following = true
+	conversation_history.bbcode_enabled = false
+	conversation_panel.add_child(conversation_history)
+
+	conversation_input = LineEdit.new()
+	conversation_input.position = Vector2(12, 294)
+	conversation_input.size = Vector2(290, 32)
+	conversation_input.placeholder_text = "Type a message..."
+	conversation_input.connect("text_submitted", Callable(self, "_on_conversation_text_submitted"))
+	conversation_panel.add_child(conversation_input)
+
+	conversation_send_button = Button.new()
+	conversation_send_button.text = "Send"
+	conversation_send_button.position = Vector2(314, 294)
+	conversation_send_button.size = Vector2(94, 32)
+	conversation_send_button.pressed.connect(Callable(self, "_on_conversation_send_pressed"))
+	conversation_panel.add_child(conversation_send_button)
 
 	# Set up targeting HUD (top-right)
 	targeting_hud_panel = Panel.new()
@@ -411,8 +456,14 @@ func process_event_message(data: Dictionary):
 		handle_underground_action(action)
 	# Process create actions for above ground objects
 	for action in data["actions"]:
-		if action.get("type", "") == "create":
-			create_node(action["node_id"], action.get("node_type", "MeshInstance3D"), action.get("properties", {}))
+		var action_type = action.get("type", "")
+		match action_type:
+			"create":
+				create_node(action["node_id"], action.get("node_type", "MeshInstance3D"), action.get("properties", {}))
+			"update":
+				update_node(action.get("node_id", ""), action.get("properties", {}))
+			"delete":
+				delete_node(action.get("node_id", ""))
 
 	# Send ACK if sequence_id is present
 	print("GODOT: Checking for sequence_id in data: " + str(data.has("sequence_id")))
@@ -814,6 +865,9 @@ func handle_underground_action(action: Dictionary):
 	if properties.has("event_type"):
 		new_node.set_meta("event_type", properties["event_type"])
 
+	if properties.has("model_path"):
+		_apply_model_to_node(new_node, properties["model_path"])
+
 	underground_node.add_child(new_node)
 	new_node.name = node_id
 
@@ -936,8 +990,11 @@ func create_node(node_id: String, node_type: String, properties: Dictionary):
 
 	# Set default mesh if not set
 	if node is MeshInstance3D and not node.mesh:
-		node.mesh = BoxMesh.new()
-		node.mesh.size = Vector3(1, 1, 1)
+			node.mesh = BoxMesh.new()
+			node.mesh.size = Vector3(1, 1, 1)
+
+	if properties.has("model_path"):
+		_apply_model_to_node(node, properties["model_path"])
 
 	# If backend provides a specific position, use Y only and add to computed XZ (for height variations)
 	log_message("About to place node " + node_id + " at position from properties: " + str(properties.get("position", "no pos")))
@@ -1099,6 +1156,15 @@ func update_node(node_id: String, properties: Dictionary):
 	var node = event_cubes.get(node_id, {}).get("node", null)
 
 	if node:
+		if properties.has("display_info") and properties["display_info"] is Dictionary:
+			node.set_meta("display_info", properties["display_info"])
+			_refresh_conversation_panel_if_matches(properties["display_info"])
+			if targeted_object == node:
+				var event_id = get_event_id_from_object(node)
+				if event_id != "":
+					update_hud_for_object(event_id, node)
+		if properties.has("model_path"):
+			_apply_model_to_node(node, properties["model_path"])
 		if node is Label3D:
 			if properties.has("text"):
 				node.text = properties["text"]
@@ -1171,7 +1237,77 @@ func show_info_panel(node: Node):
 		if event_cubes[id].get("node", null) == node:
 			node_id = id
 			break
-	info_label.text = "Node ID: " + node_id + "\nType: " + node.get_class() + "\nPosition: " + str(node.position)
+	var display_info = node.get_meta("display_info", {})
+	var text = "Node ID: " + node_id + "\nType: " + node.get_class() + "\nPosition: " + str(node.position)
+	if display_info is Dictionary:
+		if display_info.has("title"):
+			text += "\n\nTitle: " + str(display_info["title"])
+		if display_info.has("description"):
+			text += "\n" + str(display_info["description"])
+	info_label.text = text
+	open_conversation_panel(display_info)
+
+func open_conversation_panel(display_info: Dictionary):
+	if display_info is Dictionary:
+		var details = display_info.get("details", {})
+		if details is Dictionary and details.has("conversation"):
+			populate_conversation_panel(display_info)
+			conversation_panel.visible = true
+			return
+	conversation_panel.visible = false
+	current_conversation_agent = ""
+
+func populate_conversation_panel(display_info: Dictionary):
+	if conversation_panel == null:
+		return
+	var details = display_info.get("details", {}) if display_info is Dictionary else {}
+	conversation_title_label.text = str(display_info.get("title", "Conversation"))
+	var description = str(display_info.get("description", ""))
+	var conversation = []
+	if details is Dictionary:
+		conversation = details.get("conversation", [])
+		current_conversation_agent = str(details.get("conversation_agent", ""))
+	else:
+		current_conversation_agent = ""
+
+	conversation_history.clear()
+	if description != "":
+		conversation_history.append_text(description + "\n\n")
+	if conversation is Array and conversation.size() > 0:
+		for entry in conversation:
+			if entry is Dictionary:
+				var role = str(entry.get("role", ""))
+				var content = str(entry.get("content", "")).replace("\n", " ").strip_edges()
+				var timestamp = str(entry.get("timestamp", ""))
+				if timestamp.length() >= 19:
+					timestamp = timestamp.substr(11, 8)
+				else:
+					timestamp = ""
+				var line = ""
+				if timestamp != "":
+					line += "[" + timestamp + "] "
+				line += role + ": " + content
+				conversation_history.append_text(line + "\n")
+	else:
+		conversation_history.append_text("No conversation yet.\n")
+
+	conversation_history.scroll_to_line(conversation_history.get_line_count())
+	var placeholder = "Talk to the orchestrator..."
+	if current_conversation_agent != "":
+		placeholder = "Talk to " + current_conversation_agent.capitalize() + "..."
+	conversation_input.placeholder_text = placeholder
+	conversation_input.text = ""
+	conversation_input.grab_focus()
+
+func _refresh_conversation_panel_if_matches(display_info: Dictionary):
+	if conversation_panel == null or !conversation_panel.visible:
+		return
+	if display_info is Dictionary:
+		var details = display_info.get("details", {})
+		if details is Dictionary:
+			var agent = str(details.get("conversation_agent", ""))
+			if agent == current_conversation_agent:
+				populate_conversation_panel(display_info)
 
 
 # Targeting HUD functions
@@ -1277,8 +1413,13 @@ func get_object_details(event_id: String, obj: Node) -> String:
 		var det = display_info["details"]
 		details += "[b]Event Info:[/b]\n"
 		for key in det.keys():
+			if key in ["conversation", "conversation_agent", "conversation_summary", "conversation_last_updated"]:
+				continue
 			details += "- %s: %s\n" % [key.capitalize(), str(det[key])]
 		details += "\n"
+		if det.has("conversation_summary"):
+			details += "Conversation:\n%s\n" % str(det["conversation_summary"])
+			details += "Click to open dialogue panel.\n"
 
 	# Add visual properties
 	if obj is MeshInstance3D and obj.material_override:
@@ -1307,6 +1448,8 @@ func _on_viewport_size_changed():
 		var tab_container = settings_panel.get_child(1)
 		if tab_container:
 			tab_container.size = Vector2(settings_panel.size.x - 40, settings_panel.size.y - 100)
+	if conversation_panel:
+		conversation_panel.position = Vector2(20, get_viewport().size.y - conversation_panel.size.y - 20)
 	update_reticle_position()
 
 
@@ -1779,17 +1922,33 @@ func _on_send_request():
 		send_request(text)
 		user_request_input.text = ""
 
-func send_request(text: String):
+func send_request(text: String, target_agent: String = ""):
 	if websocket.get_ready_state() != WebSocketPeer.STATE_OPEN:
 		return
 	var req_msg = {
 		"type": "request",
 		"text": text
 	}
+	if target_agent != "":
+		req_msg["target_agent"] = target_agent
 	var json_string = JSON.stringify(req_msg)
 	var err = websocket.send_text(json_string)
 	if err != OK:
 		push_error("Failed to send request: ", err)
+
+func _on_conversation_send_pressed():
+	_send_conversation_message()
+
+func _on_conversation_text_submitted(text: String):
+	conversation_input.text = text
+	_send_conversation_message()
+
+func _send_conversation_message():
+	var text = conversation_input.text.strip_edges()
+	if text == "":
+		return
+	send_request(text, current_conversation_agent)
+	conversation_input.text = ""
 
 func send_toggle_mic():
 	if websocket.get_ready_state() != WebSocketPeer.STATE_OPEN:
@@ -1853,7 +2012,56 @@ func _on_menu_bg_input(event):
 func close_orchestrator_menu():
 	if orchestrator_menu:
 		orchestrator_menu.queue_free()
-		orchestrator_menu = null
+	orchestrator_menu = null
+
+
+func _load_model_resource(model_path: String):
+	if model_path == "":
+		return null
+	if model_cache.has(model_path):
+		return model_cache[model_path]
+	var resource = ResourceLoader.load(model_path)
+	if resource == null:
+		push_warning("Failed to load model at %s" % model_path)
+		return null
+	model_cache[model_path] = resource
+	return resource
+
+
+func _apply_model_to_node(node: Node, model_path_value):
+	if node == null:
+		return
+	if typeof(model_path_value) != TYPE_STRING:
+		return
+	var model_path: String = model_path_value
+	if model_path == "":
+		return
+	var resource = _load_model_resource(model_path)
+	if resource == null:
+		return
+	if node.has_meta("model_path") and node.get_meta("model_path") == model_path:
+		return
+	node.set_meta("model_path", model_path)
+	if node is MeshInstance3D:
+		if resource is ArrayMesh or resource is Mesh:
+			node.mesh = resource
+		elif resource is PackedScene:
+			for child in node.get_children():
+				child.queue_free()
+			var inst = resource.instantiate()
+			node.add_child(inst)
+	else:
+		if resource is PackedScene:
+			for child in node.get_children():
+				child.queue_free()
+			var inst_scene = resource.instantiate()
+			node.add_child(inst_scene)
+		elif resource is ArrayMesh or resource is Mesh:
+			for child in node.get_children():
+				child.queue_free()
+			var mesh_instance := MeshInstance3D.new()
+			mesh_instance.mesh = resource
+			node.add_child(mesh_instance)
 
 func format_with_line_breaks(text: String, chars_per_line: int) -> String:
 	var words = text.split(" ", false)

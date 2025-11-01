@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"mindpalace/internal/plugingenerator"
 	"mindpalace/pkg/eventsourcing"
@@ -164,6 +165,27 @@ func (p *PluginGeneratorPlugin) AgentModel() string {
 // Description returns a short description of how the orchestrator AI can use this agent
 func (p *PluginGeneratorPlugin) Description() string {
 	return "use this to generate new plugins, talk to me in natural language about what kind of plugin you want to create."
+}
+
+func (p *PluginGeneratorPlugin) Metadata() eventsourcing.PluginMetadata {
+	return eventsourcing.PluginMetadata{
+		Name:      p.Name(),
+		Summary:   "Translates rough requirements into fully scaffolded MindPalace plugins.",
+		UsageHint: "Invoke when an unmet workflow needs a dedicated agent or integration.",
+		Capabilities: []eventsourcing.PluginCapability{
+			{Name: "GeneratePlugin", Description: "Conduct an interview and emit events to scaffold a new plugin."},
+		},
+		Examples: []string{
+			"Create a plugin that tracks diesel refills and calculates cost per kilometre.",
+			"Spin up an agent to catalog campsite reviews with photos and tags."},
+		Tags:           []string{"meta", "builder", "generator"},
+		Maintainer:     "MindPalace Core Team",
+		DefaultTimeout: 35 * time.Second,
+		Safety:         "needs_review",
+		Reliability:    "experimental",
+		Lifecycle:      "active",
+		ModelAsset:     "591245",
+	}
 }
 
 func (p *PluginGeneratorPlugin) EventHandlers() map[string]eventsourcing.EventHandler {

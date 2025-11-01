@@ -192,6 +192,31 @@ func (p *CalendarPlugin) Description() string {
 	return "use this to manage calendar events, talk to me in natural language about scheduling, updating, or listing events."
 }
 
+func (p *CalendarPlugin) Metadata() eventsourcing.PluginMetadata {
+	return eventsourcing.PluginMetadata{
+		Name:      p.Name(),
+		Summary:   "Organizes calendar events with priorities, attendees, and tagging.",
+		UsageHint: "Delegate scheduling, rescheduling, or availability lookups that need structured timelines.",
+		Capabilities: []eventsourcing.PluginCapability{
+			{Name: "CreateEvent", Description: "Capture richly described calendar events with time and importance."},
+			{Name: "UpdateEvent", Description: "Adjust the details of existing calendar events."},
+			{Name: "DeleteEvent", Description: "Remove events that are no longer relevant."},
+			{Name: "ListEvents", Description: "Generate timeline summaries filtered by status, importance, or tags."},
+		},
+		Examples: []string{
+			"Schedule a high-importance planning session on Saturday at 15:00 with the travel team.",
+			"What upcoming events tagged 'roadtrip' do we have next week?",
+		},
+		Tags:           []string{"calendar", "planning", "timeline"},
+		Maintainer:     "MindPalace Core Team",
+		DefaultTimeout: 8 * time.Second,
+		Safety:         "trusted",
+		Reliability:    "battle-tested",
+		Lifecycle:      "maintained",
+		ModelAsset:     "69166",
+	}
+}
+
 func (p *CalendarPlugin) Aggregate() eventsourcing.Aggregate {
 	return p.aggregate
 }

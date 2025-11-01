@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"plugin"
+	"sync"
+	"time"
 
 	"mindpalace/internal/plugingenerator"
 	"mindpalace/pkg/eventsourcing"
@@ -15,14 +17,23 @@ import (
 // PluginNames tracks loaded plugin names for dynamic zoning
 var PluginNames []string
 
+type pluginEntry struct {
+	plugin    eventsourcing.Plugin
+	metadata  eventsourcing.PluginMetadata
+	telemetry eventsourcing.PluginTelemetry
+}
+
 // PluginManager handles loading and managing plugins
 type PluginManager struct {
-	plugins        []eventsourcing.Plugin
+	mu             sync.RWMutex
+	plugins        map[string]*pluginEntry
+	orderedNames   []string
 	eventProcessor *eventsourcing.EventProcessor
 }
 
 func NewPluginManager(ep *eventsourcing.EventProcessor) *PluginManager {
 	pm := &PluginManager{
+		plugins:        make(map[string]*pluginEntry),
 		eventProcessor: ep,
 	}
 	pm.LoadPlugins("plugins")
@@ -31,29 +42,44 @@ func NewPluginManager(ep *eventsourcing.EventProcessor) *PluginManager {
 
 // In PluginManager
 func (pm *PluginManager) GetLLMPlugins() []eventsourcing.Plugin {
-	var llmPlugins []eventsourcing.Plugin
-	for _, plugin := range pm.plugins {
-		if plugin.Type() == eventsourcing.LLMPlugin {
-			llmPlugins = append(llmPlugins, plugin)
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	llmPlugins := make([]eventsourcing.Plugin, 0, len(pm.plugins))
+	for _, name := range pm.orderedNames {
+		entry, exists := pm.plugins[name]
+		if !exists {
+			continue
+		}
+		if entry.plugin.Type() == eventsourcing.LLMPlugin {
+			llmPlugins = append(llmPlugins, entry.plugin)
 		}
 	}
 	return llmPlugins
 }
 
 func (pm *PluginManager) GetPlugin(name string) (eventsourcing.Plugin, error) {
-	for _, plugin := range pm.plugins {
-		if plugin.Name() == name {
-			return plugin, nil
-		}
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	if entry, ok := pm.plugins[name]; ok {
+		return entry.plugin, nil
 	}
 	return nil, fmt.Errorf("plugin '%s' not found", name)
 }
 
 func (pm *PluginManager) GetPluginByCommand(commandName string) (eventsourcing.Plugin, error) {
-	for _, plugin := range pm.plugins {
-		for name := range plugin.Commands() {
-			if name == commandName {
-				return plugin, nil
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	for _, name := range pm.orderedNames {
+		entry, exists := pm.plugins[name]
+		if !exists {
+			continue
+		}
+		for cmd := range entry.plugin.Commands() {
+			if cmd == commandName {
+				return entry.plugin, nil
 			}
 		}
 	}
@@ -65,6 +91,10 @@ func (pm *PluginManager) LoadPlugins(pluginDir string) {
 	logging.Debug("Starting to load plugins from directory: %s", pluginDir)
 	// Clear PluginNames to avoid duplicates on reload
 	PluginNames = []string{}
+	pm.mu.Lock()
+	pm.plugins = make(map[string]*pluginEntry)
+	pm.orderedNames = pm.orderedNames[:0]
+	pm.mu.Unlock()
 
 	pluginDirs, err := pm.discoverPluginDirectories(pluginDir)
 	if err != nil {
@@ -97,13 +127,36 @@ func (pm *PluginManager) LoadPlugins(pluginDir string) {
 		}
 
 		if plugin != nil {
-			pm.plugins = append(pm.plugins, plugin)
+			metadata := eventsourcing.DefaultPluginMetadata(plugin.Name())
+			if provider, ok := plugin.(eventsourcing.PluginMetadataProvider); ok {
+				metadata = provider.Metadata()
+			}
+			if metadata.Name == "" {
+				metadata.Name = plugin.Name()
+			}
+			if metadata.DefaultTimeout <= 0 {
+				metadata.DefaultTimeout = 30 * time.Second
+			}
+
+			pm.mu.Lock()
+			pm.plugins[plugin.Name()] = &pluginEntry{
+				plugin:    plugin,
+				metadata:  metadata,
+				telemetry: eventsourcing.PluginTelemetry{},
+			}
+			pm.orderedNames = append(pm.orderedNames, plugin.Name())
+			pm.mu.Unlock()
+
 			PluginNames = append(PluginNames, plugin.Name())
 			logging.Info("Successfully loaded plugin: %s", plugin.Name())
 		}
 	}
 
-	logging.Info("Finished loading plugins, total loaded: %d", len(pm.plugins))
+	pm.mu.RLock()
+	totalPlugins := len(pm.plugins)
+	pm.mu.RUnlock()
+
+	logging.Info("Finished loading plugins, total loaded: %d", totalPlugins)
 	commands := pm.RegisterCommands()
 	for name, handler := range commands {
 		logging.Debug("registering commands en eventprocessor after initial plugin loading: %s", name)
@@ -252,13 +305,17 @@ func (pm *PluginManager) loadPlugin(soFile string) (eventsourcing.Plugin, error)
 
 func (pm *PluginManager) RegisterCommands() map[string]eventsourcing.CommandHandler {
 	commands := make(map[string]eventsourcing.CommandHandler)
-	for _, p := range pm.plugins {
-		for name, handler := range p.Commands() {
-			if _, exists := commands[name]; exists {
-				logging.Debug("Command %s already registered", name)
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	for _, name := range pm.orderedNames {
+		entry := pm.plugins[name]
+		for cmdName, handler := range entry.plugin.Commands() {
+			if _, exists := commands[cmdName]; exists {
+				logging.Debug("Command %s already registered", cmdName)
 				continue
 			}
-			commands[name] = handler
+			commands[cmdName] = handler
 		}
 	}
 	return commands
@@ -285,12 +342,86 @@ func (pm *PluginManager) LoadNewPlugin(pluginPath string) error {
 		}
 	}
 
-	pm.plugins = append(pm.plugins, plugin)
+	metadata := eventsourcing.DefaultPluginMetadata(plugin.Name())
+	if provider, ok := plugin.(eventsourcing.PluginMetadataProvider); ok {
+		metadata = provider.Metadata()
+	}
+	if metadata.Name == "" {
+		metadata.Name = plugin.Name()
+	}
+	if metadata.DefaultTimeout <= 0 {
+		metadata.DefaultTimeout = 30 * time.Second
+	}
+
+	pm.mu.Lock()
+	pm.plugins[plugin.Name()] = &pluginEntry{
+		plugin:    plugin,
+		metadata:  metadata,
+		telemetry: eventsourcing.PluginTelemetry{},
+	}
+	pm.orderedNames = append(pm.orderedNames, plugin.Name())
+	pm.mu.Unlock()
+
+	PluginNames = append(PluginNames, plugin.Name())
+
 	commands := pm.RegisterCommands()
 	for name, handler := range commands {
 		pm.eventProcessor.RegisterCommand(name, handler)
 	}
 	return nil
+}
+
+// RecordInvocation updates telemetry for the given plugin and returns the merged snapshot.
+func (pm *PluginManager) RecordInvocation(name string, result eventsourcing.PluginInvocationResult) eventsourcing.PluginTelemetry {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	entry, exists := pm.plugins[name]
+	if !exists {
+		return eventsourcing.PluginTelemetry{}
+	}
+	entry.telemetry = entry.telemetry.Merge(result)
+	return entry.telemetry
+}
+
+// PluginMetadataSnapshot returns a lightweight metadata snapshot for a plugin.
+func (pm *PluginManager) PluginMetadataSnapshot(name string) (eventsourcing.PluginMetadataSnapshot, bool) {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	entry, exists := pm.plugins[name]
+	if !exists {
+		return eventsourcing.PluginMetadataSnapshot{}, false
+	}
+	return entry.metadata.Snapshot(), true
+}
+
+// PluginDefaultTimeout returns the configured timeout for the plugin or the system fallback.
+func (pm *PluginManager) PluginDefaultTimeout(name string, fallback time.Duration) time.Duration {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	entry, exists := pm.plugins[name]
+	if !exists {
+		return fallback
+	}
+	if entry.metadata.DefaultTimeout <= 0 {
+		return fallback
+	}
+	return entry.metadata.DefaultTimeout
+}
+
+// PluginSnapshots returns metadata + telemetry snapshots for all loaded plugins.
+func (pm *PluginManager) PluginSnapshots() []eventsourcing.PluginSnapshot {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	snapshots := make([]eventsourcing.PluginSnapshot, 0, len(pm.orderedNames))
+	for _, name := range pm.orderedNames {
+		entry := pm.plugins[name]
+		snapshots = append(snapshots, eventsourcing.PluginSnapshot{
+			Metadata:  entry.metadata.Snapshot(),
+			Telemetry: entry.telemetry,
+		})
+	}
+	return snapshots
 }
 
 // GenerateAndLoadPlugin generates a new plugin based on requirements and loads it

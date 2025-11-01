@@ -19,6 +19,7 @@ pkg/world/world
 *.so
 world/world.x86_64
 world/world.sh
+world/models/cache/
 
 # Logs and databases
 events.db

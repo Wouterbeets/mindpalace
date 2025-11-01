@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"math"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 )
 
 const orchestratorBasePrompt = "You are MindPalace, the orchestrator of a system designed to extent the users mind, allowing the user to store and retrieve anything with your help, you have several plugins at your disposal to help the user achieve this, the plugins are in the form of agents you can interact with by using function calls provided"
+const conversationHistoryLimit = 12
 
 type OrchestrationAggregate struct {
 	chatState                 *ChatState
@@ -27,8 +29,16 @@ type OrchestrationAggregate struct {
 	PositionIndex             int
 	OrchestratorAICreated     bool
 	OrchestratorPositionIndex int
+	PluginSnapshots           map[string]*PluginSnapshotState
 	deltaChan                 chan eventsourcing.DeltaEnvelope
 	ackChan                   <-chan int
+	modelResolver             ModelResolver
+}
+
+// ModelResolver defines the minimal interface required to resolve a logical model identifier
+// into a Godot-loadable resource path.
+type ModelResolver interface {
+	EnsureModel(modelID string) (string, error)
 }
 
 func NewOrchestrationAggregate() *OrchestrationAggregate {
@@ -45,6 +55,7 @@ func NewOrchestrationAggregate() *OrchestrationAggregate {
 		PositionIndex:             0,
 		OrchestratorAICreated:     false,
 		OrchestratorPositionIndex: 0,
+		PluginSnapshots:           make(map[string]*PluginSnapshotState),
 	}
 }
 
@@ -54,6 +65,11 @@ func (a *OrchestrationAggregate) ID() string {
 func (a *OrchestrationAggregate) SetChannels(deltaChan chan eventsourcing.DeltaEnvelope, ackChan <-chan int) {
 	a.deltaChan = deltaChan
 	a.ackChan = ackChan
+}
+
+// SetModelLibrary injects a resolver capable of materializing rich 3D assets.
+func (a *OrchestrationAggregate) SetModelLibrary(resolver ModelResolver) {
+	a.modelResolver = resolver
 }
 
 // Reset clears derived orchestration state so a replay can rebuild it deterministically.
@@ -68,6 +84,7 @@ func (a *OrchestrationAggregate) Reset() {
 	a.PositionIndex = 0
 	a.OrchestratorAICreated = false
 	a.OrchestratorPositionIndex = 0
+	a.PluginSnapshots = make(map[string]*PluginSnapshotState)
 }
 
 // AgentState represents the current state of an agent interaction
@@ -93,6 +110,110 @@ type ToolCallState struct {
 }
 
 type DisplayInfo = ui3d.DisplayInfo
+
+type PluginSnapshotState struct {
+	Metadata    eventsourcing.PluginMetadataSnapshot
+	Telemetry   eventsourcing.PluginTelemetry
+	LastUpdated string
+}
+
+func cloneDetails(details map[string]interface{}) map[string]interface{} {
+	if details == nil {
+		return map[string]interface{}{}
+	}
+	clone := make(map[string]interface{}, len(details))
+	for k, v := range details {
+		clone[k] = v
+	}
+	return clone
+}
+
+func truncateContent(content string, limit int) string {
+	if limit <= 0 || len(content) <= limit {
+		return content
+	}
+	runes := []rune(content)
+	if len(runes) <= limit {
+		return content
+	}
+	return string(runes[:limit]) + "…"
+}
+
+func (a *OrchestrationAggregate) nodeIDForAgent(agent string) string {
+	if agent == "" {
+		return "orchestrator_ai"
+	}
+	return fmt.Sprintf("plugin_snapshot_%s", sanitizeID(agent))
+}
+
+func (a *OrchestrationAggregate) updateConversationDisplay(agent string, changed map[string]struct{}) {
+	if a.chatState == nil {
+		return
+	}
+	nodeID := a.nodeIDForAgent(agent)
+	if nodeID == "" {
+		return
+	}
+
+	conversation := a.chatState.GetChatManager().GetConversation(agent, conversationHistoryLimit)
+	serialized := make([]map[string]interface{}, 0, len(conversation))
+	lastLine := ""
+	for _, msg := range conversation {
+		entry := map[string]interface{}{
+			"role":        msg.Role.UIRole,
+			"system_role": msg.Role.SystemRole,
+			"content":     msg.Content,
+			"request_id":  msg.RequestID,
+			"timestamp":   msg.Timestamp.Format(time.RFC3339),
+		}
+		serialized = append(serialized, entry)
+		lastLine = fmt.Sprintf("[%s] %s", msg.Role.UIRole, truncateContent(msg.Content, 160))
+	}
+
+	summary := "No conversation yet."
+	if lastLine != "" {
+		summary = lastLine
+	}
+
+	existing := a.DisplayInfos[nodeID]
+	title := ""
+	description := ""
+	details := cloneDetails(nil)
+	if existing != nil {
+		title = existing.Title
+		description = existing.Description
+		details = cloneDetails(existing.Details)
+	}
+
+	if title == "" {
+		if agent == "" {
+			title = "MindPalace Orchestrator"
+		} else {
+			title = fmt.Sprintf("Agent • %s", titleCase(agent))
+		}
+	}
+	if description == "" {
+		if agent == "" {
+			description = "The glowing intelligence that routes every insight."
+		} else {
+			description = fmt.Sprintf("Zone stewarded by %s.", titleCase(agent))
+		}
+	}
+
+	details["conversation"] = serialized
+	details["conversation_agent"] = agent
+	details["conversation_summary"] = summary
+	details["conversation_last_updated"] = eventsourcing.ISOTimestamp()
+
+	a.DisplayInfos[nodeID] = &DisplayInfo{
+		Title:       title,
+		Description: description,
+		Details:     details,
+	}
+	if changed != nil {
+		changed[nodeID] = struct{}{}
+	}
+}
 
 func (a *OrchestrationAggregate) AgentName(requestID string) string {
 	var agent *AgentState
@@ -301,6 +422,52 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 			Description: regular,
 			Details:     map[string]interface{}{"type": "request_completed", "timestamp": e.CompletedAt},
 		}
+
+	case "orchestration_PluginSnapshotUpserted":
+		e := event.(*PluginSnapshotUpsertedEvent)
+		name := e.Snapshot.Metadata.Name
+		if name == "" {
+			break
+		}
+		if a.PluginSnapshots == nil {
+			a.PluginSnapshots = make(map[string]*PluginSnapshotState)
+		}
+		a.PluginSnapshots[name] = &PluginSnapshotState{
+			Metadata:    e.Snapshot.Metadata,
+			Telemetry:   e.Snapshot.Telemetry,
+			LastUpdated: e.Timestamp,
+		}
+		description := e.Snapshot.Metadata.Summary
+		if description == "" {
+			description = "No summary provided."
+		}
+		successRate := e.Snapshot.Telemetry.SuccessRate() * 100
+		if e.Snapshot.Telemetry.Invocations > 0 {
+			description = fmt.Sprintf("%s\nSuccess rate ~%.0f%% across %d runs", description, successRate, e.Snapshot.Telemetry.Invocations)
+		}
+		details := map[string]interface{}{
+			"type":                    "plugin_snapshot",
+			"invocations":             e.Snapshot.Telemetry.Invocations,
+			"successes":               e.Snapshot.Telemetry.Successes,
+			"failures":                e.Snapshot.Telemetry.Failures,
+			"timeouts":                e.Snapshot.Telemetry.Timeouts,
+			"panics":                  e.Snapshot.Telemetry.Panics,
+			"avg_latency_ms":          e.Snapshot.Telemetry.AverageLatencyMillis,
+			"last_latency_ms":         e.Snapshot.Telemetry.LastLatencyMillis,
+			"last_error":              e.Snapshot.Telemetry.LastError,
+			"last_invocation":         e.Snapshot.Telemetry.LastInvocation,
+			"tags":                    e.Snapshot.Metadata.Tags,
+			"capabilities":            e.Snapshot.Metadata.Capabilities,
+			"default_timeout_seconds": e.Snapshot.Metadata.DefaultTimeoutSeconds,
+			"reliability":             e.Snapshot.Metadata.Reliability,
+			"safety":                  e.Snapshot.Metadata.Safety,
+		}
+		label := fmt.Sprintf("plugin_%s", sanitizeID(name))
+		a.DisplayInfos[label] = &DisplayInfo{
+			Title:       fmt.Sprintf("Plugin • %s", titleCase(name)),
+			Description: description,
+			Details:     details,
+		}
 	}
 
 	// Emit delta if needed
@@ -396,12 +563,43 @@ func parseResponseText(responseText string) (thinks []string, regular string) {
 	return thinks, strings.TrimSpace(regular)
 }
 
+func (a *OrchestrationAggregate) pluginPosition(pluginName string) []float64 {
+	if len(a.PluginSnapshots) == 0 {
+		return []float64{0, 2.5, 0}
+	}
+	names := make([]string, 0, len(a.PluginSnapshots))
+	for name := range a.PluginSnapshots {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	index := 0
+	for i, name := range names {
+		if name == pluginName {
+			index = i
+			break
+		}
+	}
+	count := len(names)
+	if count == 0 {
+		return []float64{0, 2.5, 0}
+	}
+	angle := 2 * math.Pi * float64(index) / float64(count)
+	if count == 1 {
+		angle = 0
+	}
+	radius := 8.0
+	x := radius * math.Cos(angle)
+	z := radius * math.Sin(angle)
+	return []float64{x, 2.5, z}
+}
+
 // UserRequestReceivedEvent is a strongly typed event for when a user request is received
 type UserRequestReceivedEvent struct {
 	EventType   string `json:"event_type"`
 	RequestID   string `json:"request_id"`
 	RequestText string `json:"request_text"`
 	Timestamp   string `json:"timestamp"`
+	TargetAgent string `json:"target_agent,omitempty"`
 }
 
 func (e *UserRequestReceivedEvent) Type() string {
@@ -530,6 +728,20 @@ func (e *ToolCallCompleted) Marshal() ([]byte, error) {
 }
 func (e *ToolCallCompleted) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
 
+type PluginSnapshotUpsertedEvent struct {
+	eventsourcing.BaseEvent
+	EventType string                       `json:"event_type"`
+	Snapshot  eventsourcing.PluginSnapshot `json:"snapshot"`
+	Timestamp string                       `json:"timestamp"`
+}
+
+func (e *PluginSnapshotUpsertedEvent) Type() string { return "orchestration_PluginSnapshotUpserted" }
+func (e *PluginSnapshotUpsertedEvent) Marshal() ([]byte, error) {
+	e.EventType = e.Type()
+	return json.Marshal(e)
+}
+func (e *PluginSnapshotUpsertedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
+
 // Define agent-related event types
 type AgentCallDecidedEvent struct {
 	EventType string `json:"event_type"`
@@ -623,6 +835,7 @@ func init() {
 
 	// Last event in chain
 	eventsourcing.RegisterEvent("orchestration_RequestCompleted", func() eventsourcing.Event { return &RequestCompletedEvent{} })
+	eventsourcing.RegisterEvent("orchestration_PluginSnapshotUpserted", func() eventsourcing.Event { return &PluginSnapshotUpsertedEvent{} })
 }
 
 func (a *OrchestrationAggregate) nextPosition() []float64 {
@@ -676,21 +889,73 @@ func (a *OrchestrationAggregate) addLabel(builder *ui3d.DeltaBuilder, labelID, l
 
 func (a *OrchestrationAggregate) addEventObject(builder *ui3d.DeltaBuilder, baseID string, pos []float64, eventType string, color []float64, labelText string, extra map[string]interface{}) string {
 	nodeID := baseID
-	if eventType != "orchestrator_ai" {
+	lookupID := baseID
+	properties := map[string]interface{}{
+		"event_type": eventType,
+	}
+	if extra != nil {
+		for k, v := range extra {
+			properties[k] = v
+		}
+	}
+
+	switch eventType {
+	case "orchestrator_ai":
+		if _, exists := properties["material_override"]; !exists {
+			properties["material_override"] = map[string]interface{}{
+				"albedo_color": []float64{0.95, 0.98, 1.0, 0.8},
+			}
+		}
+		properties["emissive_color"] = []float64{1.0, 1.0, 1.0, 1.0}
+		properties["particles"] = true
+		properties["scale"] = []float64{3.5, 3.5, 3.5}
+		properties["mesh_type"] = "sphere"
+		builder.CreateSphere(nodeID, pos).WithExtra(properties)
+		a.applyModelOverride(builder, properties)
+	case "plugin_snapshot":
+		nodeID = baseID
+		if _, exists := properties["material_override"]; !exists && color != nil {
+			properties["material_override"] = map[string]interface{}{
+				"albedo_color": color,
+			}
+		}
+		if _, exists := properties["scale"]; !exists {
+			properties["scale"] = []float64{1.8, 1.8, 1.8}
+		}
+		properties["mesh_type"] = "sphere"
+		builder.CreateSphere(nodeID, pos).WithExtra(properties)
+		a.applyModelOverride(builder, properties)
+	default:
 		index := a.PositionIndex - 1
 		if index < 0 {
 			index = 0
 		}
 		nodeID = fmt.Sprintf("%s_%05d", sanitizeID(baseID), index)
+		a.addBox(builder, nodeID, pos, eventType, color, properties)
+		a.applyModelOverride(builder, properties)
 	}
 
-	a.addBox(builder, nodeID, pos, eventType, color, extra)
-	if displayInfo, exists := a.DisplayInfos[baseID]; exists {
+	displayInfo, exists := a.DisplayInfos[nodeID]
+	if !exists {
+		displayInfo = a.DisplayInfos[lookupID]
+	}
+	if displayInfo != nil {
 		builder.WithDisplayInfo(displayInfo)
 	}
 	if labelText != "" {
 		labelID := fmt.Sprintf("%s_label", nodeID)
-		labelPos := []float64{pos[0], pos[1] + 1.0, pos[2]}
+		offsetY := 1.0
+		if mt, ok := properties["mesh_type"].(string); ok {
+			switch mt {
+			case "sphere":
+				offsetY = 1.2
+			case "cylinder":
+				offsetY = 1.6
+			case "plane":
+				offsetY = 0.2
+			}
+		}
+		labelPos := []float64{pos[0], pos[1] + offsetY, pos[2]}
 		a.addLabel(builder, labelID, labelText, labelPos, eventType)
 		if displayInfo, exists := a.DisplayInfos[labelID]; exists {
 			builder.WithDisplayInfo(displayInfo)
@@ -699,15 +964,60 @@ func (a *OrchestrationAggregate) addEventObject(builder *ui3d.DeltaBuilder, base
 	return nodeID
 }
 
+func (a *OrchestrationAggregate) applyModelOverride(builder *ui3d.DeltaBuilder, properties map[string]interface{}) {
+	if builder == nil || properties == nil {
+		return
+	}
+	if pathRaw, ok := properties["model_path"]; ok {
+		if path, ok := pathRaw.(string); ok && strings.TrimSpace(path) != "" {
+			builder.WithModel(path)
+			return
+		}
+	}
+	modelID := ""
+	modelIDRaw, ok := properties["model_id"]
+	if ok && modelIDRaw != nil {
+		if val, okCast := modelIDRaw.(string); okCast {
+			modelID = val
+		}
+	}
+	if strings.TrimSpace(modelID) == "" {
+		if assetRaw, hasAsset := properties["model_asset"]; hasAsset && assetRaw != nil {
+			if val, okCast := assetRaw.(string); okCast {
+				modelID = val
+			}
+		}
+	}
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return
+	}
+	if a.modelResolver == nil {
+		logging.GetLogger().Debug("MODEL: resolver unavailable for model_id %s", modelID)
+		return
+	}
+	resource, err := a.modelResolver.EnsureModel(modelID)
+	if err != nil {
+		logging.GetLogger().Error("MODEL: failed to resolve model_id %s: %v", modelID, err)
+		return
+	}
+	properties["model_path"] = resource
+	builder.WithModel(resource)
+}
+
 func (a *OrchestrationAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.DeltaEnvelope {
 	logging.GetLogger().Info("EmitDelta called for event: %s", event.Type())
 	theme := ui3d.DefaultTheme()
 	builder := ui3d.NewDeltaBuilder(theme)
+	changedDisplays := make(map[string]struct{})
 
 	// Create orchestrator_ai if not already done
 	if !a.OrchestratorAICreated {
-		pos := []float64{0, 0, 0}         // Center position
-		color := []float64{1, 0.84, 0, 1} // Gold color
+		pos := []float64{0, 0, 0} // Center position
+		color := []float64{0.85, 0.95, 1.0, 0.85}
+		if _, exists := a.DisplayInfos["orchestrator_ai"]; !exists {
+			a.updateConversationDisplay("", nil)
+		}
 		_ = a.addEventObject(builder, "orchestrator_ai", pos, "orchestrator_ai", color, "Orchestrator AI", nil)
 		a.OrchestratorAICreated = true
 		logging.GetLogger().Info("Created orchestrator_ai object in the middle")
@@ -723,10 +1033,17 @@ func (a *OrchestrationAggregate) EmitDelta(event eventsourcing.Event) *eventsour
 			"text":       e.RequestText,
 			"timestamp":  e.Timestamp,
 		}
+		if strings.TrimSpace(e.TargetAgent) != "" {
+			extra["target_agent"] = e.TargetAgent
+		}
 		_ = a.addEventObject(builder, boxID, pos, "user_request_received", []float64{0, 1, 0, 1}, "User Request", extra)
 		// Animation: Move orchestrator AI to read the request
 		orchPos := a.nextOrchestratorPosition()
 		builder.AnimateMoveTo("orchestrator_ai", orchPos, 1.0, "ease_in_out")
+		a.updateConversationDisplay("", changedDisplays)
+		if strings.TrimSpace(e.TargetAgent) != "" {
+			a.updateConversationDisplay(strings.TrimSpace(e.TargetAgent), changedDisplays)
+		}
 	case *AgentCallDecidedEvent:
 		pos := a.nextPosition()
 		boxID := fmt.Sprintf("agent_%s", e.RequestID)
@@ -741,6 +1058,10 @@ func (a *OrchestrationAggregate) EmitDelta(event eventsourcing.Event) *eventsour
 		// Animation: Move orchestrator AI to read the agent call
 		orchPos := a.nextOrchestratorPosition()
 		builder.AnimateMoveTo("orchestrator_ai", orchPos, 1.0, "ease_in_out")
+		a.updateConversationDisplay("", changedDisplays)
+		if e.CallAgent && strings.TrimSpace(e.AgentName) != "" {
+			a.updateConversationDisplay(e.AgentName, changedDisplays)
+		}
 	case *AgentResponseEvent:
 		pos := a.nextPosition()
 		boxID := fmt.Sprintf("agent_response_%s_%s", e.RequestID, sanitizeID(e.Stage))
@@ -751,6 +1072,10 @@ func (a *OrchestrationAggregate) EmitDelta(event eventsourcing.Event) *eventsour
 			"timestamp":  e.Timestamp,
 		}
 		_ = a.addEventObject(builder, boxID, pos, "agent_response", []float64{0.5, 0.2, 1, 1}, "Agent Response", extra)
+		a.updateConversationDisplay("", changedDisplays)
+		if strings.TrimSpace(e.AgentName) != "" {
+			a.updateConversationDisplay(e.AgentName, changedDisplays)
+		}
 	case *ToolCallRequestPlaced:
 		pos := a.nextPosition()
 		boxID := fmt.Sprintf("tool_call_%s", e.ToolCallID)
@@ -786,6 +1111,10 @@ func (a *OrchestrationAggregate) EmitDelta(event eventsourcing.Event) *eventsour
 			"agent_name":   e.AgentName,
 		}
 		_ = a.addEventObject(builder, boxID, pos, "tool_call_completed", []float64{0, 1, 0, 1}, "Tool Call Completed", extra)
+		a.updateConversationDisplay("", changedDisplays)
+		if strings.TrimSpace(e.AgentName) != "" {
+			a.updateConversationDisplay(e.AgentName, changedDisplays)
+		}
 
 	case *ToolCallFailedEvent:
 		pos := a.nextPosition()
@@ -799,6 +1128,10 @@ func (a *OrchestrationAggregate) EmitDelta(event eventsourcing.Event) *eventsour
 			"agent_name":   e.AgentName,
 		}
 		_ = a.addEventObject(builder, boxID, pos, "tool_call_failed", []float64{1, 0, 0, 1}, "Tool Call Failed", extra)
+		a.updateConversationDisplay("", changedDisplays)
+		if strings.TrimSpace(e.AgentName) != "" {
+			a.updateConversationDisplay(e.AgentName, changedDisplays)
+		}
 	case *AgentExecutionFailedEvent:
 		pos := a.nextPosition()
 		boxID := fmt.Sprintf("agent_failed_%s", e.RequestID)
@@ -809,6 +1142,10 @@ func (a *OrchestrationAggregate) EmitDelta(event eventsourcing.Event) *eventsour
 			"timestamp":  e.Timestamp,
 		}
 		_ = a.addEventObject(builder, boxID, pos, "agent_execution_failed", []float64{1, 0, 0, 1}, "Agent Failed", extra)
+		a.updateConversationDisplay("", changedDisplays)
+		if strings.TrimSpace(a.AgentName(e.RequestID)) != "" {
+			a.updateConversationDisplay(a.AgentName(e.RequestID), changedDisplays)
+		}
 	case *RequestCompletedEvent:
 		pos := a.nextPosition()
 		boxID := fmt.Sprintf("completed_%s", e.RequestID)
@@ -819,6 +1156,27 @@ func (a *OrchestrationAggregate) EmitDelta(event eventsourcing.Event) *eventsour
 		_ = a.addEventObject(builder, boxID, pos, "request_completed", []float64{0, 1, 0, 1}, "Request Completed", extra)
 		// Animation: Move orchestrator AI back to center after reading
 		builder.AnimateMoveTo("orchestrator_ai", []float64{0, 0, 0}, 2.0, "ease_out")
+		a.updateConversationDisplay("", changedDisplays)
+	case *PluginSnapshotUpsertedEvent:
+		name := e.Snapshot.Metadata.Name
+		pos := a.pluginPosition(name)
+		boxID := fmt.Sprintf("plugin_snapshot_%s", sanitizeID(name))
+		extra := map[string]interface{}{
+			"plugin":               name,
+			"timestamp":            e.Timestamp,
+			"invocations":          e.Snapshot.Telemetry.Invocations,
+			"success_rate":         e.Snapshot.Telemetry.SuccessRate(),
+			"avg_latency":          e.Snapshot.Telemetry.AverageLatencyMillis,
+			"event_type":           "plugin_snapshot",
+			"capabilities":         e.Snapshot.Metadata.Capabilities,
+			"default_timeout_secs": e.Snapshot.Metadata.DefaultTimeoutSeconds,
+		}
+		if model := strings.TrimSpace(e.Snapshot.Metadata.ModelAsset); model != "" {
+			extra["model_id"] = model
+			extra["model_asset"] = model
+		}
+		_ = a.addEventObject(builder, boxID, pos, "plugin_snapshot", []float64{0.2, 0.8, 0.8, 1}, fmt.Sprintf("Plugin %s", titleCase(name)), extra)
+		a.updateConversationDisplay(name, changedDisplays)
 
 	// Task events
 	case *eventsourcing.InitiatePluginCreationEvent:
@@ -838,6 +1196,11 @@ func (a *OrchestrationAggregate) EmitDelta(event eventsourcing.Event) *eventsour
 		baseID := fmt.Sprintf("external_%s", event.Type())
 		_ = a.addEventObject(builder, baseID, pos, event.Type(), nil, prettifyEventLabel(event.Type()), nil)
 	}
+	for nodeID := range changedDisplays {
+		if info, ok := a.DisplayInfos[nodeID]; ok {
+			builder.UpdateDisplayInfo(nodeID, info)
+		}
+	}
 	return &eventsourcing.DeltaEnvelope{
 		Type:      "delta",
 		Aggregate: "orchestration",
@@ -855,5 +1218,6 @@ func (a *OrchestrationAggregate) Clone() eventsourcing.Aggregate {
 	cloned := NewOrchestrationAggregate()
 	cloned.RequestIDs = make([]string, len(a.RequestIDs))
 	copy(cloned.RequestIDs, a.RequestIDs)
+	cloned.modelResolver = a.modelResolver
 	return cloned
 }

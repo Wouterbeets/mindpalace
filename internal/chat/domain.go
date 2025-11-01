@@ -139,6 +139,11 @@ func (cm *ChatManager) AddMessage(role Role, content string, requestID string, a
 	cm.totalTokens[agent] += tokens
 }
 
+// SetSystemPrompt allows higher level orchestration code to swap the active system prompt dynamically.
+func (cm *ChatManager) SetSystemPrompt(prompt string) {
+	cm.systemPrompt = prompt
+}
+
 // GetLLMContext now includes logging for debugging
 func (cm *ChatManager) GetLLMContext(activeAgents []string) []llmmodels.Message {
 	logging.Info("Building LLM context for active agents: %v", activeAgents)
@@ -324,6 +329,34 @@ func (cm *ChatManager) GetTotalTokens() int {
 // SetPluginPrompt adds or updates a plugin-specific system prompt
 func (cm *ChatManager) SetPluginPrompt(pluginName, prompt string) {
 	cm.pluginPrompts[pluginName] = prompt
+}
+
+// GetConversation returns the most recent visible messages exchanged with the specified agent.
+// Use an empty agent name to retrieve the MindPalace orchestrator conversation.
+func (cm *ChatManager) GetConversation(agent string, limit int) []Message {
+	if limit <= 0 {
+		return []Message{}
+	}
+	agentMsgs, exists := cm.messages[agent]
+	if !exists {
+		return []Message{}
+	}
+
+	visible := make([]Message, 0, len(agentMsgs))
+	for _, msg := range agentMsgs {
+		if msg.Visible {
+			visible = append(visible, msg)
+		}
+	}
+
+	if len(visible) > limit {
+		visible = visible[len(visible)-limit:]
+	}
+
+	// Return a shallow copy so callers can't mutate internal slices.
+	result := make([]Message, len(visible))
+	copy(result, visible)
+	return result
 }
 
 // Helper to generate unique message IDs

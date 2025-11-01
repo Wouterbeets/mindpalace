@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"mindpalace/internal/llmprocessor"
 	"mindpalace/pkg/eventsourcing"
@@ -38,7 +39,8 @@ func (m *mockLLMClient) Close() error {
 }
 
 type mockPluginManager struct {
-	plugins map[string]eventsourcing.Plugin
+	plugins   map[string]eventsourcing.Plugin
+	telemetry map[string]eventsourcing.PluginTelemetry
 }
 
 func (m *mockPluginManager) GetLLMPlugins() []eventsourcing.Plugin {
@@ -67,6 +69,41 @@ func (m *mockPluginManager) GetPluginByCommand(cmd string) (eventsourcing.Plugin
 	return nil, fmt.Errorf("plugin not found for command %s", cmd)
 }
 
+func (m *mockPluginManager) PluginMetadataSnapshot(name string) (eventsourcing.PluginMetadataSnapshot, bool) {
+	if _, ok := m.plugins[name]; !ok {
+		return eventsourcing.PluginMetadataSnapshot{}, false
+	}
+	meta := eventsourcing.DefaultPluginMetadata(name)
+	return meta.Snapshot(), true
+}
+
+func (m *mockPluginManager) PluginSnapshots() []eventsourcing.PluginSnapshot {
+	snapshots := make([]eventsourcing.PluginSnapshot, 0, len(m.plugins))
+	for name := range m.plugins {
+		meta := eventsourcing.DefaultPluginMetadata(name)
+		tele := m.telemetry[name]
+		snapshots = append(snapshots, eventsourcing.PluginSnapshot{
+			Metadata:  meta.Snapshot(),
+			Telemetry: tele,
+		})
+	}
+	return snapshots
+}
+
+func (m *mockPluginManager) PluginDefaultTimeout(name string, fallback time.Duration) time.Duration {
+	return fallback
+}
+
+func (m *mockPluginManager) RecordInvocation(name string, result eventsourcing.PluginInvocationResult) eventsourcing.PluginTelemetry {
+	if m.telemetry == nil {
+		m.telemetry = make(map[string]eventsourcing.PluginTelemetry)
+	}
+	tele := m.telemetry[name]
+	tele = tele.Merge(result)
+	m.telemetry[name] = tele
+	return tele
+}
+
 type mockAggregateStore struct {
 	aggregates []eventsourcing.Aggregate
 }
@@ -89,18 +126,36 @@ type mockPlugin struct {
 	systemPrompt string
 	model        string
 	commands     map[string]eventsourcing.CommandHandler
-	schemas      map[string]map[string]interface{}
+	schemas      map[string]eventsourcing.CommandInput
 }
 
 func (m *mockPlugin) Name() string                                         { return m.name }
 func (m *mockPlugin) Type() eventsourcing.PluginType                       { return eventsourcing.LLMPlugin }
 func (m *mockPlugin) EventHandlers() map[string]eventsourcing.EventHandler { return nil }
 func (m *mockPlugin) Commands() map[string]eventsourcing.CommandHandler    { return m.commands }
-func (m *mockPlugin) Schemas() map[string]eventsourcing.CommandInput       { return nil }
+func (m *mockPlugin) Schemas() map[string]eventsourcing.CommandInput       { return m.schemas }
 func (m *mockPlugin) Aggregate() eventsourcing.Aggregate                   { return nil }
 func (m *mockPlugin) SystemPrompt() string                                 { return m.systemPrompt }
 func (m *mockPlugin) AgentModel() string                                   { return m.model }
 func (m *mockPlugin) Description() string                                  { return "Mock plugin for testing" }
+
+type stubInput struct {
+	Query string `json:"query"`
+}
+
+type stubCommandInput struct{}
+
+func (stubCommandInput) New() any { return &stubInput{} }
+
+func (stubCommandInput) Schema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"query": map[string]interface{}{"type": "string"},
+		},
+		"required": []string{"query"},
+	}
+}
 
 type mockEventProcessor struct {
 	commands         map[string]eventsourcing.CommandHandler
@@ -126,6 +181,15 @@ func (m *mockEventProcessor) GetExecutedCommands() []string {
 
 type mockEventBus struct {
 	subscriptions map[string][]eventsourcing.EventHandler
+}
+
+func hasActionType(actions []eventsourcing.DeltaAction, actionType string) bool {
+	for _, action := range actions {
+		if action.Type == actionType {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *mockEventBus) Subscribe(eventType string, handler eventsourcing.EventHandler) {
@@ -375,8 +439,14 @@ func TestBroadcast3DDelta(t *testing.T) {
 	}
 	envelope := agg.EmitDelta(event)
 	actions := envelope.Actions
-	if len(actions) != 2 {
-		t.Errorf("Expected 2 actions, got %d", len(actions))
+	if len(actions) < 1 {
+		t.Fatalf("Expected at least one action")
+	}
+	if actions[0].Type != "create" {
+		t.Fatalf("Expected first action create, got %s", actions[0].Type)
+	}
+	if len(actions) < 2 {
+		t.Fatalf("Expected create and label actions")
 	}
 	if actions[0].NodeType != "MeshInstance3D" {
 		t.Errorf("Expected first action to be MeshInstance3D, got %s", actions[0].NodeType)
@@ -442,16 +512,22 @@ func TestOrchestrationFlow_UserRequestToCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecideAgentCallCommand failed: %v", err)
 	}
-	if len(decideEvents) != 1 {
-		t.Fatalf("Expected 1 event, got %d", len(decideEvents))
+	if len(decideEvents) != 2 {
+		t.Fatalf("Expected 2 events, got %d", len(decideEvents))
 	}
-	// Since no plugins, it should be RequestCompletedEvent
-	if _, ok := decideEvents[0].(*RequestCompletedEvent); !ok {
-		t.Errorf("Expected RequestCompletedEvent, got %v", decideEvents[0])
+	if _, ok := decideEvents[0].(*AgentCallDecidedEvent); !ok {
+		t.Errorf("Expected first event AgentCallDecidedEvent, got %T", decideEvents[0])
+	}
+	if _, ok := decideEvents[1].(*RequestCompletedEvent); !ok {
+		t.Errorf("Expected second event RequestCompletedEvent, got %T", decideEvents[1])
 	}
 
 	// Apply the completion event
 	err = agg.ApplyEvent(decideEvents[0])
+	if err != nil {
+		t.Fatalf("ApplyEvent failed: %v", err)
+	}
+	err = agg.ApplyEvent(decideEvents[1])
 	if err != nil {
 		t.Fatalf("ApplyEvent failed: %v", err)
 	}
@@ -835,8 +911,11 @@ func TestBroadcast3DDelta_AgentCallDecided(t *testing.T) {
 	}
 	envelope := agg.EmitDelta(event)
 	actions := envelope.Actions
-	if len(actions) != 3 {
-		t.Errorf("Expected 3 actions, got %d", len(actions))
+	if len(actions) < 2 {
+		t.Fatalf("Expected at least two actions")
+	}
+	if !hasActionType(actions, "update") {
+		t.Fatalf("Expected update action for conversation refresh")
 	}
 }
 
@@ -852,8 +931,11 @@ func TestBroadcast3DDelta_ToolCallRequestPlaced(t *testing.T) {
 	}
 	envelope := agg.EmitDelta(event)
 	actions := envelope.Actions
-	if len(actions) != 2 {
-		t.Errorf("Expected 2 actions, got %d", len(actions))
+	if len(actions) < 2 {
+		t.Fatalf("Expected create and label actions")
+	}
+	if actions[0].Type != "create" {
+		t.Fatalf("Expected first action create, got %s", actions[0].Type)
 	}
 }
 
@@ -869,11 +951,11 @@ func TestBroadcast3DDelta_ToolCallStarted(t *testing.T) {
 	}
 	envelope := agg.EmitDelta(event)
 	actions := envelope.Actions
-	if len(actions) != 1 {
-		t.Errorf("Expected 1 action, got %d", len(actions))
+	if len(actions) < 2 {
+		t.Fatalf("Expected create and label actions")
 	}
 	if actions[0].Type != "create" {
-		t.Errorf("Expected create, got %s", actions[0].Type)
+		t.Fatalf("Expected first action create, got %s", actions[0].Type)
 	}
 }
 
@@ -889,8 +971,14 @@ func TestBroadcast3DDelta_ToolCallCompleted(t *testing.T) {
 	}
 	envelope := agg.EmitDelta(event)
 	actions := envelope.Actions
-	if len(actions) != 1 {
-		t.Errorf("Expected 1 action, got %d", len(actions))
+	if len(actions) < 1 {
+		t.Fatalf("Expected at least one action")
+	}
+	if actions[0].Type != "create" {
+		t.Fatalf("Expected first action create, got %s", actions[0].Type)
+	}
+	if !hasActionType(actions, "update") {
+		t.Fatalf("Expected update action for conversation refresh")
 	}
 }
 
@@ -906,8 +994,11 @@ func TestBroadcast3DDelta_ToolCallFailedEvent(t *testing.T) {
 	}
 	envelope := agg.EmitDelta(event)
 	actions := envelope.Actions
-	if len(actions) != 1 {
-		t.Errorf("Expected 1 action, got %d", len(actions))
+	if len(actions) < 1 {
+		t.Fatalf("Expected at least one action")
+	}
+	if !hasActionType(actions, "update") {
+		t.Fatalf("Expected update action for conversation refresh")
 	}
 }
 
@@ -921,8 +1012,11 @@ func TestBroadcast3DDelta_AgentExecutionFailedEvent(t *testing.T) {
 	}
 	envelope := agg.EmitDelta(event)
 	actions := envelope.Actions
-	if len(actions) != 1 {
-		t.Errorf("Expected 1 action, got %d", len(actions))
+	if len(actions) < 1 {
+		t.Fatalf("Expected at least one action")
+	}
+	if !hasActionType(actions, "update") {
+		t.Fatalf("Expected update action for conversation refresh")
 	}
 }
 
@@ -936,8 +1030,11 @@ func TestBroadcast3DDelta_RequestCompletedEvent(t *testing.T) {
 	}
 	envelope := agg.EmitDelta(event)
 	actions := envelope.Actions
-	if len(actions) != 3 {
-		t.Errorf("Expected 3 actions, got %d", len(actions))
+	if len(actions) < 2 {
+		t.Fatalf("Expected at least two actions")
+	}
+	if !hasActionType(actions, "update") {
+		t.Fatalf("Expected update action for conversation refresh")
 	}
 }
 
@@ -1002,6 +1099,55 @@ func TestDecideAgentCallCommand_NoAgents(t *testing.T) {
 	}
 }
 
+func TestDecideAgentCallCommand_TargetAgent(t *testing.T) {
+	llmClient := &mockLLMClient{}
+	plugin := &mockPlugin{
+		name:         "calendar",
+		systemPrompt: "calendar prompt",
+		model:        "model",
+		commands:     map[string]eventsourcing.CommandHandler{},
+		schemas:      map[string]eventsourcing.CommandInput{},
+	}
+	pm := &mockPluginManager{plugins: map[string]eventsourcing.Plugin{"calendar": plugin}}
+	agg := NewOrchestrationAggregate()
+	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
+	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
+	commandChan := make(chan eventsourcing.CommandData, 10)
+	controlChan := make(chan string, 10)
+	aggStore := &mockAggregateStore{}
+	eventsStream := []eventsourcing.Event{}
+
+	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb, commandChan, controlChan, aggStore, eventsStream)
+
+	requestEvent := &UserRequestReceivedEvent{
+		RequestID:   "req-target",
+		RequestText: "Schedule a deep dive",
+		Timestamp:   eventsourcing.ISOTimestamp(),
+		TargetAgent: "Calendar",
+	}
+
+	result, err := ro.DecideAgentCallCommand(requestEvent)
+	if err != nil {
+		t.Fatalf("DecideAgentCallCommand failed: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("Expected 1 event, got %d", len(result))
+	}
+	callEvent, ok := result[0].(*AgentCallDecidedEvent)
+	if !ok {
+		t.Fatalf("Expected AgentCallDecidedEvent, got %T", result[0])
+	}
+	if !callEvent.CallAgent {
+		t.Fatalf("Expected CallAgent true")
+	}
+	if callEvent.AgentName != "calendar" {
+		t.Fatalf("Expected agent 'calendar', got %s", callEvent.AgentName)
+	}
+	if callEvent.Query != requestEvent.RequestText {
+		t.Fatalf("Expected query to match request text")
+	}
+}
+
 func TestExecuteToolCallCommand_NoPlugin(t *testing.T) {
 	llmClient := &mockLLMClient{}
 	pm := &mockPluginManager{}
@@ -1031,6 +1177,94 @@ func TestExecuteToolCallCommand_NoPlugin(t *testing.T) {
 	}
 	if _, ok := events[1].(*ToolCallFailedEvent); !ok {
 		t.Errorf("Expected ToolCallFailedEvent")
+	}
+}
+
+func TestExecuteToolCallCommand_SuccessTelemetry(t *testing.T) {
+	llmClient := &mockLLMClient{}
+	plugin := &mockPlugin{
+		name:         "demo",
+		systemPrompt: "demo",
+		model:        "demo",
+		commands: map[string]eventsourcing.CommandHandler{
+			"DoThing": eventsourcing.NewCommand(func(input *stubInput) ([]eventsourcing.Event, error) {
+				if input.Query == "" {
+					return nil, fmt.Errorf("missing query")
+				}
+				return []eventsourcing.Event{
+					&AgentResponseEvent{
+						RequestID:    "req-success",
+						AgentName:    "demo",
+						ResponseText: "handled",
+						RawResponse:  "handled",
+						Stage:        "final",
+						Timestamp:    eventsourcing.ISOTimestamp(),
+					},
+				}, nil
+			}),
+		},
+		schemas: map[string]eventsourcing.CommandInput{
+			"DoThing": stubCommandInput{},
+		},
+	}
+	pm := &mockPluginManager{
+		plugins: map[string]eventsourcing.Plugin{
+			"demo": plugin,
+		},
+	}
+	agg := NewOrchestrationAggregate()
+	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
+	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
+	commandChan := make(chan eventsourcing.CommandData, 10)
+	controlChan := make(chan string, 10)
+	aggStore := &mockAggregateStore{}
+	eventsStream := []eventsourcing.Event{}
+
+	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb, commandChan, controlChan, aggStore, eventsStream)
+
+	event := &ToolCallRequestPlaced{
+		RequestID:  "req-success",
+		ToolCallID: "tool-1",
+		Function:   "DoThing",
+		AgentName:  "demo",
+		Arguments:  map[string]interface{}{"query": "run"},
+		Timestamp:  eventsourcing.ISOTimestamp(),
+	}
+
+	resultEvents, err := ro.ExecuteToolCallCommand(event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resultEvents) != 4 {
+		t.Fatalf("expected 4 events (start, agent event, completion, snapshot), got %d", len(resultEvents))
+	}
+	if _, ok := resultEvents[0].(*ToolCallStarted); !ok {
+		t.Fatalf("expected first event ToolCallStarted, got %T", resultEvents[0])
+	}
+	if _, ok := resultEvents[1].(*AgentResponseEvent); !ok {
+		t.Fatalf("expected second event AgentResponseEvent, got %T", resultEvents[1])
+	}
+	completed, ok := resultEvents[2].(*ToolCallCompleted)
+	if !ok {
+		t.Fatalf("expected third event ToolCallCompleted, got %T", resultEvents[2])
+	}
+	telemetryAny := completed.Results["telemetry"]
+	telemetry, ok := telemetryAny.(eventsourcing.PluginTelemetry)
+	if !ok {
+		t.Fatalf("expected telemetry in ToolCallCompleted results, got %T", telemetryAny)
+	}
+	if telemetry.Invocations != 1 || telemetry.Successes != 1 {
+		t.Fatalf("unexpected telemetry counters: %+v", telemetry)
+	}
+	snapshot, ok := resultEvents[3].(*PluginSnapshotUpsertedEvent)
+	if !ok {
+		t.Fatalf("expected fourth event PluginSnapshotUpsertedEvent, got %T", resultEvents[3])
+	}
+	if snapshot.Snapshot.Metadata.Name != "demo" {
+		t.Fatalf("expected snapshot metadata for demo plugin, got %s", snapshot.Snapshot.Metadata.Name)
+	}
+	if pm.telemetry["demo"].Invocations != 1 {
+		t.Fatalf("mock plugin manager telemetry not updated: %+v", pm.telemetry["demo"])
 	}
 }
 

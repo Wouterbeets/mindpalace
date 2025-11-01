@@ -6,14 +6,15 @@ import (
 
 // Create3DObjectEvent represents the creation of a 3D object in the UI
 type Create3DObjectEvent struct {
-	EventType string                 `json:"event_type"`
-	ObjectID  string                 `json:"object_id"`
-	MeshType  string                 `json:"mesh_type"`
-	Position  []float64              `json:"position"`
-	Color     []float64              `json:"color,omitempty"`
-	Zone      string                 `json:"zone"`
-	Label     string                 `json:"label,omitempty"`
-	Extra     map[string]interface{} `json:"extra,omitempty"`
+	EventType  string                 `json:"event_type"`
+	ObjectID   string                 `json:"object_id"`
+	MeshType   string                 `json:"mesh_type"`
+	Position   []float64              `json:"position"`
+	Color      []float64              `json:"color,omitempty"`
+	Zone       string                 `json:"zone"`
+	Label      string                 `json:"label,omitempty"`
+	Extra      map[string]interface{} `json:"extra,omitempty"`
+	ModelAsset string                 `json:"model_asset,omitempty"`
 }
 
 func (e *Create3DObjectEvent) Type() string {

@@ -841,7 +841,67 @@ func (a *TaskAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.Delt
 		builder := ui3d.NewDeltaBuilder(theme)
 		builder.Delete(e.TaskID).Delete(e.TaskID + "_label")
 		return &eventsourcing.DeltaEnvelope{Type: "delta", Aggregate: "taskmanager", EventID: eventsourcing.ISOTimestamp(), Timestamp: eventsourcing.ISOTimestamp(), SequenceID: eventsourcing.NextSequenceID(), Actions: builder.Build()}
-		// ... similar for Update/Delete
+	case *TaskDeletedEvent:
+		builder := ui3d.NewDeltaBuilder(theme)
+		builder.Delete(e.TaskID).Delete(e.TaskID + "_label")
+		actions := builder.Build()
+		if len(actions) == 0 {
+			return nil
+		}
+		return &eventsourcing.DeltaEnvelope{
+			Type:       "delta",
+			Aggregate:  "taskmanager",
+			EventID:    eventsourcing.ISOTimestamp(),
+			Timestamp:  eventsourcing.ISOTimestamp(),
+			SequenceID: eventsourcing.NextSequenceID(),
+			Actions:    actions,
+		}
+	case *TasksListedEvent:
+		builder := ui3d.NewDeltaBuilder(theme)
+		colCount := zone.GridCols
+		if colCount <= 0 {
+			colCount = 1
+		}
+		visible := make(map[string]struct{}, len(e.Tasks))
+		for i, task := range e.Tasks {
+			if task == nil || task.TaskID == "" {
+				continue
+			}
+			visible[task.TaskID] = struct{}{}
+			relX := i % colCount
+			relZ := i/colCount + 1
+			pos := zone.ToPosition(relX, 0, relZ)
+			if offset, ok := statusOffset[task.Status]; ok {
+				pos[0] += offset
+			}
+			labelPos := []float64{pos[0], pos[1] + 1.5, pos[2]}
+			builder.Delete(task.TaskID).Delete(task.TaskID + "_label")
+			builder.CreateTaskCard(task.TaskID, task.Title, task.Priority, pos)
+			builder.WithExtra(map[string]interface{}{
+				"event_type": "task_listed",
+				"status":     task.Status,
+			})
+			builder.CreateLabel(task.TaskID+"_label", task.Title, labelPos).WithExtra(map[string]interface{}{
+				"event_type": "task_listed",
+			})
+		}
+		for taskID := range a.Tasks {
+			if _, ok := visible[taskID]; !ok {
+				builder.Delete(taskID).Delete(taskID + "_label")
+			}
+		}
+		actions := builder.Build()
+		if len(actions) == 0 {
+			return nil
+		}
+		return &eventsourcing.DeltaEnvelope{
+			Type:       "delta",
+			Aggregate:  "taskmanager",
+			EventID:    eventsourcing.ISOTimestamp(),
+			Timestamp:  eventsourcing.ISOTimestamp(),
+			SequenceID: eventsourcing.NextSequenceID(),
+			Actions:    actions,
+		}
 	}
 	return nil
 }
@@ -972,6 +1032,32 @@ func (p *TaskPlugin) AgentModel() string {
 // Description returns a short description of how the orchestrator AI can use this agent
 func (p *TaskPlugin) Description() string {
 	return "use this to manage the todolist, talk to me in natural language with the task related request and I will create,update,delete or modify the tasks as needed."
+}
+
+func (p *TaskPlugin) Metadata() eventsourcing.PluginMetadata {
+	return eventsourcing.PluginMetadata{
+		Name:      p.Name(),
+		Summary:   "Coordinates complex task graphs with priorities, deadlines, and blockers.",
+		UsageHint: "Delegate todo triage, dependency checks, stand-up summaries, or when tasks need structured updates.",
+		Capabilities: []eventsourcing.PluginCapability{
+			{Name: "CreateTask", Description: "Capture new actionable tasks with priorities, tags, and deadlines."},
+			{Name: "UpdateTask", Description: "Modify task details including status, priority, and dependencies."},
+			{Name: "CompleteTask", Description: "Mark tasks as complete with graceful handling of blockers."},
+			{Name: "DeleteTask", Description: "Retire tasks that are no longer relevant."},
+			{Name: "ListTasks", Description: "Summarize tasks filtered by status, priority, or tags."},
+		},
+		Examples: []string{
+			"Add a critical task to renew the vehicle insurance before Friday.",
+			"Show me all blocked tasks tagged 'paperwork' sorted by deadline.",
+		},
+		Tags:           []string{"tasks", "planning", "execution"},
+		Maintainer:     "MindPalace Core Team",
+		DefaultTimeout: 12 * time.Second,
+		Safety:         "trusted",
+		Reliability:    "battle-tested",
+		Lifecycle:      "maintained",
+		ModelAsset:     "82539",
+	}
 }
 
 func (p *TaskPlugin) EventHandlers() map[string]eventsourcing.EventHandler {

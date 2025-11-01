@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -233,6 +234,96 @@ func TestTaskAggregate_Broadcast3DDelta_TaskCompleted(t *testing.T) {
 
 	if actions[1].Type != "delete" || actions[1].NodeID != "task1_label" {
 		t.Errorf("Expected delete action for 'task1_label', got %v", actions[1])
+	}
+}
+
+func TestTaskAggregate_Broadcast3DDelta_TaskDeleted(t *testing.T) {
+	agg := NewTaskAggregate()
+
+	event := &TaskDeletedEvent{
+		EventType: "taskmanager_TaskDeleted",
+		TaskID:    "task1",
+	}
+
+	signal := agg.EmitDelta(event)
+	if signal == nil {
+		t.Fatal("Expected non-nil delta for task deletion")
+	}
+
+	if len(signal.Actions) != 2 {
+		t.Fatalf("Expected 2 actions, got %d", len(signal.Actions))
+	}
+
+	if signal.Actions[0].Type != "delete" || signal.Actions[0].NodeID != "task1" {
+		t.Errorf("Expected delete action for 'task1', got %v", signal.Actions[0])
+	}
+	if signal.Actions[1].Type != "delete" || signal.Actions[1].NodeID != "task1_label" {
+		t.Errorf("Expected delete action for 'task1_label', got %v", signal.Actions[1])
+	}
+}
+
+func TestTaskAggregate_Broadcast3DDelta_TasksListed(t *testing.T) {
+	agg := NewTaskAggregate()
+
+	createA := &TaskCreatedEvent{
+		EventType: "taskmanager_TaskCreated",
+		TaskID:    "task_a",
+		Title:     "Task Alpha",
+		Status:    StatusPending,
+		Priority:  PriorityHigh,
+	}
+	createB := &TaskCreatedEvent{
+		EventType: "taskmanager_TaskCreated",
+		TaskID:    "task_b",
+		Title:     "Task Beta",
+		Status:    StatusInProgress,
+		Priority:  PriorityMedium,
+	}
+	if err := agg.ApplyEvent(createA); err != nil {
+		t.Fatalf("apply createA failed: %v", err)
+	}
+	time.Sleep(1 * time.Millisecond) // ensure distinct CreatedAt ordering
+	if err := agg.ApplyEvent(createB); err != nil {
+		t.Fatalf("apply createB failed: %v", err)
+	}
+
+	zones := map[string]ui3d.Zone{
+		"taskmanager": {Angle: 0, Radius: 50, GridRows: 1, GridCols: 3, GridDepth: 10},
+	}
+	ui3d.SetGlobalZones(zones)
+
+	listEvent := &TasksListedEvent{
+		EventType: "taskmanager_TasksListed",
+		Tasks: []*Task{
+			agg.Tasks["task_a"],
+			agg.Tasks["task_b"],
+		},
+	}
+
+	signal := agg.EmitDelta(listEvent)
+	if signal == nil {
+		t.Fatal("Expected non-nil delta for tasks list refresh")
+	}
+	if signal.SequenceID == 0 {
+		t.Error("Expected non-zero sequence ID for list delta")
+	}
+
+	actionCounts := map[string]int{}
+	for _, act := range signal.Actions {
+		key := fmt.Sprintf("%s:%s", act.Type, act.NodeID)
+		actionCounts[key]++
+	}
+
+	expectedKeys := []string{
+		"delete:task_a", "delete:task_a_label",
+		"create:task_a", "create:task_a_label",
+		"delete:task_b", "delete:task_b_label",
+		"create:task_b", "create:task_b_label",
+	}
+	for _, key := range expectedKeys {
+		if actionCounts[key] == 0 {
+			t.Errorf("Expected action %s to be present", key)
+		}
 	}
 }
 

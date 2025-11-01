@@ -207,6 +207,26 @@ func (db *DeltaBuilder) AnimateMoveToTouch(nodeID, targetNodeID string, speed fl
 	return db
 }
 
+// UpdateDisplayInfo emits an update action that refreshes the display info metadata for a node.
+func (db *DeltaBuilder) UpdateDisplayInfo(nodeID string, info *DisplayInfo) *DeltaBuilder {
+	if info == nil {
+		return db
+	}
+	action := eventsourcing.DeltaAction{
+		Type:   "update",
+		NodeID: nodeID,
+		Properties: map[string]interface{}{
+			"display_info": map[string]interface{}{
+				"title":       info.Title,
+				"description": info.Description,
+				"details":     info.Details,
+			},
+		},
+	}
+	db.actions = append(db.actions, action)
+	return db
+}
+
 // AnimateFade adds a fade animation
 func (db *DeltaBuilder) AnimateFade(nodeID string, targetOpacity float64, duration float64) *DeltaBuilder {
 	action := eventsourcing.DeltaAction{

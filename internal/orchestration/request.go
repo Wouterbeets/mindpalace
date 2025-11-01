@@ -1,9 +1,12 @@
 package orchestration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"text/template"
 	"time"
@@ -25,7 +28,13 @@ type PluginManagerInterface interface {
 	GetLLMPlugins() []eventsourcing.Plugin
 	GetPlugin(name string) (eventsourcing.Plugin, error)
 	GetPluginByCommand(cmd string) (eventsourcing.Plugin, error)
+	PluginMetadataSnapshot(name string) (eventsourcing.PluginMetadataSnapshot, bool)
+	PluginSnapshots() []eventsourcing.PluginSnapshot
+	PluginDefaultTimeout(name string, fallback time.Duration) time.Duration
+	RecordInvocation(name string, result eventsourcing.PluginInvocationResult) eventsourcing.PluginTelemetry
 }
+
+type SyncPluginCatalogInput struct{}
 
 type EventProcessorInterface interface {
 	RegisterCommand(name string, handler eventsourcing.CommandHandler)
@@ -41,26 +50,178 @@ type EventBusInterface interface {
 const systemPromptTemplate = `You are MindPalace, a friendly AI assistant here to help with various queries and tasks. Provide helpful, accurate, and concise responses, using tools only when they enhance your ability to assist.
 
 {{if .Agents}}
-
-Based on the user's request, decide if a specialized agent is needed to handle their query efficiently. You can call specialized agents for specific domains by using the CallAgent tool.
-
-Available agents:
-{{range .Agents}}- {{.}}
+Your current specialist toolbelt:
+{{range .Agents}}
+- {{.Name}} — {{.Summary}}
+  Use when: {{.UsageHint}}
+  Reliability: {{.Reliability}} ({{.SuccessRate}})
+  Typical latency: {{.AverageLatency}}, timeout guard: {{.DefaultTimeout}}
+{{if .Capabilities}}  Capabilities:
+{{range .Capabilities}}    • {{.}}
+{{end}}{{end}}{{if .Examples}}  Example requests:
+{{range .Examples}}    • {{.}}
+{{end}}{{end}}{{if .Tags}}  Tags: {{.Tags}}
 {{end}}
-When to call agents:
-- When a request clearly maps to a specific agent's domain
-- When specialized context or tools would benefit the user
-- When the request mentions a specific plugin by name
-
-When NOT to call agents:
-- For general knowledge questions
-- For simple requests that don't need specialized tools
-- When you can handle the request directly
+{{end}}
+Lean on these strengths when they clearly improve the user's outcome. Otherwise answer directly with empathy and precision.
 {{else}}
 Since there are no specialized agents available, respond directly to the user's query.
 {{end}}
 
 Your goal is to provide the most helpful and efficient experience.`
+
+type agentPromptDescriptor struct {
+	Name           string
+	Summary        string
+	UsageHint      string
+	Capabilities   []string
+	Examples       []string
+	Tags           string
+	Reliability    string
+	SuccessRate    string
+	AverageLatency string
+	DefaultTimeout string
+	score          float64
+}
+
+const defaultToolTimeout = 45 * time.Second
+
+func (ro *RequestOrchestrator) buildAgentPromptDescriptors() []agentPromptDescriptor {
+	snapshots := ro.pluginManager.PluginSnapshots()
+	descriptors := make([]agentPromptDescriptor, 0, len(snapshots))
+
+	for _, snapshot := range snapshots {
+		meta := snapshot.Metadata
+		tele := snapshot.Telemetry
+		if meta.Name == "" {
+			continue
+		}
+
+		summary := meta.Summary
+		if summary == "" {
+			summary = "No summary supplied—lean on explicit mentions."
+		}
+		usage := meta.UsageHint
+		if usage == "" {
+			usage = summary
+		}
+
+		successLine, successScore := renderSuccessRate(tele)
+		reliabilityLine := renderReliability(meta, tele)
+		capabilities := renderCapabilities(meta.Capabilities)
+		tagsLine := strings.Join(meta.Tags, ", ")
+		avgLatency := renderLatency(tele.AverageLatencyMillis)
+		timeout := renderTimeout(meta.DefaultTimeoutSeconds)
+
+		descriptors = append(descriptors, agentPromptDescriptor{
+			Name:           meta.Name,
+			Summary:        summary,
+			UsageHint:      usage,
+			Capabilities:   capabilities,
+			Examples:       meta.Examples,
+			Tags:           tagsLine,
+			Reliability:    reliabilityLine,
+			SuccessRate:    successLine,
+			AverageLatency: avgLatency,
+			DefaultTimeout: timeout,
+			score:          successScore,
+		})
+	}
+
+	sort.Slice(descriptors, func(i, j int) bool {
+		if descriptors[i].score == descriptors[j].score {
+			return descriptors[i].Name < descriptors[j].Name
+		}
+		return descriptors[i].score > descriptors[j].score
+	})
+
+	return descriptors
+}
+
+func renderCapabilities(capabilities []eventsourcing.PluginCapability) []string {
+	if len(capabilities) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		if capability.Name != "" && capability.Description != "" {
+			lines = append(lines, fmt.Sprintf("%s — %s", capability.Name, capability.Description))
+			continue
+		}
+		if capability.Description != "" {
+			lines = append(lines, capability.Description)
+			continue
+		}
+		if capability.Name != "" {
+			lines = append(lines, capability.Name)
+		}
+	}
+	return lines
+}
+
+func renderSuccessRate(tele eventsourcing.PluginTelemetry) (string, float64) {
+	if tele.Invocations == 0 {
+		return "awaiting first run", 0
+	}
+	rate := tele.SuccessRate()
+	percentage := math.Round(rate * 100)
+	return fmt.Sprintf("%d/%d successful (~%.0f%%)", tele.Successes, tele.Invocations, percentage), rate
+}
+
+func renderReliability(meta eventsourcing.PluginMetadataSnapshot, tele eventsourcing.PluginTelemetry) string {
+	label := meta.Reliability
+	if label == "" {
+		if tele.Invocations >= 10 && tele.SuccessRate() >= 0.85 {
+			label = "trusted"
+		} else if tele.Invocations >= 3 {
+			label = "learning"
+		} else {
+			label = "unknown"
+		}
+	}
+	label = titleCase(label)
+	if meta.Safety != "" {
+		label = fmt.Sprintf("%s • safety: %s", label, meta.Safety)
+	}
+	if meta.Lifecycle != "" {
+		label = fmt.Sprintf("%s • %s", label, meta.Lifecycle)
+	}
+	return label
+}
+
+func renderLatency(avgMillis float64) string {
+	if avgMillis <= 0 {
+		return "unmeasured"
+	}
+	duration := time.Duration(avgMillis * float64(time.Millisecond))
+	if duration < time.Millisecond {
+		return fmt.Sprintf("~%dµs", duration/time.Microsecond)
+	}
+	if duration < time.Second {
+		return fmt.Sprintf("~%dms", duration/time.Millisecond)
+	}
+	if duration < time.Minute {
+		return fmt.Sprintf("~%s", duration.Round(10*time.Millisecond))
+	}
+	return fmt.Sprintf("~%s", duration.Round(time.Second))
+}
+
+func renderTimeout(seconds int) string {
+	if seconds <= 0 {
+		return defaultToolTimeout.String()
+	}
+	duration := time.Duration(seconds) * time.Second
+	return duration.String()
+}
+
+func titleCase(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value
+	}
+	lower := strings.ToLower(value)
+	return strings.ToUpper(lower[:1]) + lower[1:]
+}
 
 type RequestOrchestrator struct {
 	llmClient        LLMClientInterface
@@ -99,6 +260,26 @@ func NewRequestOrchestrator(llmClient LLMClientInterface, pm PluginManagerInterf
 
 // DecideAgentCallCommand now dynamically fetches plugin prompts per call
 func (ro *RequestOrchestrator) DecideAgentCallCommand(event *UserRequestReceivedEvent) ([]eventsourcing.Event, error) {
+	preferredAgent := strings.TrimSpace(event.TargetAgent)
+	if preferredAgent != "" {
+		if plugin := ro.findPluginByName(preferredAgent); plugin != nil {
+			now := eventsourcing.ISOTimestamp()
+			logging.Info("Honoring targeted agent request %s -> %s", event.RequestID, plugin.Name())
+			return []eventsourcing.Event{
+				&AgentCallDecidedEvent{
+					RequestID:   event.RequestID,
+					AgentName:   plugin.Name(),
+					CallAgent:   true,
+					Timestamp:   now,
+					Model:       plugin.AgentModel(),
+					Query:       event.RequestText,
+					RawResponse: fmt.Sprintf("Direct conversation routed to %s", plugin.Name()),
+				},
+			}, nil
+		}
+		logging.Info("Target agent %s not found for request %s; falling back to orchestrator routing", preferredAgent, event.RequestID)
+	}
+
 	// Get all LLM plugins at this moment
 	plugins := ro.pluginManager.GetLLMPlugins()
 	pluginNames := make([]string, len(plugins))
@@ -110,6 +291,14 @@ func (ro *RequestOrchestrator) DecideAgentCallCommand(event *UserRequestReceived
 	ro.agg.chatState.GetChatManager().ResetPluginPrompts() // Add this method to ChatManager
 	for _, plugin := range plugins {
 		ro.agg.chatState.GetChatManager().SetPluginPrompt(plugin.Name(), plugin.SystemPrompt())
+	}
+
+	descriptors := ro.buildAgentPromptDescriptors()
+	var promptBuffer bytes.Buffer
+	if err := ro.systemPromptTmpl.Execute(&promptBuffer, map[string]interface{}{"Agents": descriptors}); err != nil {
+		logging.Error("Failed to render system prompt: %v", err)
+	} else {
+		ro.agg.chatState.GetChatManager().SetSystemPrompt(promptBuffer.String())
 	}
 
 	// Get LLM context with fresh plugin data
@@ -250,6 +439,9 @@ func (ro *RequestOrchestrator) Start() {
 						logging.Error("Failed to rebuild state: %v", err)
 					} else {
 						logging.Info("ORCHESTRATOR: Rebuild completed successfully")
+						if err := ro.eventProcessor.ExecuteCommand("SyncPluginCatalog", &SyncPluginCatalogInput{}); err != nil {
+							logging.Error("Failed to sync plugin catalog after rebuild: %v", err)
+						}
 					}
 				} else {
 					logging.Error("AggregateStore is not *AggregateManager")
@@ -267,6 +459,10 @@ func (ro *RequestOrchestrator) initializeCommandsAndSubscriptions() {
 		{
 			name:    "ProcessUserRequest",
 			handler: eventsourcing.NewCommand(ro.ProcessUserRequestCommand),
+		},
+		{
+			name:    "SyncPluginCatalog",
+			handler: eventsourcing.NewCommand(ro.SyncPluginCatalogCommand),
 		},
 		{
 			name:    "DecideAgentCall",
@@ -361,6 +557,34 @@ func (ro *RequestOrchestrator) initializeCommandsAndSubscriptions() {
 	}
 }
 
+func (ro *RequestOrchestrator) SyncPluginCatalogCommand(_ *SyncPluginCatalogInput) ([]eventsourcing.Event, error) {
+	snapshots := ro.pluginManager.PluginSnapshots()
+	events := make([]eventsourcing.Event, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		events = append(events, &PluginSnapshotUpsertedEvent{
+			Snapshot:  snapshot,
+			Timestamp: eventsourcing.ISOTimestamp(),
+		})
+	}
+	return events, nil
+}
+
+func (ro *RequestOrchestrator) findPluginByName(name string) eventsourcing.Plugin {
+	if name == "" {
+		return nil
+	}
+	if plugin, err := ro.pluginManager.GetPlugin(name); err == nil && plugin != nil {
+		return plugin
+	}
+	lower := strings.ToLower(name)
+	for _, plugin := range ro.pluginManager.GetLLMPlugins() {
+		if strings.ToLower(plugin.Name()) == lower {
+			return plugin
+		}
+	}
+	return nil
+}
+
 func (ro *RequestOrchestrator) ProcessUserRequestCommand(data map[string]interface{}) ([]eventsourcing.Event, error) {
 	requestText, ok := data["requestText"].(string)
 	if !ok {
@@ -370,8 +594,14 @@ func (ro *RequestOrchestrator) ProcessUserRequestCommand(data map[string]interfa
 	if requestID == "" {
 		requestID = fmt.Sprintf("req-%d", time.Now().UnixNano())
 	}
+	targetAgent, _ := data["targetAgent"].(string)
+	targetAgent = strings.TrimSpace(targetAgent)
 
-	logging.Info("Processing user request. Request ID: %s", requestID)
+	if targetAgent != "" {
+		logging.Info("Processing user request. Request ID: %s (target agent: %s)", requestID, targetAgent)
+	} else {
+		logging.Info("Processing user request. Request ID: %s", requestID)
+	}
 
 	return []eventsourcing.Event{
 		&UserRequestReceivedEvent{
@@ -379,6 +609,7 @@ func (ro *RequestOrchestrator) ProcessUserRequestCommand(data map[string]interfa
 			RequestID:   requestID,
 			RequestText: requestText,
 			Timestamp:   eventsourcing.ISOTimestamp(),
+			TargetAgent: targetAgent,
 		},
 	}, nil
 }
@@ -386,16 +617,15 @@ func (ro *RequestOrchestrator) ProcessUserRequestCommand(data map[string]interfa
 func (ro *RequestOrchestrator) ExecuteToolCallCommand(event *ToolCallRequestPlaced) ([]eventsourcing.Event, error) {
 	var events []eventsourcing.Event
 
-	// Record the start of the tool call
+	startTimestamp := eventsourcing.ISOTimestamp()
 	events = append(events, &ToolCallStarted{
 		RequestID:  event.RequestID,
 		ToolCallID: event.ToolCallID,
 		Function:   event.Function,
 		AgentName:  event.AgentName,
-		Timestamp:  eventsourcing.ISOTimestamp(),
+		Timestamp:  startTimestamp,
 	})
 
-	// Step 1: Identify the plugin responsible for the command
 	plugin, err := ro.pluginManager.GetPluginByCommand(event.Function)
 	if err != nil {
 		errorMsg := fmt.Sprintf("no plugin found for command %s", event.Function)
@@ -412,102 +642,124 @@ func (ro *RequestOrchestrator) ExecuteToolCallCommand(event *ToolCallRequestPlac
 		return events, nil
 	}
 
-	// Step 2: Retrieve the command's input schema
+	pluginName := plugin.Name()
+	startTime := time.Now()
+	appendSnapshot := func(telemetry eventsourcing.PluginTelemetry) {
+		if snapshot, ok := ro.pluginManager.PluginMetadataSnapshot(pluginName); ok {
+			events = append(events, &PluginSnapshotUpsertedEvent{
+				Snapshot: eventsourcing.PluginSnapshot{
+					Metadata:  snapshot,
+					Telemetry: telemetry,
+				},
+				Timestamp: eventsourcing.ISOTimestamp(),
+			})
+		}
+	}
+	fail := func(errorMsg string, timedOut bool, panicked bool) ([]eventsourcing.Event, error) {
+		logging.Error(errorMsg)
+		events = append(events, &ToolCallFailedEvent{
+			EventType:  "orchestration_ToolCallFailed",
+			RequestID:  event.RequestID,
+			ToolCallID: event.ToolCallID,
+			Function:   event.Function,
+			AgentName:  event.AgentName,
+			ErrorMsg:   errorMsg,
+			Timestamp:  eventsourcing.ISOTimestamp(),
+		})
+		telemetry := ro.pluginManager.RecordInvocation(pluginName, eventsourcing.PluginInvocationResult{
+			Timestamp: time.Now(),
+			Duration:  time.Since(startTime),
+			Success:   false,
+			Error:     errorMsg,
+			TimedOut:  timedOut,
+			Panicked:  panicked,
+		})
+		appendSnapshot(telemetry)
+		return events, nil
+	}
+
 	schemas := plugin.Schemas()
 	inputSchema, exists := schemas[event.Function]
 	if !exists {
-		errorMsg := fmt.Sprintf("no schema found for command %s", event.Function)
-		logging.Error(errorMsg)
-		events = append(events, &ToolCallFailedEvent{
-			EventType:  "orchestration_ToolCallFailed",
-			RequestID:  event.RequestID,
-			ToolCallID: event.ToolCallID,
-			Function:   event.Function,
-			AgentName:  event.AgentName,
-			ErrorMsg:   errorMsg,
-			Timestamp:  eventsourcing.ISOTimestamp(),
-		})
-		return events, nil
+		return fail(fmt.Sprintf("no schema found for command %s", event.Function), false, false)
 	}
 
-	// Step 3: Create a new instance of the input struct
 	input := inputSchema.New()
-
-	// Step 4: Convert map[string]interface{} to the struct
 	inputJSON, err := json.Marshal(event.Arguments)
 	if err != nil {
-		errorMsg := fmt.Sprintf("failed to marshal arguments: %v", err)
-		logging.Error(errorMsg)
-		events = append(events, &ToolCallFailedEvent{
-			EventType:  "orchestration_ToolCallFailed",
-			RequestID:  event.RequestID,
-			ToolCallID: event.ToolCallID,
-			Function:   event.Function,
-			AgentName:  event.AgentName,
-			ErrorMsg:   errorMsg,
-			Timestamp:  eventsourcing.ISOTimestamp(),
-		})
-		return events, nil
+		return fail(fmt.Sprintf("failed to marshal arguments: %v", err), false, false)
 	}
 
 	if err := json.Unmarshal(inputJSON, input); err != nil {
-		errorMsg := fmt.Sprintf("failed to unmarshal arguments into %T: %v", input, err)
-		logging.Error(errorMsg)
-		events = append(events, &ToolCallFailedEvent{
-			EventType:  "orchestration_ToolCallFailed",
-			RequestID:  event.RequestID,
-			ToolCallID: event.ToolCallID,
-			Function:   event.Function,
-			ErrorMsg:   errorMsg,
-			Timestamp:  eventsourcing.ISOTimestamp(),
-		})
-		return events, nil
+		return fail(fmt.Sprintf("failed to unmarshal arguments into %T: %v", input, err), false, false)
 	}
 
-	// Step 5: Execute the command with the correct input type
 	handler, exists := plugin.Commands()[event.Function]
 	if !exists {
-		errorMsg := fmt.Sprintf("no handler for command %s", event.Function)
-		logging.Error(errorMsg)
-		events = append(events, &ToolCallFailedEvent{
-			EventType:  "orchestration_ToolCallFailed",
-			RequestID:  event.RequestID,
-			ToolCallID: event.ToolCallID,
-			Function:   event.Function,
-			ErrorMsg:   errorMsg,
-			Timestamp:  eventsourcing.ISOTimestamp(),
-		})
-		return events, nil
+		return fail(fmt.Sprintf("no handler for command %s", event.Function), false, false)
 	}
 
-	toolEvents, err := handler.Execute(input)
-	if err != nil {
-		errorMsg := fmt.Sprintf("command %s failed: %v", event.Function, err)
-		logging.Error(errorMsg)
-		events = append(events, &ToolCallFailedEvent{
-			EventType:  "orchestration_ToolCallFailed",
+	type toolCallResult struct {
+		events    []eventsourcing.Event
+		err       error
+		panicWith interface{}
+	}
+
+	resultChan := make(chan toolCallResult, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				resultChan <- toolCallResult{panicWith: r}
+			}
+		}()
+		emitEvents, execErr := handler.Execute(input)
+		resultChan <- toolCallResult{events: emitEvents, err: execErr}
+	}()
+
+	timeout := ro.pluginManager.PluginDefaultTimeout(pluginName, defaultToolTimeout)
+	if timeout <= 0 {
+		timeout = defaultToolTimeout
+	}
+
+	select {
+	case outcome := <-resultChan:
+		if outcome.panicWith != nil {
+			return fail(fmt.Sprintf("command %s panicked: %v", event.Function, outcome.panicWith), false, true)
+		}
+		if outcome.err != nil {
+			return fail(fmt.Sprintf("command %s failed: %v", event.Function, outcome.err), false, false)
+		}
+		for _, toolEvent := range outcome.events {
+			logging.Debug("tool call returned event: %v", toolEvent)
+		}
+		events = append(events, outcome.events...)
+		duration := time.Since(startTime)
+		telemetry := ro.pluginManager.RecordInvocation(pluginName, eventsourcing.PluginInvocationResult{
+			Timestamp: time.Now(),
+			Duration:  duration,
+			Success:   true,
+		})
+		resultSummary := map[string]interface{}{
+			"success":        true,
+			"events_emitted": len(outcome.events),
+			"latency_ms":     float64(duration) / float64(time.Millisecond),
+			"telemetry":      telemetry,
+		}
+		events = append(events, &ToolCallCompleted{
 			RequestID:  event.RequestID,
 			ToolCallID: event.ToolCallID,
 			Function:   event.Function,
-			ErrorMsg:   errorMsg,
+			AgentName:  event.AgentName,
+			Results:    resultSummary,
 			Timestamp:  eventsourcing.ISOTimestamp(),
 		})
+		appendSnapshot(telemetry)
+		logging.Info("added tool call completed event")
 		return events, nil
+	case <-time.After(timeout):
+		timedOutMsg := fmt.Sprintf("command %s timed out after %s", event.Function, timeout)
+		return fail(timedOutMsg, true, false)
 	}
-	for _, toolEvent := range toolEvents {
-		logging.Debug("tool call returned event: %v", toolEvent)
-	}
-	// Step 6: Append results and complete the tool call
-	events = append(events, toolEvents...)
-	events = append(events, &ToolCallCompleted{
-		RequestID:  event.RequestID,
-		ToolCallID: event.ToolCallID,
-		Function:   event.Function,
-		AgentName:  event.AgentName,
-		Results:    map[string]interface{}{"success": true, "result": toolEvents},
-		Timestamp:  eventsourcing.ISOTimestamp(),
-	})
-	logging.Info("added tool call completed event")
 
 	return events, nil
 }

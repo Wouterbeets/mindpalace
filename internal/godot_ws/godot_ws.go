@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -230,13 +231,20 @@ func (s *GodotServer) handleRequestMessage(msg map[string]interface{}) {
 		logging.Error("Request message missing text")
 		return
 	}
+	targetAgent, _ := msg["target_agent"].(string)
+	targetAgent = strings.TrimSpace(targetAgent)
+
+	commandData := map[string]interface{}{
+		"requestText": text,
+		"requestID":   fmt.Sprintf("godot_req_%d", time.Now().UnixNano()),
+	}
+	if targetAgent != "" {
+		commandData["targetAgent"] = targetAgent
+	}
 
 	command := eventsourcing.CommandData{
 		Name: "ProcessUserRequest",
-		Data: map[string]interface{}{
-			"requestText": text,
-			"requestID":   fmt.Sprintf("godot_req_%d", time.Now().UnixNano()),
-		},
+		Data: commandData,
 	}
 
 	select {

@@ -16,6 +16,7 @@ import (
 	"mindpalace/pkg/aggregate"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
+	"mindpalace/pkg/modellib"
 	"mindpalace/pkg/ui3d"
 	"mindpalace/pkg/world"
 )
@@ -134,6 +135,19 @@ func main() {
 	}
 	orchAgg := orchestration.NewOrchestrationAggregate()
 	orchAgg.SetChannels(deltaChan, ackChan)
+	if tarPath, err := filepath.Abs("Thingi10K-002.tar.gz"); err == nil {
+		if worldRoot, err := filepath.Abs("world"); err == nil {
+			if modelLibrary, err := modellib.NewLibrary(tarPath, worldRoot); err != nil {
+				logging.Info("MODEL: unable to initialise library: %v", err)
+			} else {
+				orchAgg.SetModelLibrary(modelLibrary)
+			}
+		} else {
+			logging.Info("MODEL: unable to resolve world directory: %v", err)
+		}
+	} else {
+		logging.Info("MODEL: unable to resolve tarball: %v", err)
+	}
 	aggManager.RegisterAggregate("orchestration", orchAgg)
 
 	// Log registered aggregates
