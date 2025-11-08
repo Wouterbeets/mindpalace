@@ -197,43 +197,102 @@ func TestTaskAggregate_Broadcast3DDelta_TaskCreated(t *testing.T) {
 	actions := signal.Actions
 
 	// Should have 2 actions: box and label
-	if len(actions) != 2 {
-		t.Errorf("Expected 2 actions, got %d", len(actions))
+	if len(actions) < 4 {
+		t.Fatalf("Expected at least 4 actions, got %d", len(actions))
 	}
-
-	boxAction := actions[0]
-	if boxAction.NodeID != "task1" {
-		t.Errorf("Expected NodeID 'task1', got '%s'", boxAction.NodeID)
+	expectedNodes := map[string]bool{
+		"task1":        false,
+		"task1_paper":  false,
+		"task1_accent": false,
+		"task1_shadow": false,
+		"task1_label":  false,
+		"task1_meta":   false,
 	}
-
-	labelAction := actions[1]
-	if labelAction.NodeID != "task1_label" {
-		t.Errorf("Expected NodeID 'task1_label', got '%s'", labelAction.NodeID)
+	for _, act := range actions {
+		if act.Type != "create" {
+			continue
+		}
+		if _, ok := expectedNodes[act.NodeID]; ok {
+			expectedNodes[act.NodeID] = true
+		}
+	}
+	for node, seen := range expectedNodes {
+		if !seen {
+			t.Errorf("Expected create action for node %s", node)
+		}
 	}
 }
 
 func TestTaskAggregate_Broadcast3DDelta_TaskCompleted(t *testing.T) {
 	agg := NewTaskAggregate()
 
-	event := &TaskCompletedEvent{
-		EventType: "taskmanager_TaskCompleted",
+	create := &TaskCreatedEvent{
+		EventType: "taskmanager_TaskCreated",
 		TaskID:    "task1",
+		Title:     "Complete me",
+		Status:    StatusPending,
+	}
+	if err := agg.ApplyEvent(create); err != nil {
+		t.Fatalf("apply create failed: %v", err)
+	}
+
+	zones := map[string]ui3d.Zone{
+		"taskmanager": {Angle: 0, Radius: 80, GridRows: 1, GridCols: 3, GridDepth: 10},
+	}
+	ui3d.SetGlobalZones(zones)
+
+	event := &TaskCompletedEvent{
+		EventType:   "taskmanager_TaskCompleted",
+		TaskID:      "task1",
+		CompletedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := agg.ApplyEvent(event); err != nil {
+		t.Fatalf("apply complete failed: %v", err)
 	}
 
 	signal := agg.EmitDelta(event)
+	if signal == nil {
+		t.Fatal("expected delta for completion")
+	}
 	actions := signal.Actions
-
-	// Should have 2 actions: delete box and delete label
-	if len(actions) != 2 {
-		t.Errorf("Expected 2 actions, got %d", len(actions))
+	if len(actions) == 0 {
+		t.Fatal("expected non-empty actions for completion")
 	}
 
-	if actions[0].Type != "delete" || actions[0].NodeID != "task1" {
-		t.Errorf("Expected delete action for 'task1', got %v", actions[0])
+	expectedDeletes := map[string]bool{
+		"task1":        false,
+		"task1_paper":  false,
+		"task1_accent": false,
+		"task1_shadow": false,
+		"task1_label":  false,
+		"task1_meta":   false,
+		"task1_model":  false,
 	}
-
-	if actions[1].Type != "delete" || actions[1].NodeID != "task1_label" {
-		t.Errorf("Expected delete action for 'task1_label', got %v", actions[1])
+	expectedCreates := map[string]bool{
+		"task1":       false,
+		"task1_paper": false,
+	}
+	for _, act := range actions {
+		switch act.Type {
+		case "delete":
+			if _, ok := expectedDeletes[act.NodeID]; ok {
+				expectedDeletes[act.NodeID] = true
+			}
+		case "create":
+			if _, ok := expectedCreates[act.NodeID]; ok {
+				expectedCreates[act.NodeID] = true
+			}
+		}
+	}
+	for node, seen := range expectedDeletes {
+		if !seen {
+			t.Errorf("Expected delete action for '%s'", node)
+		}
+	}
+	for node, seen := range expectedCreates {
+		if !seen {
+			t.Errorf("Expected create action for '%s'", node)
+		}
 	}
 }
 
@@ -250,15 +309,27 @@ func TestTaskAggregate_Broadcast3DDelta_TaskDeleted(t *testing.T) {
 		t.Fatal("Expected non-nil delta for task deletion")
 	}
 
-	if len(signal.Actions) != 2 {
-		t.Fatalf("Expected 2 actions, got %d", len(signal.Actions))
+	expectedDeletes := map[string]bool{
+		"task1":        false,
+		"task1_paper":  false,
+		"task1_accent": false,
+		"task1_shadow": false,
+		"task1_label":  false,
+		"task1_meta":   false,
+		"task1_model":  false,
 	}
-
-	if signal.Actions[0].Type != "delete" || signal.Actions[0].NodeID != "task1" {
-		t.Errorf("Expected delete action for 'task1', got %v", signal.Actions[0])
+	for _, act := range signal.Actions {
+		if act.Type != "delete" {
+			continue
+		}
+		if _, ok := expectedDeletes[act.NodeID]; ok {
+			expectedDeletes[act.NodeID] = true
+		}
 	}
-	if signal.Actions[1].Type != "delete" || signal.Actions[1].NodeID != "task1_label" {
-		t.Errorf("Expected delete action for 'task1_label', got %v", signal.Actions[1])
+	for node, seen := range expectedDeletes {
+		if !seen {
+			t.Errorf("Expected delete action for '%s'", node)
+		}
 	}
 }
 
@@ -315,10 +386,10 @@ func TestTaskAggregate_Broadcast3DDelta_TasksListed(t *testing.T) {
 	}
 
 	expectedKeys := []string{
-		"delete:task_a", "delete:task_a_label",
-		"create:task_a", "create:task_a_label",
-		"delete:task_b", "delete:task_b_label",
-		"create:task_b", "create:task_b_label",
+		"delete:task_a", "delete:task_a_paper", "delete:task_a_accent", "delete:task_a_shadow", "delete:task_a_label", "delete:task_a_meta", "delete:task_a_model",
+		"create:task_a", "create:task_a_paper", "create:task_a_accent", "create:task_a_shadow", "create:task_a_label", "create:task_a_meta",
+		"delete:task_b", "delete:task_b_paper", "delete:task_b_accent", "delete:task_b_shadow", "delete:task_b_label", "delete:task_b_meta", "delete:task_b_model",
+		"create:task_b", "create:task_b_paper", "create:task_b_accent", "create:task_b_shadow", "create:task_b_label", "create:task_b_meta",
 	}
 	for _, key := range expectedKeys {
 		if actionCounts[key] == 0 {
@@ -345,19 +416,29 @@ func TestTaskAggregate_GetCurrent3DState(t *testing.T) {
 
 	signal := agg.EmitDelta(createEvent)
 
-	// Should have 2 actions: create box and create label
-	if len(signal.Actions) != 2 {
-		t.Errorf("Expected 2 actions, got %d", len(signal.Actions))
+	if len(signal.Actions) < 4 {
+		t.Fatalf("Expected at least 4 actions, got %d", len(signal.Actions))
 	}
-
-	boxAction := signal.Actions[0]
-	if boxAction.Type != "create" || boxAction.NodeID != "task1" {
-		t.Errorf("Expected create action for 'task1', got %v", boxAction)
+	expectedNodes := map[string]bool{
+		"task1":        false,
+		"task1_paper":  false,
+		"task1_accent": false,
+		"task1_shadow": false,
+		"task1_label":  false,
+		"task1_meta":   false,
 	}
-
-	labelAction := signal.Actions[1]
-	if labelAction.Type != "create" || labelAction.NodeID != "task1_label" {
-		t.Errorf("Expected create action for 'task1_label', got %v", labelAction)
+	for _, act := range signal.Actions {
+		if act.Type != "create" {
+			continue
+		}
+		if _, ok := expectedNodes[act.NodeID]; ok {
+			expectedNodes[act.NodeID] = true
+		}
+	}
+	for node, seen := range expectedNodes {
+		if !seen {
+			t.Errorf("Expected create action for '%s'", node)
+		}
 	}
 
 	// TODO: Check state summary
@@ -403,27 +484,35 @@ func TestTaskStatusUpdateTriggersPositionAnimation(t *testing.T) {
 		t.Fatal("Expected non-nil delta for status update")
 	}
 
-	// Should have animation actions for move (at least 1 for card, expect 2 with label)
-	if len(signal.Actions) < 1 {
-		t.Errorf("Expected at least 1 animation action, got %d", len(signal.Actions))
+	foundDelete := false
+	foundCreate := false
+	var newPos []float64
+
+	for _, act := range signal.Actions {
+		if act.NodeID != "task1" {
+			continue
+		}
+		switch act.Type {
+		case "delete":
+			foundDelete = true
+		case "create":
+			foundCreate = true
+			if pos, ok := act.Properties["position"].([]float64); ok {
+				newPos = pos
+			}
+		}
 	}
 
-	// Check first action is animate for task card
-	animAction := signal.Actions[0]
-	if animAction.Type != "animate" || animAction.NodeID != "task1" {
-		t.Errorf("Expected animate for 'task1', got %v", animAction)
+	if !foundDelete {
+		t.Error("Expected delete action for task1")
 	}
-	if animAction.Animation.Property != "position" {
-		t.Errorf("Expected position animation, got %s", animAction.Animation.Property)
+	if !foundCreate {
+		t.Error("Expected create action for task1 after status change")
 	}
-
-	// Target position should be different (e.g., x-offset for In Progress)
-	targetPos, ok := animAction.Animation.To.([]float64)
-	if !ok || len(targetPos) != 3 {
-		t.Errorf("Expected 3D position in To, got %v", animAction.Animation.To)
+	if len(newPos) != 3 {
+		t.Fatalf("Expected position vector for recreated task, got %v", newPos)
 	}
-	x := targetPos[0]
-	if x < 5.0 { // Assume In Progress at x>=5
-		t.Errorf("Expected new x position >=5 for In Progress, got %f", x)
+	if newPos[0] == 0 {
+		t.Errorf("Expected task to be repositioned along X for new status, got %f", newPos[0])
 	}
 }

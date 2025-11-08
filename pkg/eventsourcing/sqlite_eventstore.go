@@ -89,11 +89,23 @@ func (es *SQLiteEventStore) Append(events ...Event) error {
 }
 
 func (es *SQLiteEventStore) GetEvents() []Event {
-	es.mu.Lock()
-	defer es.mu.Unlock()
-	return append([]Event{}, es.events...)
+    es.mu.Lock()
+    defer es.mu.Unlock()
+    return append([]Event{}, es.events...)
 }
 
 func (es *SQLiteEventStore) Close() error {
-	return es.db.Close()
+    return es.db.Close()
+}
+
+// DeleteAll removes all events from the SQLite store and clears in-memory cache.
+func (es *SQLiteEventStore) DeleteAll() error {
+    es.mu.Lock()
+    defer es.mu.Unlock()
+    _, err := es.db.Exec("DELETE FROM events")
+    if err != nil {
+        return err
+    }
+    es.events = nil
+    return nil
 }

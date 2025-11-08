@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -24,6 +25,15 @@ const (
 	ImportanceCritical = "Critical"
 )
 
+const (
+	calendarColumns     = 7
+	calendarRows        = 6
+	calendarCellWidth   = 1.65
+	calendarCellHeight  = 1.1
+	calendarBoardHeight = 1.6
+	calendarBoardZDepth = 0.05
+)
+
 // CalendarEvent represents a single calendar event's state
 type CalendarEvent struct {
 	EventID     string    `json:"event_id"`
@@ -41,17 +51,25 @@ type CalendarEvent struct {
 
 // CalendarAggregate manages the state of calendar events with thread safety
 type CalendarAggregate struct {
-	Events   map[string]*CalendarEvent
-	commands map[string]eventsourcing.CommandHandler
-	Mu       sync.RWMutex
+    Events   map[string]*CalendarEvent
+    commands map[string]eventsourcing.CommandHandler
+    Mu       sync.RWMutex
+    nodes    []string
+    // Event scoring sink (optional): map[event_id]EventScore
+    Scores map[string]eventsourcing.EventScore
+    // viewMonthStart holds the first day of the month currently being rendered.
+    // If zero, rendering falls back to the earliest event's month or the current month.
+    viewMonthStart time.Time
 }
 
 // NewCalendarAggregate creates a new thread-safe CalendarAggregate
 func NewCalendarAggregate() *CalendarAggregate {
-	return &CalendarAggregate{
-		Events:   make(map[string]*CalendarEvent),
-		commands: make(map[string]eventsourcing.CommandHandler),
-	}
+    return &CalendarAggregate{
+        Events:   make(map[string]*CalendarEvent),
+        commands: make(map[string]eventsourcing.CommandHandler),
+        nodes:    make([]string, 0),
+        Scores:   make(map[string]eventsourcing.EventScore),
+    }
 }
 
 // ID returns the aggregate's identifier
@@ -61,15 +79,18 @@ func (a *CalendarAggregate) ID() string {
 
 // Reset clears tracked calendar events while preserving command handlers.
 func (a *CalendarAggregate) Reset() {
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	a.Events = make(map[string]*CalendarEvent)
+    a.Mu.Lock()
+    defer a.Mu.Unlock()
+    a.Events = make(map[string]*CalendarEvent)
+    a.nodes = nil
+    a.Scores = make(map[string]eventsourcing.EventScore)
+    a.viewMonthStart = time.Time{}
 }
 
 // ApplyEvent updates the aggregate state based on event-related events
 func (a *CalendarAggregate) ApplyEvent(event eventsourcing.Event) error {
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
+    a.Mu.Lock()
+    defer a.Mu.Unlock()
 
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -139,9 +160,19 @@ func (a *CalendarAggregate) ApplyEvent(event eventsourcing.Event) error {
 		delete(a.Events, e.EventID)
 
 	default:
-		return nil
+		// No-op for unrelated events
 	}
 	return nil
+}
+
+// RecordEventScore implements eventsourcing.EventScorable.
+func (a *CalendarAggregate) RecordEventScore(eventID string, score eventsourcing.EventScore) {
+    a.Mu.Lock()
+    defer a.Mu.Unlock()
+    if a.Scores == nil {
+        a.Scores = make(map[string]eventsourcing.EventScore)
+    }
+    a.Scores[eventID] = score
 }
 
 // CalendarPlugin implements the plugin interface
@@ -150,27 +181,31 @@ type CalendarPlugin struct {
 }
 
 func NewPlugin() eventsourcing.Plugin {
-	agg := NewCalendarAggregate()
-	p := &CalendarPlugin{aggregate: agg}
-	agg.commands = map[string]eventsourcing.CommandHandler{
-		"CreateEvent": eventsourcing.NewCommand(func(input *CreateEventInput) ([]eventsourcing.Event, error) {
-			return p.createEventHandler(input)
-		}),
-		"UpdateEvent": eventsourcing.NewCommand(func(input *UpdateEventInput) ([]eventsourcing.Event, error) {
-			return p.updateEventHandler(input)
-		}),
-		"DeleteEvent": eventsourcing.NewCommand(func(input *DeleteEventInput) ([]eventsourcing.Event, error) {
-			return p.deleteEventHandler(input)
-		}),
-		"ListEvents": eventsourcing.NewCommand(func(input *ListEventsInput) ([]eventsourcing.Event, error) {
-			return p.listEventsHandler(input)
-		}),
-	}
-	eventsourcing.RegisterEvent("calendar_EventCreated", func() eventsourcing.Event { return &EventCreatedEvent{} })
-	eventsourcing.RegisterEvent("calendar_EventUpdated", func() eventsourcing.Event { return &EventUpdatedEvent{} })
-	eventsourcing.RegisterEvent("calendar_EventsListed", func() eventsourcing.Event { return &EventsListedEvent{} })
-	eventsourcing.RegisterEvent("calendar_EventDeleted", func() eventsourcing.Event { return &EventDeletedEvent{} })
-	return p
+    agg := NewCalendarAggregate()
+    p := &CalendarPlugin{aggregate: agg}
+    agg.commands = map[string]eventsourcing.CommandHandler{
+        "CreateEvent": eventsourcing.NewCommand(func(input *CreateEventInput) ([]eventsourcing.Event, error) {
+            return p.createEventHandler(input)
+        }),
+        "UpdateEvent": eventsourcing.NewCommand(func(input *UpdateEventInput) ([]eventsourcing.Event, error) {
+            return p.updateEventHandler(input)
+        }),
+        "DeleteEvent": eventsourcing.NewCommand(func(input *DeleteEventInput) ([]eventsourcing.Event, error) {
+            return p.deleteEventHandler(input)
+        }),
+        "ListEvents": eventsourcing.NewCommand(func(input *ListEventsInput) ([]eventsourcing.Event, error) {
+            return p.listEventsHandler(input)
+        }),
+        // Navigate or jump the calendar month view without mutating domain events.
+        "NavigateMonth": eventsourcing.NewCommand(func(input *NavigateMonthInput) ([]eventsourcing.Event, error) {
+            return p.navigateMonthHandler(input)
+        }),
+    }
+    eventsourcing.RegisterEvent("calendar_EventCreated", func() eventsourcing.Event { return &EventCreatedEvent{} })
+    eventsourcing.RegisterEvent("calendar_EventUpdated", func() eventsourcing.Event { return &EventUpdatedEvent{} })
+    eventsourcing.RegisterEvent("calendar_EventsListed", func() eventsourcing.Event { return &EventsListedEvent{} })
+    eventsourcing.RegisterEvent("calendar_EventDeleted", func() eventsourcing.Event { return &EventDeletedEvent{} })
+    return p
 }
 
 // Commands returns the command handlers
@@ -240,12 +275,13 @@ func (p *CalendarPlugin) Type() eventsourcing.PluginType {
 
 // Schemas defines the command schemas
 func (p *CalendarPlugin) Schemas() map[string]eventsourcing.CommandInput {
-	return map[string]eventsourcing.CommandInput{
-		"CreateEvent": &CreateEventInput{},
-		"UpdateEvent": &UpdateEventInput{},
-		"DeleteEvent": &DeleteEventInput{},
-		"ListEvents":  &ListEventsInput{},
-	}
+    return map[string]eventsourcing.CommandInput{
+        "CreateEvent": &CreateEventInput{},
+        "UpdateEvent": &UpdateEventInput{},
+        "DeleteEvent": &DeleteEventInput{},
+        "ListEvents":  &ListEventsInput{},
+        "NavigateMonth": &NavigateMonthInput{},
+    }
 }
 
 // Command Input Structs with Schema Generation
@@ -727,79 +763,479 @@ func (p *CalendarPlugin) EventHandlers() map[string]eventsourcing.EventHandler {
 }
 
 func (a *CalendarAggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.DeltaEnvelope {
-	a.Mu.RLock()
-	defer a.Mu.RUnlock()
-	theme := ui3d.DefaultTheme()
-	switch e := event.(type) {
-	case *EventCreatedEvent:
-		// Get sorted event IDs to determine position
-		sortedIDs := a.getSortedEventIDs()
-		i := 0
-		for _, id := range sortedIDs {
-			if id == e.EventID {
-				break
-			}
-			i++
-		}
-		lm := &ui3d.LayoutManager{
-			Type:    "linear",
-			Spacing: 2.0,
-			Zone:    "",
-			Zones:   nil,
-			Counter: i + 1,
-		}
-		pos := lm.NextPosition()
-		builder := ui3d.NewDeltaBuilder(theme)
-		labelPos := []float64{pos[0], pos[1] + 1.0, pos[2]}
-		builder.CreateBox(fmt.Sprintf("calendar_event_%s", e.EventID), pos).WithExtra(map[string]interface{}{
-			"event_type": "calendar_event_created",
-		}).WithModel("res://models/calendar.glb")
-		builder.CreateLabel(fmt.Sprintf("calendar_event_%s_label", e.EventID), e.Title, labelPos).WithExtra(map[string]interface{}{
-			"event_type": "calendar_event_created",
-		})
-		return &eventsourcing.DeltaEnvelope{
-			Type:      "delta",
-			Aggregate: "calendar",
-			EventID:   eventsourcing.ISOTimestamp(),
-			Timestamp: eventsourcing.ISOTimestamp(),
-			Actions:   builder.Build(),
-		}
-	case *EventUpdatedEvent:
-		// Get sorted event IDs to determine position
-		sortedIDs := a.getSortedEventIDs()
-		i := 0
-		for _, id := range sortedIDs {
-			if id == e.EventID {
-				break
-			}
-			i++
-		}
-		lm := &ui3d.LayoutManager{
-			Type:    "linear",
-			Spacing: 2.0,
-			Zone:    "",
-			Zones:   nil,
-			Counter: i + 1,
-		}
-		pos := lm.NextPosition()
-		builder := ui3d.NewDeltaBuilder(theme)
-		labelPos := []float64{pos[0], pos[1] + 1.0, pos[2]}
-		// Delete old
-		builder.Delete(fmt.Sprintf("calendar_event_%s", e.EventID)).Delete(fmt.Sprintf("calendar_event_%s_label", e.EventID))
-		// Create new
-		builder.CreateBox(fmt.Sprintf("calendar_event_%s", e.EventID), pos).WithExtra(map[string]interface{}{
-			"event_type": "calendar_event_updated",
-		}).WithModel("res://models/calendar.glb")
-		builder.CreateLabel(fmt.Sprintf("calendar_event_%s_label", e.EventID), e.Title, labelPos).WithExtra(map[string]interface{}{
-			"event_type": "calendar_event_updated",
-		})
-		return &eventsourcing.DeltaEnvelope{Type: "delta", Aggregate: "calendar", EventID: eventsourcing.ISOTimestamp(), Timestamp: eventsourcing.ISOTimestamp(), Actions: builder.Build()}
-	case *EventDeletedEvent:
-		builder := ui3d.NewDeltaBuilder(theme)
-		builder.Delete(fmt.Sprintf("calendar_event_%s", e.EventID)).Delete(fmt.Sprintf("calendar_event_%s_label", e.EventID))
-		return &eventsourcing.DeltaEnvelope{Type: "delta", Aggregate: "calendar", EventID: eventsourcing.ISOTimestamp(), Timestamp: eventsourcing.ISOTimestamp(), Actions: builder.Build()}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	switch event.(type) {
+	case *EventCreatedEvent, *EventUpdatedEvent, *EventDeletedEvent, *EventsListedEvent:
+		return a.buildMonthViewEnvelope()
+	default:
+		return nil
 	}
-	return nil
+}
+
+func (a *CalendarAggregate) buildMonthViewEnvelope() *eventsourcing.DeltaEnvelope {
+    theme := ui3d.DefaultTheme()
+    builder := ui3d.NewDeltaBuilder(theme)
+    for _, id := range a.nodes {
+        builder.Delete(id)
+    }
+    newIDs := a.appendMonthView(builder)
+    a.nodes = newIDs
+    actions := builder.Build()
+    // Attach a month-level UI component with navigation actions.
+    monthStart := a.currentMonthStart()
+    components := []interface{}{NewCalendarMonthComponent(monthStart)}
+    return &eventsourcing.DeltaEnvelope{
+        Type:      "delta",
+        Aggregate: "calendar",
+        EventID:   eventsourcing.ISOTimestamp(),
+        Timestamp: eventsourcing.ISOTimestamp(),
+        Actions:   actions,
+        Components: components,
+    }
+}
+
+func (a *CalendarAggregate) appendMonthView(builder *ui3d.DeltaBuilder) []string {
+	zones := ui3d.GetGlobalZones()
+	zone, ok := zones[a.ID()]
+	if !ok {
+		zone = ui3d.Zone{Angle: 0, Radius: 0, GridCols: calendarColumns, GridRows: calendarRows}
+	}
+	// Pull the calendar board closer to the hub by using mid-radius positioning
+    calendarRadius := zone.Radius * 0.5
+    centerX := calendarRadius * math.Cos(zone.Angle*math.Pi/180)
+    centerZ := calendarRadius * math.Sin(zone.Angle*math.Pi/180)
+    baseY := calendarBoardHeight
+    dayCellWidth := calendarCellWidth
+    dayCellHeight := calendarCellHeight
+    boardWidth := dayCellWidth * calendarColumns
+    boardHeight := dayCellHeight * calendarRows
+
+    // Build a radial basis so the calendar plane faces the hub.
+    // n: normal pointing toward origin, r: right vector along the calendar row axis, u: vertical up.
+    nx, nz := -centerX, -centerZ
+    nlen := math.Hypot(nx, nz)
+    if nlen < 1e-6 {
+        nx, nz = 0, -1 // default facing -Z
+        nlen = 1
+    }
+    nx /= nlen
+    nz /= nlen
+    // r = up x n
+    rx, rz := nz, -nx
+    // Helper to position a point using the radial basis
+    posAt := func(hx, vy, dz float64) []float64 {
+        x := centerX + rx*hx
+        y := baseY + vy
+        z := centerZ + rz*hx + nz*dz
+        return []float64{x, y, z}
+    }
+    // Common vertical anchor helpers
+    topY := boardHeight/2 - dayCellHeight/2
+
+    monthStart := a.currentMonthStart()
+    monthLabel := monthStart.Format("January 2006")
+    monthLabelID := "calendar_month_label"
+    builder.AddAction(eventsourcing.DeltaAction{
+        Type:     "create",
+        NodeID:   monthLabelID,
+        NodeType: "Label3D",
+        Properties: map[string]interface{}{
+            "text":                 monthLabel,
+            // Slightly above the grid center and on the plane facing the hub
+            "position":             posAt(0, boardHeight/2+dayCellHeight*0.7, 0),
+            "billboard":            "enabled",
+            "font_size":            36,
+            "modulate":             []float64{0.85, 0.95, 1.0, 1.0},
+            "horizontal_alignment": "center",
+        },
+    })
+
+	dayNames := []string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+	newIDs := []string{monthLabelID}
+    for col := 0; col < calendarColumns; col++ {
+        headerID := fmt.Sprintf("calendar_header_%d", col)
+        headerHX := -boardWidth/2 + dayCellWidth/2 + float64(col)*dayCellWidth
+        headerVY := topY + dayCellHeight*0.6
+        builder.AddAction(eventsourcing.DeltaAction{
+            Type:     "create",
+            NodeID:   headerID,
+            NodeType: "Label3D",
+            Properties: map[string]interface{}{
+                "text":                 dayNames[col],
+                "position":             posAt(headerHX, headerVY, 0),
+                "billboard":            "enabled",
+                "font_size":            24,
+                "modulate":             []float64{0.7, 0.86, 1.0, 1.0},
+                "horizontal_alignment": "center",
+            },
+        })
+        newIDs = append(newIDs, headerID)
+    }
+
+    firstDayIndex := int(monthStart.Weekday())
+    _ = monthStart.AddDate(0, 1, -1).Day() // retained to emphasize month bounds; value unused here
+    currentUTC := time.Now().UTC()
+    currentMonth := currentUTC.Year() == monthStart.Year() && currentUTC.Month() == monthStart.Month()
+    dayEventMap := a.eventsByDay(monthStart)
+
+    // Fill full 6x7 grid (including leading/trailing days) and rotate to face the hub.
+    maxPerDay := 3
+    for index := 0; index < calendarColumns*calendarRows; index++ {
+        row := index / calendarColumns
+        col := index % calendarColumns
+        // Compute the actual date represented by this cell
+        date := monthStart.AddDate(0, 0, index-firstDayIndex)
+        inMonth := date.Month() == monthStart.Month()
+
+        // Cell center offsets
+        hx := -boardWidth/2 + dayCellWidth/2 + float64(col)*dayCellWidth
+        vy := topY - float64(row)*dayCellHeight
+
+        // Background color
+        color := []float64{0.08, 0.14, 0.22, 0.9}
+        if col == 0 || col == 6 {
+            color = []float64{0.12, 0.18, 0.3, 0.9}
+        }
+        if inMonth && currentMonth && date.Day() == currentUTC.Day() {
+            color = []float64{0.2, 0.32, 0.52, 0.95}
+        }
+        if !inMonth {
+            color = []float64{0.06, 0.1, 0.16, 0.6}
+        }
+
+        // Node IDs (preserve IDs for in-month days to keep tests/clients happy)
+        cellID := ""
+        if inMonth {
+            cellID = fmt.Sprintf("calendar_cell_bg_%02d", date.Day())
+        } else if index < firstDayIndex {
+            cellID = fmt.Sprintf("calendar_cell_bg_prev_%02d", date.Day())
+        } else {
+            cellID = fmt.Sprintf("calendar_cell_bg_next_%02d", date.Day())
+        }
+
+        builder.AddAction(eventsourcing.DeltaAction{
+            Type:     "create",
+            NodeID:   cellID,
+            NodeType: "MeshInstance3D",
+            Properties: map[string]interface{}{
+                "mesh":      "box",
+                "position":  posAt(hx, vy, -calendarBoardZDepth),
+                "scale":     []float64{dayCellWidth * 0.92, dayCellHeight * 0.9, 0.05},
+                "auxiliary": true,
+                "material_override": map[string]interface{}{
+                    "albedo_color": color,
+                },
+            },
+        })
+        newIDs = append(newIDs, cellID)
+
+        // Day number
+        dayLabelID := ""
+        if inMonth {
+            dayLabelID = fmt.Sprintf("calendar_day_number_%02d", date.Day())
+        } else if index < firstDayIndex {
+            dayLabelID = fmt.Sprintf("calendar_day_number_prev_%02d", date.Day())
+        } else {
+            dayLabelID = fmt.Sprintf("calendar_day_number_next_%02d", date.Day())
+        }
+        dayColor := []float64{0.85, 0.95, 1.0, 1.0}
+        if !inMonth {
+            dayColor = []float64{0.65, 0.78, 0.9, 0.6}
+        }
+        builder.AddAction(eventsourcing.DeltaAction{
+            Type:     "create",
+            NodeID:   dayLabelID,
+            NodeType: "Label3D",
+            Properties: map[string]interface{}{
+                "text":                 fmt.Sprintf("%d", date.Day()),
+                "position":             posAt(hx - dayCellWidth*0.38, vy + dayCellHeight*0.32, 0.01),
+                "billboard":            "enabled",
+                "font_size":            20,
+                "horizontal_alignment": "left",
+                "modulate":             dayColor,
+            },
+        })
+        newIDs = append(newIDs, dayLabelID)
+
+        // Skip events for out-of-month cells
+        if !inMonth {
+            continue
+        }
+
+        events := dayEventMap[date.Day()]
+        if len(events) == 0 {
+            continue
+        }
+        sort.Slice(events, func(i, j int) bool { return events[i].StartTime.Before(events[j].StartTime) })
+        shown := 0
+        for idx, event := range events {
+            if shown >= maxPerDay {
+                break
+            }
+            eventID := fmt.Sprintf("calendar_event_label_%s", event.EventID)
+            eventVY := vy - dayCellHeight*0.1 - float64(idx)*0.22
+            eventText := fmt.Sprintf("%s  %s", event.StartTime.Format("3:04 PM"), event.Title)
+            displayInfo := map[string]interface{}{
+                "title":       event.Title,
+                "description": event.Description,
+                "details": map[string]interface{}{
+                    "start":      event.StartTime.Format(time.RFC822),
+                    "end":        event.EndTime.Format(time.RFC822),
+                    "status":     event.Status,
+                    "importance": event.Importance,
+                    "location":   event.Location,
+                    "attendees":  event.Attendees,
+                },
+            }
+            eventColor := colorForImportance(event.Importance)
+            builder.AddAction(eventsourcing.DeltaAction{
+                Type:     "create",
+                NodeID:   eventID,
+                NodeType: "Label3D",
+                Properties: map[string]interface{}{
+                    "text":                 eventText,
+                    "position":             posAt(hx, eventVY, 0.02),
+                    "billboard":            "enabled",
+                    "font_size":            18,
+                    "horizontal_alignment": "center",
+                    "modulate":             eventColor,
+                    "display_info":         displayInfo,
+                },
+            })
+            newIDs = append(newIDs, eventID)
+            shown++
+        }
+        if len(events) > maxPerDay {
+            extra := len(events) - maxPerDay
+            moreID := fmt.Sprintf("calendar_day_more_%02d", date.Day())
+            // Build a simple description listing the hidden events
+            lines := ""
+            for _, e := range events[maxPerDay:] {
+                when := e.StartTime.Format("Mon 3:04 PM")
+                lines += fmt.Sprintf("%s  %s\n", when, e.Title)
+            }
+            builder.AddAction(eventsourcing.DeltaAction{
+                Type:     "create",
+                NodeID:   moreID,
+                NodeType: "Label3D",
+                Properties: map[string]interface{}{
+                    "text":                 fmt.Sprintf("+%d more", extra),
+                    "position":             posAt(hx, vy - dayCellHeight*0.1 - float64(maxPerDay)*0.22, 0.02),
+                    "billboard":            "enabled",
+                    "font_size":            16,
+                    "horizontal_alignment": "center",
+                    "modulate":             []float64{0.82, 0.95, 1.0, 0.9},
+                    "display_info": map[string]interface{}{
+                        "title":       date.Format("Jan 2") + " — more events",
+                        "description": lines,
+                    },
+                },
+            })
+            newIDs = append(newIDs, moreID)
+        }
+    }
+
+    return newIDs
+}
+
+func (a *CalendarAggregate) currentMonthStart() time.Time {
+    if len(a.Events) == 0 {
+        now := time.Now().UTC()
+        if !a.viewMonthStart.IsZero() {
+            return a.viewMonthStart
+        }
+        return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+    }
+    earliest := time.Time{}
+    for _, event := range a.Events {
+        if earliest.IsZero() || event.StartTime.Before(earliest) {
+            earliest = event.StartTime
+        }
+    }
+    if earliest.IsZero() {
+        now := time.Now().UTC()
+        if !a.viewMonthStart.IsZero() {
+            return a.viewMonthStart
+        }
+        return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+    }
+    if !a.viewMonthStart.IsZero() {
+        return a.viewMonthStart
+    }
+    return time.Date(earliest.Year(), earliest.Month(), 1, 0, 0, 0, 0, time.UTC)
+}
+
+func (a *CalendarAggregate) eventsByDay(monthStart time.Time) map[int][]*CalendarEvent {
+    result := make(map[int][]*CalendarEvent)
+    // Compute month range [monthStart, nextMonthStart)
+    nextMonth := monthStart.AddDate(0, 1, 0)
+    for _, event := range a.Events {
+        // Determine event span (inclusive of end date if provided)
+        start := event.StartTime
+        end := event.EndTime
+        if end.IsZero() || end.Before(start) {
+            end = start
+        }
+        // Clamp to current month range
+        if end.Before(monthStart) || !start.Before(nextMonth) {
+            continue // entirely outside this month
+        }
+        // Determine day numbers in this month the event touches
+        // Start day is max(event.Start, monthStart), end day is min(event.End, last day in month)
+        clampedStart := start
+        if clampedStart.Before(monthStart) {
+            clampedStart = monthStart
+        }
+        clampedEnd := end
+        if clampedEnd.After(nextMonth.Add(-time.Nanosecond)) {
+            clampedEnd = nextMonth.Add(-time.Nanosecond)
+        }
+        for d := clampedStart.Day(); ; {
+            result[d] = append(result[d], event)
+            // Advance to next day within month
+            temp := time.Date(clampedStart.Year(), clampedStart.Month(), d, 12, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
+            if temp.After(clampedEnd) || temp.Month() != monthStart.Month() {
+                break
+            }
+            d = temp.Day()
+        }
+    }
+    return result
+}
+
+// NavigateMonthInput allows the frontend to move the month view window.
+type NavigateMonthInput struct {
+    Offset int `json:"Offset,omitempty"` // Month offset relative to current view
+    Year   int `json:"Year,omitempty"`
+    Month  int `json:"Month,omitempty"` // 1-12
+}
+
+func (i *NavigateMonthInput) New() any { return &NavigateMonthInput{} }
+func (i *NavigateMonthInput) Schema() map[string]interface{} {
+    return map[string]interface{}{
+        "description": "Navigate the calendar month view",
+        "parameters": map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "Offset": map[string]interface{}{"type": "integer", "description": "Relative month offset (e.g., -1 prev, +1 next)"},
+                "Year":   map[string]interface{}{"type": "integer", "description": "Absolute target year"},
+                "Month":  map[string]interface{}{"type": "integer", "minimum": 1, "maximum": 12, "description": "Absolute target month (1-12)"},
+            },
+        },
+    }
+}
+
+func (p *CalendarPlugin) navigateMonthHandler(input *NavigateMonthInput) ([]eventsourcing.Event, error) {
+    a := p.aggregate
+    a.Mu.Lock()
+    // Determine base month
+    base := a.viewMonthStart
+    if base.IsZero() {
+        now := time.Now().UTC()
+        base = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+    }
+    // Absolute jump takes precedence
+    if input != nil && input.Year > 0 && input.Month >= 1 && input.Month <= 12 {
+        a.viewMonthStart = time.Date(input.Year, time.Month(input.Month), 1, 0, 0, 0, 0, time.UTC)
+    } else if input != nil && input.Offset != 0 {
+        a.viewMonthStart = base.AddDate(0, input.Offset, 0)
+    } else if a.viewMonthStart.IsZero() {
+        a.viewMonthStart = base
+    }
+    // Build a light EventsListed event so EmitDelta can refresh month view.
+    // Filter events overlapping the selected month to keep payload modest.
+    monthStart := a.viewMonthStart
+    nextMonth := monthStart.AddDate(0, 1, 0)
+    filtered := make([]*CalendarEvent, 0)
+    for _, ev := range a.Events {
+        start := ev.StartTime
+        end := ev.EndTime
+        if end.IsZero() || end.Before(start) {
+            end = start
+        }
+        if end.Before(monthStart) || !start.Before(nextMonth) {
+            continue
+        }
+        filtered = append(filtered, ev)
+    }
+    a.Mu.Unlock()
+    // Sort filtered by start time
+    sort.Slice(filtered, func(i, j int) bool { return filtered[i].StartTime.Before(filtered[j].StartTime) })
+    ev := &EventsListedEvent{EventType: "calendar_EventsListed", Events: filtered}
+    return []eventsourcing.Event{ev}, nil
+}
+
+// CalendarMonthComponent provides navigation actions for the month view.
+type CalendarMonthComponent struct {
+    NodeID    string
+    ViewStart time.Time
+}
+
+func NewCalendarMonthComponent(monthStart time.Time) *CalendarMonthComponent {
+    return &CalendarMonthComponent{NodeID: "calendar_month_label", ViewStart: monthStart}
+}
+
+func (c *CalendarMonthComponent) Type() string { return "CalendarMonth" }
+
+func (c *CalendarMonthComponent) Properties() map[string]interface{} {
+    return map[string]interface{}{
+        "node_id":    c.NodeID,
+        "view_start": c.ViewStart.Format(time.RFC3339),
+        "title":      "Calendar",
+    }
+}
+
+func (c *CalendarMonthComponent) Actions() map[string]ui3d.Action {
+    actions := make(map[string]ui3d.Action)
+    prev := ui3d.NewCommandAction("button_press", ui3d.CommandDescriptor{
+        Command:     "NavigateMonth",
+        Arguments:   map[string]ui3d.ValueBinding{"Offset": ui3d.StaticValue(-1)},
+        Description: "Previous month",
+    })
+    prev.Label = "Prev"
+    actions["prev_month"] = prev
+
+    next := ui3d.NewCommandAction("button_press", ui3d.CommandDescriptor{
+        Command:     "NavigateMonth",
+        Arguments:   map[string]ui3d.ValueBinding{"Offset": ui3d.StaticValue(1)},
+        Description: "Next month",
+    })
+    next.Label = "Next"
+    actions["next_month"] = next
+
+    now := time.Now().UTC()
+    today := ui3d.NewCommandAction("button_press", ui3d.CommandDescriptor{
+        Command:   "NavigateMonth",
+        Arguments: map[string]ui3d.ValueBinding{"Year": ui3d.StaticValue(now.Year()), "Month": ui3d.StaticValue(int(now.Month()))},
+        Description: "Jump to current month",
+    })
+    today.Label = "Today"
+    actions["today"] = today
+    return actions
+}
+
+func (c *CalendarMonthComponent) Serialize() map[string]interface{} {
+    return map[string]interface{}{
+        "type":       c.Type(),
+        "properties": c.Properties(),
+        "actions":    c.Actions(),
+    }
+}
+
+func colorForImportance(importance string) []float64 {
+	switch importance {
+	case ImportanceCritical:
+		return []float64{0.98, 0.35, 0.35, 1.0}
+	case ImportanceHigh:
+		return []float64{0.99, 0.68, 0.32, 1.0}
+	case ImportanceMedium:
+		return []float64{0.75, 0.85, 1.0, 1.0}
+	case ImportanceLow:
+		return []float64{0.62, 0.9, 0.72, 1.0}
+	default:
+		return []float64{0.82, 0.95, 1.0, 1.0}
+	}
 }
 
 // getSortedEventIDs returns event IDs sorted by start time for consistent positioning

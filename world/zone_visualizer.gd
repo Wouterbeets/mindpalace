@@ -3,7 +3,38 @@ extends Node3D
 # Zone visualizer - paints floors and borders for zones
 # Drops shader floor, draws shapes instead
 
+const ZONE_COLORS = {
+	"calendar": Color(0.0, 0.82, 1.0, 1.0),
+	"taskmanager": Color(0.45, 0.98, 0.35, 1.0),
+	"notes": Color(0.95, 0.32, 0.9, 1.0),
+	"unknown": Color(0.45, 0.6, 0.72, 1.0)
+}
+
+const ZONE_DEFAULT_COLOR = Color(0.0, 0.65, 1.0, 1.0)
+const LABEL_COLOR = Color(0.82, 0.95, 1.0, 1.0)
+const LABEL_OUTLINE = Color(0.0, 0.18, 0.25, 1.0)
+const BORDER_COLOR = Color(0.0, 0.86, 1.0, 1.0)
+
 var zone_nodes = []  # Keep track of created nodes for cleanup
+
+
+func _get_zone_color(zone_name: String) -> Color:
+	return ZONE_COLORS.get(zone_name.to_lower(), ZONE_DEFAULT_COLOR)
+
+
+func _build_zone_material(color: Color) -> StandardMaterial3D:
+	var material = StandardMaterial3D.new()
+	var base = Color(color.r * 0.16, color.g * 0.16, color.b * 0.16, 0.22)
+	material.albedo_color = base
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	material.emission_enabled = true
+	material.emission = color
+	material.emission_energy_multiplier = 1.9
+	material.roughness = 0.18
+	material.metallic = 0.05
+	material.clearcoat = 0.3
+	material.clearcoat_gloss = 0.6
+	return material
 
 func draw_zones(zones: Dictionary):
 	print("GODOT: ZoneVisualizer.draw_zones() called with ", zones.size(), " zones")
@@ -102,12 +133,11 @@ func create_zone_floor(angle: float, radius: float, zone_name: String) -> MeshIn
 	var mesh = surface_tool.commit()
 	mesh_instance.mesh = mesh
 
-	# Add material with zone color
-	var material = StandardMaterial3D.new()
-	material.albedo_color = get_zone_color(zone_name)
-	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	material.albedo_color.a = 0.3  # Semi-transparent
+	var zone_color = _get_zone_color(zone_name)
+	var material = _build_zone_material(zone_color)
 	mesh_instance.material_override = material
+	mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mesh_instance.position = Vector3(0, 0.02, 0)
 
 	return mesh_instance
 
@@ -135,45 +165,65 @@ func create_zone_border(zone1: Dictionary, zone2: Dictionary) -> MeshInstance3D:
 
 	# Add black border material
 	var material = StandardMaterial3D.new()
-	material.albedo_color = Color.BLACK
+	material.albedo_color = Color(BORDER_COLOR.r * 0.2, BORDER_COLOR.g * 0.2, BORDER_COLOR.b * 0.2, 0.4)
+	material.emission_enabled = true
+	material.emission = BORDER_COLOR
+	material.emission_energy_multiplier = 1.6
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	line_mesh.material_override = material
+	line_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 	return line_mesh
 
 func get_zone_color(zone_name: String) -> Color:
-	# Assign colors based on zone name
-	var colors = {
-		"calendar": Color.BLUE,
-		"taskmanager": Color.GREEN,
-		"notes": Color.YELLOW,
-		"unknown": Color.GRAY
-	}
-	return colors.get(zone_name.to_lower(), Color.GRAY)
+	return _get_zone_color(zone_name)
 
-func create_zone_label(angle: float, radius: float, zone_name: String) -> Label3D:
-	var label = Label3D.new()
-	label.name = "zone_label_" + zone_name
-	label.text = zone_name.to_upper()
-	label.font_size = 200  # Massive size
-	label.outline_size = 20
-	label.outline_modulate = Color.BLACK
-	label.modulate = Color.WHITE
-	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+func create_zone_label(angle: float, radius: float, zone_name: String) -> Node3D:
+	var holder = Node3D.new()
+	holder.name = "zone_label_" + zone_name
+	holder.set_meta("zone_name", zone_name)
 
 	# Position at the middle of the zone sector
 	var mid_radius = radius / 2.0
 	var x = mid_radius * cos(deg_to_rad(angle))
 	var z = mid_radius * sin(deg_to_rad(angle))
-	label.position = Vector3(x, 5.0, z)  # Floating above ground
+	holder.position = Vector3(x, 5.0, z)  # Floating above ground
+
+	var area = Area3D.new()
+	area.name = holder.name + "_area"
+	area.set_meta("zone_name", zone_name)
+	area.input_pickable = true
+	area.monitoring = false
+	area.collision_layer = 1
+	area.collision_mask = 1
+	var shape = CollisionShape3D.new()
+	var box = BoxShape3D.new()
+	box.size = Vector3(max(radius * 0.6, 6.0), 2.5, 1.5)
+	shape.shape = box
+	area.add_child(shape)
+	holder.add_child(area)
+
+	var label = Label3D.new()
+	label.name = holder.name + "_text"
+	label.text = "[" + zone_name.to_upper() + "]"
+	label.font_size = 160
+	label.outline_size = 12
+	label.outline_modulate = LABEL_OUTLINE
+	var color = _get_zone_color(zone_name)
+	label.modulate = color.lerp(LABEL_COLOR, 0.35)
+	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.position = Vector3.ZERO
+	holder.add_child(label)
 
 	# Make label face the orchestrator (center)
-	print("GODOT: Label position: ", label.position)
-	label.look_at_from_position(label.position, Vector3(0, 0, 0), Vector3.UP)
-	label.rotate_y(PI)
-	print("GODOT: Label rotation after rotate_y(PI): ", label.rotation)
+	print("GODOT: Label position: ", holder.position)
+	holder.look_at(Vector3(0, 0, 0), Vector3.UP)
+	holder.rotate_y(PI)
+	print("GODOT: Label rotation after rotate_y(PI): ", holder.rotation)
 
-	return label
+	return holder
 
 func clear_zones():
 	for node in zone_nodes:

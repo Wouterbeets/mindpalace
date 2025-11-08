@@ -133,9 +133,12 @@ func TestGetLLMContext(t *testing.T) {
 func TestSetPluginPrompt(t *testing.T) {
 	cm := NewChatManager(1000, "system")
 	cm.SetPluginPrompt("plugin1", "plugin prompt")
+	if prompt, ok := cm.PluginPrompts()["plugin1"]; !ok || prompt != "plugin prompt" {
+		t.Fatalf("expected plugin prompt to be stored")
+	}
 	context := cm.GetLLMContext([]string{"plugin1"})
-	if !contains(context[0].Content, "plugin prompt") {
-		t.Errorf("System prompt should include plugin prompt")
+	if contains(context[0].Content, "plugin prompt") {
+		t.Errorf("System prompt should stay lean even when plugin prompts are configured")
 	}
 }
 
@@ -143,9 +146,12 @@ func TestResetPluginPrompts(t *testing.T) {
 	cm := NewChatManager(1000, "system")
 	cm.SetPluginPrompt("plugin1", "prompt")
 	cm.ResetPluginPrompts()
+	if _, ok := cm.PluginPrompts()["plugin1"]; ok {
+		t.Fatalf("Plugin prompt should be cleared from the map")
+	}
 	context := cm.GetLLMContext([]string{"plugin1"})
 	if contains(context[0].Content, "prompt") {
-		t.Errorf("Plugin prompt should be reset")
+		t.Errorf("System prompt should not include cleared plugin prompts")
 	}
 }
 

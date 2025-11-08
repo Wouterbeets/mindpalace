@@ -25,6 +25,17 @@ MindPalace shifts the paradigm from prescriptive AI tools to a flexible framewor
    go run cmd/mindpalace/main.go
    ```
 
+## 3D Asset Pipeline
+MindPalace now ships with a baked catalog of Godot-ready meshes. To rebuild or curate the library:
+
+- Convert the Thingi10K archive into GLB assets and a manifest:
+  ```bash
+  go run cmd/modelbaker/main.go -tar Thingi10K-002.tar.gz
+  ```
+- Assets are written under `world/assets/models`, and the manifest lands in `catalog.json`. Godot consumes the `res://assets/models/<id>.glb` paths directly—no runtime extraction.
+- Optional `-metadata path/to/models.json` lets you supply human-friendly titles and tags (JSON mapping `model_id` → `{ "title": "...", "tags": [...] }`) which power search during orchestration and plugin execution.
+- At runtime the orchestrator loads the manifest; plugins can request models by id and capture scale hints and bounding boxes from the catalog.
+
 ## Contributing
 We welcome contributions to enhance MindPalace. Please review our code of conduct, submit issues for bugs or features, and open pull requests for improvements.
 

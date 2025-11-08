@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
@@ -150,12 +149,8 @@ func (cm *ChatManager) GetLLMContext(activeAgents []string) []llmmodels.Message 
 	// Build dynamic system prompt
 	var systemContent strings.Builder
 	systemContent.WriteString(cm.systemPrompt)
-	for _, agent := range activeAgents {
-		if prompt, exists := cm.pluginPrompts[agent]; exists {
-			systemContent.WriteString("\n\n")
-			systemContent.WriteString(prompt)
-		}
-	}
+	// Plugin prompts are used elsewhere (e.g., context preview) but we keep the system
+	// message itself lean so it can focus on the shared charter.
 	logging.Info("System prompt built: %s", systemContent.String())
 
 	result := []llmmodels.Message{
@@ -380,18 +375,52 @@ func (cm *ChatManager) ResetPluginPrompts() {
 	cm.pluginPrompts = make(map[string]string)
 }
 
+// ResetContext wipes the active conversation state and optionally replaces the system prompt.
+func (cm *ChatManager) ResetContext(newSystemPrompt string) {
+	cm.messages = make(map[string][]Message)
+	cm.totalTokens = make(map[string]int)
+	cm.pluginPrompts = make(map[string]string)
+	if newSystemPrompt != "" {
+		cm.systemPrompt = newSystemPrompt
+	}
+}
+
+// SystemPrompt returns the current system prompt configured for the chat context.
+func (cm *ChatManager) SystemPrompt() string {
+	return cm.systemPrompt
+}
+
+// PluginPrompts returns a copy of the active plugin prompt map.
+func (cm *ChatManager) PluginPrompts() map[string]string {
+	cloned := make(map[string]string, len(cm.pluginPrompts))
+	for name, prompt := range cm.pluginPrompts {
+		cloned[name] = prompt
+	}
+	return cloned
+}
+
 // ApplyChatEvent applies chat-related events to the ChatManager
 func (cm *ChatManager) ApplyChatEvent(event interface{}) error {
 	switch e := event.(type) {
 	case *UserRequestReceivedEvent:
 		cm.AddMessage(RoleUser, e.RequestText, e.RequestID, "", nil)
 	case *ToolCallCompleted:
-		bytes, _ := json.Marshal(e.Results)
 		agentName := e.AgentName
-		cm.AddMessage(RoleTool, string(bytes), e.RequestID, agentName, map[string]interface{}{
+		summary := summarizeToolCallResult(e)
+		metadata := map[string]interface{}{
 			"function": e.Function,
 			"tool_id":  e.ToolCallID,
-		})
+		}
+		if success, ok := extractBool(e.Results["success"]); ok {
+			metadata["success"] = success
+		}
+		if emitted, ok := extractInt(e.Results["events_emitted"]); ok {
+			metadata["events_emitted"] = emitted
+		}
+		if latency, ok := extractFloat(e.Results["latency_ms"]); ok {
+			metadata["latency_ms"] = latency
+		}
+		cm.AddMessage(RoleTool, summary, e.RequestID, agentName, metadata)
 	case *ToolCallFailedEvent:
 		agentName := e.AgentName
 		cm.AddMessage(RoleSystem, fmt.Sprintf("Tool Call failed '%s'", e.ErrorMsg), e.RequestID, agentName, nil)
@@ -437,4 +466,127 @@ func (cm *ChatManager) ApplyChatEvent(event interface{}) error {
 		return fmt.Errorf("unsupported event type: %T", event)
 	}
 	return nil
+}
+
+func summarizeToolCallResult(e *ToolCallCompleted) string {
+	if e == nil {
+		return "Tool call completed."
+	}
+
+	if s, ok := e.Results["summary"].(string); ok && strings.TrimSpace(s) != "" {
+		return strings.TrimSpace(s)
+	}
+
+	var builder strings.Builder
+	if e.Function != "" {
+		builder.WriteString(fmt.Sprintf("Tool '%s'", e.Function))
+	} else {
+		builder.WriteString("Tool call")
+	}
+
+	status := "completed"
+	if success, ok := extractBool(e.Results["success"]); ok {
+		if success {
+			status = "succeeded"
+		} else {
+			status = "reported a failure"
+		}
+	}
+	builder.WriteString(" ")
+	builder.WriteString(status)
+
+	if e.AgentName != "" {
+		builder.WriteString(fmt.Sprintf(" via %s", e.AgentName))
+	}
+	if emitted, ok := extractInt(e.Results["events_emitted"]); ok && emitted > 0 {
+		builder.WriteString(fmt.Sprintf(", emitted %d event(s)", emitted))
+	}
+	if latency, ok := extractFloat(e.Results["latency_ms"]); ok && latency > 0 {
+		builder.WriteString(fmt.Sprintf(", latency ~%.0fms", latency))
+	}
+
+	if status == "reported a failure" {
+		if errText, ok := e.Results["error"].(string); ok && errText != "" {
+			builder.WriteString(": ")
+			builder.WriteString(errText)
+		}
+	}
+	builder.WriteString(".")
+	return builder.String()
+}
+
+func extractBool(value interface{}) (bool, bool) {
+	switch v := value.(type) {
+	case bool:
+		return v, true
+	case string:
+		lower := strings.ToLower(strings.TrimSpace(v))
+		switch lower {
+		case "true", "yes", "1":
+			return true, true
+		case "false", "no", "0":
+			return false, true
+		}
+	}
+	return false, false
+}
+
+func extractInt(value interface{}) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int8:
+		return int(v), true
+	case int16:
+		return int(v), true
+	case int32:
+		return int(v), true
+	case int64:
+		return int(v), true
+	case uint:
+		return int(v), true
+	case uint8:
+		return int(v), true
+	case uint16:
+		return int(v), true
+	case uint32:
+		return int(v), true
+	case uint64:
+		return int(v), true
+	case float32:
+		return int(v), true
+	case float64:
+		return int(v), true
+	}
+	return 0, false
+}
+
+func extractFloat(value interface{}) (float64, bool) {
+	switch v := value.(type) {
+	case float32:
+		return float64(v), true
+	case float64:
+		return v, true
+	case int:
+		return float64(v), true
+	case int8:
+		return float64(v), true
+	case int16:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case uint:
+		return float64(v), true
+	case uint8:
+		return float64(v), true
+	case uint16:
+		return float64(v), true
+	case uint32:
+		return float64(v), true
+	case uint64:
+		return float64(v), true
+	}
+	return 0, false
 }

@@ -55,6 +55,11 @@ func SetGlobalEventBus(eb EventBus) {
 	globalEventBus = eb
 }
 
+// GetGlobalEventBus returns the process-wide event bus if one has been registered.
+func GetGlobalEventBus() EventBus {
+	return globalEventBus
+}
+
 type EventStore interface {
 	Append(events ...Event) error
 	GetEvents() []Event
@@ -201,4 +206,17 @@ type EventProcessorInterface interface {
 // Implement if the aggregate wants 3D UI (e.g., tasks as cubes).
 type ThreeDUIBroadcaster interface {
 	EmitDelta(event Event) *DeltaEnvelope // Returns delta envelope for this event, or nil to skip.
+}
+
+// EventScore captures a named/labelled score for a specific event.
+type EventScore struct {
+	Name  string  `json:"name"`
+	Label string  `json:"label,omitempty"`
+	Value float64 `json:"value"`
+}
+
+// EventScorable can be implemented by aggregates that want to accept
+// scoring results associated with historical events.
+type EventScorable interface {
+	RecordEventScore(eventID string, score EventScore)
 }

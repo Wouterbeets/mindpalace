@@ -73,12 +73,12 @@ type PluginMetadataProvider interface {
 
 // PluginInvocationResult captures the outcome of a single plugin execution for telemetry aggregation.
 type PluginInvocationResult struct {
-	Timestamp time.Time
-	Duration  time.Duration
-	Success   bool
-	TimedOut  bool
-	Panicked  bool
-	Error     string
+    Timestamp time.Time
+    Duration  time.Duration
+    Success   bool
+    TimedOut  bool
+    Panicked  bool
+    Error     string
 }
 
 // DefaultPluginMetadata returns a conservative metadata stub when a plugin does not provide details.
@@ -162,6 +162,23 @@ func (t PluginTelemetry) Merge(result PluginInvocationResult) PluginTelemetry {
 		t.LastError = ""
 	}
 
-	t.LastInvocation = result.Timestamp.UTC().Format(time.RFC3339Nano)
-	return t
+    t.LastInvocation = result.Timestamp.UTC().Format(time.RFC3339Nano)
+    return t
+}
+
+// ---- Optional cross-plugin summary interfaces ----
+
+// TaskSummary is a lightweight description of a task used for relevance scoring.
+type TaskSummary struct {
+    ID          string   `json:"id"`
+    Title       string   `json:"title"`
+    Description string   `json:"description,omitempty"`
+    Status      string   `json:"status,omitempty"`
+    Tags        []string `json:"tags,omitempty"`
+    Deadline    string   `json:"deadline,omitempty"` // ISO8601
+}
+
+// TaskSummaryProvider can be implemented by a task aggregate to supply open tasks.
+type TaskSummaryProvider interface {
+    OpenTaskSummaries() []TaskSummary
 }

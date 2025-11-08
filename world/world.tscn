@@ -17,9 +17,13 @@ noise = SubResource("FastNoiseLite_5vdy2")
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_yp5x2"]
 render_priority = 0
 shader = ExtResource("1_swcde")
-shader_parameter/height_scale = 0.1
-shader_parameter/tex_scale = 1.0
-shader_parameter/noise_tex = SubResource("NoiseTexture2D_25h3r")
+shader_parameter/grid_scale = 0.06
+shader_parameter/grid_thickness = 0.018
+shader_parameter/base_color = Color(0.00784314, 0.027451, 0.0470588, 1)
+shader_parameter/grid_color = Color(0, 0.866667, 1, 1)
+shader_parameter/pulse_speed = 1.6
+shader_parameter/pulse_amplitude = 0.8
+shader_parameter/hover_height = 0.35
 
 [sub_resource type="PlaneMesh" id="PlaneMesh_ya4wa"]
 material = SubResource("ShaderMaterial_yp5x2")

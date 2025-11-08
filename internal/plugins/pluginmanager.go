@@ -9,9 +9,11 @@ import (
 	"sync"
 	"time"
 
+	"mindpalace/internal/llmprocessor"
 	"mindpalace/internal/plugingenerator"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
+	"mindpalace/pkg/modellib"
 )
 
 // PluginNames tracks loaded plugin names for dynamic zoning
@@ -23,18 +25,26 @@ type pluginEntry struct {
 	telemetry eventsourcing.PluginTelemetry
 }
 
+// LLMClientConsumer allows plugins to receive the runtime LLM client for autonomous workflows.
+type LLMClientConsumer interface {
+	SetLLMClient(llm llmprocessor.LLMClient)
+}
+
 // PluginManager handles loading and managing plugins
 type PluginManager struct {
 	mu             sync.RWMutex
 	plugins        map[string]*pluginEntry
 	orderedNames   []string
 	eventProcessor *eventsourcing.EventProcessor
+	modelCatalog   *modellib.Catalog
+	llmClient      llmprocessor.LLMClient
 }
 
-func NewPluginManager(ep *eventsourcing.EventProcessor) *PluginManager {
+func NewPluginManager(ep *eventsourcing.EventProcessor, catalog *modellib.Catalog) *PluginManager {
 	pm := &PluginManager{
 		plugins:        make(map[string]*pluginEntry),
 		eventProcessor: ep,
+		modelCatalog:   catalog,
 	}
 	pm.LoadPlugins("plugins")
 	return pm
@@ -127,6 +137,9 @@ func (pm *PluginManager) LoadPlugins(pluginDir string) {
 		}
 
 		if plugin != nil {
+			if consumer, ok := plugin.(modellib.CatalogConsumer); ok && pm.modelCatalog != nil {
+				consumer.SetModelCatalog(pm.modelCatalog)
+			}
 			metadata := eventsourcing.DefaultPluginMetadata(plugin.Name())
 			if provider, ok := plugin.(eventsourcing.PluginMetadataProvider); ok {
 				metadata = provider.Metadata()
@@ -147,6 +160,12 @@ func (pm *PluginManager) LoadPlugins(pluginDir string) {
 			pm.orderedNames = append(pm.orderedNames, plugin.Name())
 			pm.mu.Unlock()
 
+			if pm.llmClient != nil {
+				if consumer, ok := plugin.(LLMClientConsumer); ok {
+					consumer.SetLLMClient(pm.llmClient)
+				}
+			}
+
 			PluginNames = append(PluginNames, plugin.Name())
 			logging.Info("Successfully loaded plugin: %s", plugin.Name())
 		}
@@ -161,6 +180,18 @@ func (pm *PluginManager) LoadPlugins(pluginDir string) {
 	for name, handler := range commands {
 		logging.Debug("registering commands en eventprocessor after initial plugin loading: %s", name)
 		pm.eventProcessor.RegisterCommand(name, handler)
+	}
+}
+
+// InjectLLMClient hands the live LLM runtime to any interested plugins.
+func (pm *PluginManager) InjectLLMClient(client llmprocessor.LLMClient) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.llmClient = client
+	for _, entry := range pm.plugins {
+		if consumer, ok := entry.plugin.(LLMClientConsumer); ok {
+			consumer.SetLLMClient(client)
+		}
 	}
 }
 
@@ -342,6 +373,10 @@ func (pm *PluginManager) LoadNewPlugin(pluginPath string) error {
 		}
 	}
 
+	if consumer, ok := plugin.(modellib.CatalogConsumer); ok && pm.modelCatalog != nil {
+		consumer.SetModelCatalog(pm.modelCatalog)
+	}
+
 	metadata := eventsourcing.DefaultPluginMetadata(plugin.Name())
 	if provider, ok := plugin.(eventsourcing.PluginMetadataProvider); ok {
 		metadata = provider.Metadata()
@@ -369,6 +404,26 @@ func (pm *PluginManager) LoadNewPlugin(pluginPath string) error {
 		pm.eventProcessor.RegisterCommand(name, handler)
 	}
 	return nil
+}
+
+// SetModelCatalog injects or updates the shared catalog reference and informs catalog-aware plugins.
+func (pm *PluginManager) SetModelCatalog(catalog *modellib.Catalog) {
+	pm.mu.Lock()
+	pm.modelCatalog = catalog
+	entries := make([]*pluginEntry, 0, len(pm.plugins))
+	for _, entry := range pm.plugins {
+		entries = append(entries, entry)
+	}
+	pm.mu.Unlock()
+
+	if catalog == nil {
+		return
+	}
+	for _, entry := range entries {
+		if consumer, ok := entry.plugin.(modellib.CatalogConsumer); ok {
+			consumer.SetModelCatalog(catalog)
+		}
+	}
 }
 
 // RecordInvocation updates telemetry for the given plugin and returns the merged snapshot.

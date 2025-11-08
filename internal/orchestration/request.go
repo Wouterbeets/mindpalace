@@ -47,41 +47,42 @@ type EventBusInterface interface {
 	SubscribeAll(handler eventsourcing.EventHandler)
 }
 
-const systemPromptTemplate = `You are MindPalace, a friendly AI assistant here to help with various queries and tasks. Provide helpful, accurate, and concise responses, using tools only when they enhance your ability to assist.
+const systemPromptTemplate = `You are MindPalace, a local-first steward of MemoryCrystals. Stay curious, truthful, and kind.
+
+Principles:
+- Decentralize divinity: run everything on-device and refuse hidden clouds.
+- Honor dreamwork: dawn baselines and goals are the source of truth—reuse them before inventing.
+- Lead with truth: verify facts, admit uncertainty, prefer surgical interventions over rewrites.
+- Keep humans in the loop: narrate plans, ask clarifying questions, invite collaboration.
 
 {{if .Agents}}
-Your current specialist toolbelt:
-{{range .Agents}}
-- {{.Name}} — {{.Summary}}
-  Use when: {{.UsageHint}}
-  Reliability: {{.Reliability}} ({{.SuccessRate}})
-  Typical latency: {{.AverageLatency}}, timeout guard: {{.DefaultTimeout}}
-{{if .Capabilities}}  Capabilities:
-{{range .Capabilities}}    • {{.}}
-{{end}}{{end}}{{if .Examples}}  Example requests:
-{{range .Examples}}    • {{.}}
-{{end}}{{end}}{{if .Tags}}  Tags: {{.Tags}}
+Agents online (call only when they clearly advance the goal):
+{{range .Agents}}- {{.Name}} → {{.UsageHint}}
 {{end}}
-{{end}}
-Lean on these strengths when they clearly improve the user's outcome. Otherwise answer directly with empathy and precision.
 {{else}}
-Since there are no specialized agents available, respond directly to the user's query.
+No specialist agents are online—answer directly.
 {{end}}
 
-Your goal is to provide the most helpful and efficient experience.`
+Always ground replies in the latest dawn baseline + goals. If context is missing, ask the user for guidance.`
 
 type agentPromptDescriptor struct {
 	Name           string
 	Summary        string
 	UsageHint      string
-	Capabilities   []string
-	Examples       []string
 	Tags           string
 	Reliability    string
 	SuccessRate    string
 	AverageLatency string
-	DefaultTimeout string
 	score          float64
+}
+
+// ContextPreview captures the exact LLM context MindPalace will feed into the router
+// before deciding how to serve the next user request.
+type ContextPreview struct {
+	ActiveAgents  []string            `json:"active_agents"`
+	SystemPrompt  string              `json:"system_prompt"`
+	PluginPrompts map[string]string   `json:"plugin_prompts"`
+	Messages      []llmmodels.Message `json:"messages"`
 }
 
 const defaultToolTimeout = 45 * time.Second
@@ -108,22 +109,17 @@ func (ro *RequestOrchestrator) buildAgentPromptDescriptors() []agentPromptDescri
 
 		successLine, successScore := renderSuccessRate(tele)
 		reliabilityLine := renderReliability(meta, tele)
-		capabilities := renderCapabilities(meta.Capabilities)
 		tagsLine := strings.Join(meta.Tags, ", ")
 		avgLatency := renderLatency(tele.AverageLatencyMillis)
-		timeout := renderTimeout(meta.DefaultTimeoutSeconds)
 
 		descriptors = append(descriptors, agentPromptDescriptor{
 			Name:           meta.Name,
 			Summary:        summary,
 			UsageHint:      usage,
-			Capabilities:   capabilities,
-			Examples:       meta.Examples,
 			Tags:           tagsLine,
 			Reliability:    reliabilityLine,
 			SuccessRate:    successLine,
 			AverageLatency: avgLatency,
-			DefaultTimeout: timeout,
 			score:          successScore,
 		})
 	}
@@ -138,30 +134,9 @@ func (ro *RequestOrchestrator) buildAgentPromptDescriptors() []agentPromptDescri
 	return descriptors
 }
 
-func renderCapabilities(capabilities []eventsourcing.PluginCapability) []string {
-	if len(capabilities) == 0 {
-		return nil
-	}
-	lines := make([]string, 0, len(capabilities))
-	for _, capability := range capabilities {
-		if capability.Name != "" && capability.Description != "" {
-			lines = append(lines, fmt.Sprintf("%s — %s", capability.Name, capability.Description))
-			continue
-		}
-		if capability.Description != "" {
-			lines = append(lines, capability.Description)
-			continue
-		}
-		if capability.Name != "" {
-			lines = append(lines, capability.Name)
-		}
-	}
-	return lines
-}
-
 func renderSuccessRate(tele eventsourcing.PluginTelemetry) (string, float64) {
 	if tele.Invocations == 0 {
-		return "awaiting first run", 0
+		return "", 0
 	}
 	rate := tele.SuccessRate()
 	percentage := math.Round(rate * 100)
@@ -191,7 +166,7 @@ func renderReliability(meta eventsourcing.PluginMetadataSnapshot, tele eventsour
 
 func renderLatency(avgMillis float64) string {
 	if avgMillis <= 0 {
-		return "unmeasured"
+		return ""
 	}
 	duration := time.Duration(avgMillis * float64(time.Millisecond))
 	if duration < time.Millisecond {
@@ -206,14 +181,6 @@ func renderLatency(avgMillis float64) string {
 	return fmt.Sprintf("~%s", duration.Round(time.Second))
 }
 
-func renderTimeout(seconds int) string {
-	if seconds <= 0 {
-		return defaultToolTimeout.String()
-	}
-	duration := time.Duration(seconds) * time.Second
-	return duration.String()
-}
-
 func titleCase(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -221,6 +188,107 @@ func titleCase(value string) string {
 	}
 	lower := strings.ToLower(value)
 	return strings.ToUpper(lower[:1]) + lower[1:]
+}
+
+func renderToolResultSummary(functionName, agentName string, emitted []map[string]interface{}) string {
+	base := fmt.Sprintf("Tool '%s'", functionName)
+	if agentName != "" {
+		base = fmt.Sprintf("%s via %s", base, agentName)
+	}
+	if len(emitted) == 0 {
+		return base + "."
+	}
+
+	primary := emitted[0]
+	eventType := strings.TrimSpace(stringValue(primary["event_type"]))
+
+	switch eventType {
+	case "taskmanager_TaskCreated":
+		title := stringValue(primary["title"])
+		if title == "" {
+			return base + " created a task."
+		}
+		status := strings.ToLower(stringValue(primary["status"]))
+		priority := stringValue(primary["priority"])
+		deadline := stringValue(primary["deadline"])
+
+		var builder strings.Builder
+		builder.WriteString(fmt.Sprintf("Created task \"%s\"", title))
+		if priority != "" {
+			builder.WriteString(fmt.Sprintf(" [%s]", priority))
+		}
+		if deadline != "" {
+			builder.WriteString(fmt.Sprintf(" due %s", deadline))
+		}
+		if status != "" {
+			builder.WriteString(fmt.Sprintf(" (%s)", status))
+		}
+		builder.WriteString(".")
+		return builder.String()
+
+	case "taskmanager_TaskUpdated":
+		title := stringValue(primary["title"])
+		if title == "" {
+			title = stringValue(primary["task_id"])
+		}
+		if title == "" {
+			return base + " updated a task."
+		}
+		status := stringValue(primary["status"])
+		if status != "" {
+			return fmt.Sprintf("Updated task \"%s\" to status %s.", title, status)
+		}
+		return fmt.Sprintf("Updated task \"%s\".", title)
+
+	case "taskmanager_TaskCompleted":
+		taskID := stringValue(primary["task_id"])
+		if taskID == "" {
+			return base + " completed a task."
+		}
+		return fmt.Sprintf("Marked task %s as completed.", taskID)
+	}
+
+	labels := make([]string, 0, len(emitted))
+	for _, item := range emitted {
+		etype := prettifyEventLabel(stringValue(item["event_type"]))
+		if etype != "" {
+			labels = append(labels, etype)
+		}
+		if len(labels) >= 2 {
+			break
+		}
+	}
+	if len(labels) > 0 {
+		return fmt.Sprintf("%s emitted %s.", base, strings.Join(labels, " & "))
+	}
+	return base + "."
+}
+
+func stringValue(v interface{}) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case fmt.Stringer:
+		return val.String()
+	case []byte:
+		return string(val)
+	default:
+		if val == nil {
+			return ""
+		}
+		return fmt.Sprintf("%v", val)
+	}
+}
+
+func toolCallSignature(call *agentSagaToolCall) string {
+	if call == nil {
+		return ""
+	}
+	payload, err := json.Marshal(call.Arguments)
+	if err != nil {
+		return strings.TrimSpace(call.Name)
+	}
+	return fmt.Sprintf("%s|%s", strings.TrimSpace(call.Name), payload)
 }
 
 type RequestOrchestrator struct {
@@ -234,6 +302,245 @@ type RequestOrchestrator struct {
 	controlChan      <-chan string
 	aggStore         eventsourcing.AggregateStore
 	events           []eventsourcing.Event
+}
+
+type agentSagaStatus string
+
+const (
+	sagaStatusNeedTool agentSagaStatus = "need_tool"
+	sagaStatusSuccess  agentSagaStatus = "success"
+	sagaStatusBlocked  agentSagaStatus = "blocked"
+	maxSagaIterations                  = 6
+)
+
+type agentSagaOutcome struct {
+	Goal     string             `json:"goal,omitempty"`
+	Status   agentSagaStatus    `json:"status"`
+	Summary  string             `json:"summary,omitempty"`
+	Notes    []string           `json:"notes,omitempty"`
+	ToolCall *agentSagaToolCall `json:"tool_call,omitempty"`
+}
+
+type agentSagaToolCall struct {
+	Name      string                 `json:"name"`
+	Arguments map[string]interface{} `json:"arguments"`
+}
+
+type agentSagaResult struct {
+	Events     []eventsourcing.Event
+	Summary    string
+	RawSummary string
+	Goal       string
+	Success    bool
+}
+
+type agentSagaContext struct {
+	RequestID   string
+	AgentName   string
+	UserRequest string
+	PluginState string
+	Goal        string
+	Facts       []string
+	LastSummary string
+	Iteration   int
+	ToolCounter int
+	ParseErrors int
+	LastToolSig string
+	RepeatCalls int
+}
+
+const agentSagaInstruction = `You are collaborating with MindPalace in a compact goal-driven loop.
+
+- Reaffirm or refine the working goal.
+- Decide the next action.
+- If a tool must run, reply with status "need_tool" and include {"tool_call":{"name":"...","arguments":{...}}}.
+- After MindPalace returns tool results, reconsider and choose the next move.
+- When the goal is achieved, reply with status "success" and provide a concise summary.
+- If progress is blocked, reply with status "blocked" and describe what is missing.
+
+Always respond using ONLY a JSON object with the schema:
+{
+  "goal": "string (optional)",
+  "status": "need_tool | success | blocked",
+  "summary": "string (optional)",
+  "notes": ["optional additional bullet points"],
+  "tool_call": {"name": "function name", "arguments": {...}} // required when status == "need_tool"
+}
+
+Write no extra prose outside the JSON.`
+
+func (ctx *agentSagaContext) addFact(fact string) {
+	fact = strings.TrimSpace(fact)
+	if fact == "" {
+		return
+	}
+	ctx.Facts = append(ctx.Facts, fact)
+	if len(ctx.Facts) > 8 {
+		ctx.Facts = ctx.Facts[len(ctx.Facts)-8:]
+	}
+}
+
+func (ctx *agentSagaContext) buildUserMessage() string {
+	var builder strings.Builder
+	builder.WriteString("User request:\n")
+	if ctx.UserRequest != "" {
+		builder.WriteString(ctx.UserRequest)
+		builder.WriteString("\n\n")
+	} else {
+		builder.WriteString("No explicit request text supplied.\n\n")
+	}
+
+	if ctx.Goal != "" {
+		builder.WriteString("Working goal: ")
+		builder.WriteString(ctx.Goal)
+		builder.WriteString("\n\n")
+	}
+
+	if len(ctx.Facts) > 0 {
+		builder.WriteString("Progress facts:\n")
+		for _, fact := range ctx.Facts {
+			builder.WriteString("- ")
+			builder.WriteString(fact)
+			builder.WriteString("\n")
+		}
+		builder.WriteString("\n")
+	}
+
+	if ctx.LastSummary != "" {
+		builder.WriteString("Last agent summary: ")
+		builder.WriteString(ctx.LastSummary)
+		builder.WriteString("\n\n")
+	}
+
+	builder.WriteString("Iteration: ")
+	builder.WriteString(fmt.Sprintf("%d\n", ctx.Iteration))
+	builder.WriteString("Respond with the JSON schema described above.")
+	return builder.String()
+}
+
+func (ro *RequestOrchestrator) buildAgentSagaMessages(plugin eventsourcing.Plugin, ctx *agentSagaContext) []llmprocessor.Message {
+	var systemBuilder strings.Builder
+	systemPrompt := strings.TrimSpace(plugin.SystemPrompt())
+	if systemPrompt != "" {
+		systemBuilder.WriteString(systemPrompt)
+		systemBuilder.WriteString("\n\n")
+	}
+	systemBuilder.WriteString(agentSagaInstruction)
+	if ctx.PluginState != "" {
+		systemBuilder.WriteString("\n\nPlugin state JSON:\n")
+		systemBuilder.WriteString(ctx.PluginState)
+	}
+
+	return []llmprocessor.Message{
+		{Role: "system", Content: systemBuilder.String()},
+		{Role: "user", Content: ctx.buildUserMessage()},
+	}
+}
+
+func (ro *RequestOrchestrator) newAgentResponseEvent(requestID, agentName, stage, responseText, raw string) *AgentResponseEvent {
+	return &AgentResponseEvent{
+		RequestID:    requestID,
+		AgentName:    agentName,
+		ResponseText: responseText,
+		RawResponse:  raw,
+		Stage:        stage,
+		Timestamp:    eventsourcing.ISOTimestamp(),
+	}
+}
+
+func parseAgentSagaOutcome(raw string) (*agentSagaOutcome, error) {
+	candidate := strings.TrimSpace(raw)
+	if candidate == "" {
+		return nil, fmt.Errorf("empty response")
+	}
+	if outcome, err := tryUnmarshalSagaOutcome(candidate); err == nil {
+		return outcome, nil
+	}
+	if body, ok := extractJSONBlock(candidate); ok {
+		if outcome, err := tryUnmarshalSagaOutcome(body); err == nil {
+			return outcome, nil
+		}
+	}
+	return nil, fmt.Errorf("unable to parse saga outcome")
+}
+
+func tryUnmarshalSagaOutcome(body string) (*agentSagaOutcome, error) {
+	var outcome agentSagaOutcome
+	if err := json.Unmarshal([]byte(body), &outcome); err != nil {
+		return nil, err
+	}
+	if outcome.Status == "" {
+		return nil, fmt.Errorf("missing status field")
+	}
+	switch outcome.Status {
+	case sagaStatusNeedTool, sagaStatusSuccess, sagaStatusBlocked:
+	default:
+		return nil, fmt.Errorf("unrecognised status %q", outcome.Status)
+	}
+	if outcome.Status == sagaStatusNeedTool {
+		if outcome.ToolCall == nil || strings.TrimSpace(outcome.ToolCall.Name) == "" {
+			return nil, fmt.Errorf("tool_call missing for need_tool status")
+		}
+	}
+	return &outcome, nil
+}
+
+func extractJSONBlock(text string) (string, bool) {
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start == -1 || end == -1 || end <= start {
+		return "", false
+	}
+	return text[start : end+1], true
+}
+
+func summarizeToolEvents(toolEvents []eventsourcing.Event) (string, bool) {
+	for _, evt := range toolEvents {
+		switch e := evt.(type) {
+		case *ToolCallCompleted:
+			if summary, ok := e.Results["summary"].(string); ok && strings.TrimSpace(summary) != "" {
+				return summary, true
+			}
+			base := fmt.Sprintf("Tool '%s' completed successfully.", e.Function)
+			if e.AgentName != "" {
+				base = fmt.Sprintf("Tool '%s' completed successfully via %s.", e.Function, e.AgentName)
+			}
+			return base, true
+		case *ToolCallFailedEvent:
+			msg := e.ErrorMsg
+			if strings.TrimSpace(msg) == "" {
+				msg = "tool call failed"
+			}
+			prefix := fmt.Sprintf("Tool '%s' failed", e.Function)
+			if e.AgentName != "" {
+				prefix = fmt.Sprintf("Tool '%s' failed via %s", e.Function, e.AgentName)
+			}
+			return fmt.Sprintf("%s: %s", prefix, msg), false
+		}
+	}
+	return "", true
+}
+
+func renderStageSummary(outcome *agentSagaOutcome) string {
+	if outcome == nil {
+		return ""
+	}
+	if strings.TrimSpace(outcome.Summary) != "" {
+		return strings.TrimSpace(outcome.Summary)
+	}
+	switch outcome.Status {
+	case sagaStatusNeedTool:
+		if outcome.ToolCall != nil && outcome.ToolCall.Name != "" {
+			return fmt.Sprintf("Preparing to call %s.", outcome.ToolCall.Name)
+		}
+		return "Preparing next tool call."
+	case sagaStatusSuccess:
+		return "Goal achieved."
+	case sagaStatusBlocked:
+		return "Agent reports it is blocked."
+	default:
+		return "Agent response recorded."
+	}
 }
 
 func NewRequestOrchestrator(llmClient LLMClientInterface, pm PluginManagerInterface, agg *OrchestrationAggregate, ep EventProcessorInterface, eb EventBusInterface, commandChan <-chan eventsourcing.CommandData, controlChan <-chan string, aggStore eventsourcing.AggregateStore, events []eventsourcing.Event) *RequestOrchestrator {
@@ -259,6 +566,60 @@ func NewRequestOrchestrator(llmClient LLMClientInterface, pm PluginManagerInterf
 }
 
 // DecideAgentCallCommand now dynamically fetches plugin prompts per call
+func (ro *RequestOrchestrator) prepareLLMContext() ([]llmmodels.Message, []string, error) {
+	cm := ro.agg.chatState.GetChatManager()
+	if cm == nil {
+		return nil, nil, fmt.Errorf("chat manager unavailable")
+	}
+
+	plugins := ro.pluginManager.GetLLMPlugins()
+	pluginNames := make([]string, len(plugins))
+	for i, plugin := range plugins {
+		pluginNames[i] = plugin.Name()
+	}
+
+	cm.ResetPluginPrompts()
+	for _, plugin := range plugins {
+		prompt := strings.TrimSpace(plugin.Description())
+		if prompt == "" {
+			prompt = strings.TrimSpace(plugin.SystemPrompt())
+		}
+		if prompt != "" {
+			cm.SetPluginPrompt(plugin.Name(), prompt)
+		}
+	}
+
+	descriptors := ro.buildAgentPromptDescriptors()
+	var promptBuffer bytes.Buffer
+	if err := ro.systemPromptTmpl.Execute(&promptBuffer, map[string]interface{}{"Agents": descriptors}); err != nil {
+		logging.Error("Failed to render system prompt: %v", err)
+	} else {
+		cm.SetSystemPrompt(promptBuffer.String())
+	}
+
+	llmMessages := cm.GetLLMContext(pluginNames)
+	return llmMessages, pluginNames, nil
+}
+
+func (ro *RequestOrchestrator) ContextPreview() (*ContextPreview, error) {
+	llmMessages, activeAgents, err := ro.prepareLLMContext()
+	if err != nil {
+		return nil, err
+	}
+
+	cm := ro.agg.chatState.GetChatManager()
+	if cm == nil {
+		return nil, fmt.Errorf("chat manager unavailable")
+	}
+
+	return &ContextPreview{
+		ActiveAgents:  activeAgents,
+		SystemPrompt:  cm.SystemPrompt(),
+		PluginPrompts: cm.PluginPrompts(),
+		Messages:      llmMessages,
+	}, nil
+}
+
 func (ro *RequestOrchestrator) DecideAgentCallCommand(event *UserRequestReceivedEvent) ([]eventsourcing.Event, error) {
 	preferredAgent := strings.TrimSpace(event.TargetAgent)
 	if preferredAgent != "" {
@@ -280,29 +641,11 @@ func (ro *RequestOrchestrator) DecideAgentCallCommand(event *UserRequestReceived
 		logging.Info("Target agent %s not found for request %s; falling back to orchestrator routing", preferredAgent, event.RequestID)
 	}
 
-	// Get all LLM plugins at this moment
-	plugins := ro.pluginManager.GetLLMPlugins()
-	pluginNames := make([]string, len(plugins))
-	for i, p := range plugins {
-		pluginNames[i] = p.Name()
-	}
-
-	// Reset and populate plugin prompts in ChatManager for this call
-	ro.agg.chatState.GetChatManager().ResetPluginPrompts() // Add this method to ChatManager
-	for _, plugin := range plugins {
-		ro.agg.chatState.GetChatManager().SetPluginPrompt(plugin.Name(), plugin.SystemPrompt())
-	}
-
-	descriptors := ro.buildAgentPromptDescriptors()
-	var promptBuffer bytes.Buffer
-	if err := ro.systemPromptTmpl.Execute(&promptBuffer, map[string]interface{}{"Agents": descriptors}); err != nil {
-		logging.Error("Failed to render system prompt: %v", err)
-	} else {
-		ro.agg.chatState.GetChatManager().SetSystemPrompt(promptBuffer.String())
-	}
-
 	// Get LLM context with fresh plugin data
-	llmMessages := ro.agg.chatState.GetChatManager().GetLLMContext(pluginNames)
+	llmMessages, _, err := ro.prepareLLMContext()
+	if err != nil {
+		return nil, err
+	}
 	// Convert messages
 	messages := make([]llmprocessor.Message, len(llmMessages))
 	for i, m := range llmMessages {
@@ -405,6 +748,9 @@ func (ro *RequestOrchestrator) gatherAgentTools() []llmmodels.Tool {
 	return tools
 }
 
+// gatherAgentToolsFor gathers tools only for a given subset of plugins
+// (reverted) shortlist functions removed per user request
+
 // commandHandler defines the structure for command registration
 type commandHandler struct {
 	name    string
@@ -472,18 +818,6 @@ func (ro *RequestOrchestrator) initializeCommandsAndSubscriptions() {
 			name:    "ExecuteAgentCall",
 			handler: eventsourcing.NewCommand(ro.ExecuteAgentCall),
 		},
-		{
-			name:    "ExecuteToolCall",
-			handler: eventsourcing.NewCommand(ro.ExecuteToolCallCommand),
-		},
-		{
-			name:    "CompleteRequest",
-			handler: eventsourcing.NewCommand(ro.CompleteRequestCommand),
-		},
-		{
-			name:    "CompleteRequestWithError",
-			handler: eventsourcing.NewCommand(ro.CompleteRequestWithErrorCommand),
-		},
 	}
 
 	// Define all event subscriptions
@@ -503,42 +837,6 @@ func (ro *RequestOrchestrator) initializeCommandsAndSubscriptions() {
 						return nil
 					}
 					return ro.eventProcessor.ExecuteCommand("ExecuteAgentCall", e)
-				}
-				return nil
-			},
-		},
-		{
-			eventType: "orchestration_ToolCallRequestPlaced",
-			handler: func(event eventsourcing.Event) error {
-				if e, ok := event.(*ToolCallRequestPlaced); ok {
-					return ro.eventProcessor.ExecuteCommand("ExecuteToolCall", e)
-				}
-				return nil
-			},
-		},
-		{
-			eventType: "orchestration_ToolCallCompleted",
-			handler: func(event eventsourcing.Event) error {
-				if e, ok := event.(*ToolCallCompleted); ok {
-					return ro.eventProcessor.ExecuteCommand("CompleteRequest", e)
-				}
-				return nil
-			},
-		},
-		{
-			eventType: "orchestration_AgentExecutionFailed",
-			handler: func(event eventsourcing.Event) error {
-				if e, ok := event.(*AgentExecutionFailedEvent); ok {
-					return ro.eventProcessor.ExecuteCommand("CompleteRequestWithError", e)
-				}
-				return nil
-			},
-		},
-		{
-			eventType: "orchestration_ToolCallFailed",
-			handler: func(event eventsourcing.Event) error {
-				if e, ok := event.(*ToolCallFailedEvent); ok {
-					return ro.eventProcessor.ExecuteCommand("CompleteRequestWithError", e)
 				}
 				return nil
 			},
@@ -729,8 +1027,33 @@ func (ro *RequestOrchestrator) ExecuteToolCallCommand(event *ToolCallRequestPlac
 		if outcome.err != nil {
 			return fail(fmt.Sprintf("command %s failed: %v", event.Function, outcome.err), false, false)
 		}
+		// Collect emitted events for inclusion in tool results so the LLM
+		// can see actual outputs rather than just telemetry.
+		emitted := make([]map[string]interface{}, 0, len(outcome.events))
 		for _, toolEvent := range outcome.events {
 			logging.Debug("tool call returned event: %v", toolEvent)
+			// Best-effort JSON round-trip into a map for readability.
+			if raw, err := toolEvent.Marshal(); err == nil {
+				var m map[string]interface{}
+				if uerr := json.Unmarshal(raw, &m); uerr == nil {
+					// Ensure an event_type field exists for the LLM to identify.
+					if _, ok := m["event_type"]; !ok {
+						m["event_type"] = toolEvent.Type()
+					}
+					emitted = append(emitted, m)
+				} else {
+					// Fall back to a minimal map if unmarshal fails.
+					emitted = append(emitted, map[string]interface{}{
+						"event_type": toolEvent.Type(),
+						"raw":        string(raw),
+					})
+				}
+			} else {
+				emitted = append(emitted, map[string]interface{}{
+					"event_type": toolEvent.Type(),
+					"error":      fmt.Sprintf("marshal failed: %v", err),
+				})
+			}
 		}
 		events = append(events, outcome.events...)
 		duration := time.Since(startTime)
@@ -744,6 +1067,12 @@ func (ro *RequestOrchestrator) ExecuteToolCallCommand(event *ToolCallRequestPlac
 			"events_emitted": len(outcome.events),
 			"latency_ms":     float64(duration) / float64(time.Millisecond),
 			"telemetry":      telemetry,
+			"function":       event.Function,
+			"function_args":  event.Arguments,
+			"emitted_events": emitted, // structured outputs for downstream LLM context
+		}
+		if summary := renderToolResultSummary(event.Function, event.AgentName, emitted); summary != "" {
+			resultSummary["summary"] = summary
 		}
 		events = append(events, &ToolCallCompleted{
 			RequestID:  event.RequestID,
@@ -780,13 +1109,211 @@ func (ro *RequestOrchestrator) gatherPluginTools(plugin eventsourcing.Plugin) []
 	return tools
 }
 
+func (ro *RequestOrchestrator) RunAgentSaga(plugin eventsourcing.Plugin, event *AgentCallDecidedEvent) (*agentSagaResult, error) {
+	stateJSON, err := json.Marshal(plugin.Aggregate())
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal plugin state: %v", err)
+	}
+
+	ctx := &agentSagaContext{
+		RequestID:   event.RequestID,
+		AgentName:   plugin.Name(),
+		UserRequest: strings.TrimSpace(event.Query),
+		PluginState: string(stateJSON),
+		Facts:       make([]string, 0),
+	}
+	if ctx.UserRequest == "" {
+		ctx.UserRequest = "Proceed with the outstanding objective."
+	}
+
+	result := &agentSagaResult{
+		Events: make([]eventsourcing.Event, 0),
+	}
+
+	llmTools := ro.gatherPluginTools(plugin)
+	tools := make([]llmprocessor.Tool, len(llmTools))
+	for i, t := range llmTools {
+		funcMap := t.Function
+		params, _ := json.Marshal(funcMap["parameters"])
+		name, _ := funcMap["name"].(string)
+		description, _ := funcMap["description"].(string)
+		tools[i] = llmprocessor.Tool{
+			Type: t.Type,
+			Function: llmprocessor.FunctionDef{
+				Name:        name,
+				Description: description,
+				Parameters:  params,
+			},
+		}
+	}
+
+	for iteration := 1; iteration <= maxSagaIterations; iteration++ {
+		ctx.Iteration = iteration
+		messages := ro.buildAgentSagaMessages(plugin, ctx)
+
+		llmCtx := context.WithValue(context.Background(), "request_id", event.RequestID)
+		resp, err := ro.llmClient.ChatCompletion(llmCtx, messages, tools, false)
+		if err != nil {
+			return nil, fmt.Errorf("agent saga LLM call failed: %w", err)
+		}
+		if len(resp.Choices) == 0 {
+			return nil, fmt.Errorf("agent saga returned no choices")
+		}
+
+		rawContent := strings.TrimSpace(resp.Choices[0].Message.Content)
+		outcome, parseErr := parseAgentSagaOutcome(rawContent)
+		if parseErr != nil {
+			ctx.ParseErrors++
+			warning := fmt.Sprintf("Agent response could not be parsed: %v", parseErr)
+			ctx.LastSummary = warning + " Please reply with the JSON schema."
+			ctx.addFact("Previous agent reply was not valid JSON. Respond using only the specified schema.")
+			result.Events = append(result.Events, ro.newAgentResponseEvent(event.RequestID, plugin.Name(), "clarify", ctx.LastSummary, rawContent))
+			if ctx.ParseErrors >= 2 {
+				result.Success = false
+				result.Summary = warning
+				result.RawSummary = rawContent
+				return result, nil
+			}
+			continue
+		}
+
+		if strings.TrimSpace(outcome.Goal) != "" {
+			ctx.Goal = strings.TrimSpace(outcome.Goal)
+		}
+		for _, note := range outcome.Notes {
+			ctx.addFact(note)
+		}
+
+		stageSummary := renderStageSummary(outcome)
+		stage := "progress"
+		switch outcome.Status {
+		case sagaStatusNeedTool:
+			stage = "planning"
+		case sagaStatusSuccess:
+			stage = "final"
+		case sagaStatusBlocked:
+			stage = "blocked"
+		}
+		ctx.LastSummary = stageSummary
+		result.Events = append(result.Events, ro.newAgentResponseEvent(event.RequestID, plugin.Name(), stage, stageSummary, rawContent))
+
+		switch outcome.Status {
+		case sagaStatusNeedTool:
+			signature := toolCallSignature(outcome.ToolCall)
+			if signature != "" {
+				if signature == ctx.LastToolSig {
+					ctx.RepeatCalls++
+					if ctx.RepeatCalls == 2 {
+						reminder := "This tool call matches the previous step. Verify whether the goal is already satisfied and respond with status \"success\" when appropriate."
+						ctx.addFact(reminder)
+						ctx.LastSummary = reminder
+						continue
+					}
+					if ctx.RepeatCalls >= 3 {
+						blockMsg := fmt.Sprintf("Agent repeated identical tool call %s without progress.", outcome.ToolCall.Name)
+						result.Events = append(result.Events, ro.newAgentResponseEvent(event.RequestID, plugin.Name(), "blocked", blockMsg, rawContent))
+						result.Success = false
+						result.Summary = blockMsg
+						result.RawSummary = rawContent
+						return result, nil
+					}
+				} else {
+					ctx.LastToolSig = signature
+					ctx.RepeatCalls = 1
+				}
+			}
+			toolCallID := fmt.Sprintf("%s-toolcall-%d", event.RequestID, ctx.ToolCounter)
+			ctx.ToolCounter++
+			toolEvent := &ToolCallRequestPlaced{
+				RequestID:  event.RequestID,
+				ToolCallID: toolCallID,
+				Function:   outcome.ToolCall.Name,
+				AgentName:  plugin.Name(),
+				Arguments:  outcome.ToolCall.Arguments,
+				Timestamp:  eventsourcing.ISOTimestamp(),
+			}
+			result.Events = append(result.Events, toolEvent)
+
+			toolEvents, toolErr := ro.ExecuteToolCallCommand(toolEvent)
+			result.Events = append(result.Events, toolEvents...)
+
+			summary, success := summarizeToolEvents(toolEvents)
+			if summary != "" {
+				ctx.addFact(summary)
+				ctx.LastSummary = summary + " If this completes the goal, reply with status \"success\" and share a concise summary."
+			}
+			ctx.LastToolSig = ""
+			ctx.RepeatCalls = 0
+			if stateJSON, err := json.Marshal(plugin.Aggregate()); err == nil {
+				ctx.PluginState = string(stateJSON)
+			}
+
+			if toolErr != nil {
+				result.Success = false
+				if summary == "" {
+					summary = fmt.Sprintf("Tool %s execution hit an error: %v", outcome.ToolCall.Name, toolErr)
+				}
+				result.Summary = summary
+				result.RawSummary = rawContent
+				return result, nil
+			}
+			if !success {
+				if summary == "" {
+					summary = fmt.Sprintf("Tool %s failed.", outcome.ToolCall.Name)
+				}
+				result.Success = false
+				result.Summary = summary
+				result.RawSummary = rawContent
+				return result, nil
+			}
+
+			continue
+
+		case sagaStatusSuccess:
+			finalSummary := stageSummary
+			if finalSummary == "" {
+				switch {
+				case ctx.LastSummary != "":
+					finalSummary = ctx.LastSummary
+				case len(ctx.Facts) > 0:
+					finalSummary = ctx.Facts[len(ctx.Facts)-1]
+				default:
+					finalSummary = "Goal achieved."
+				}
+			}
+			result.Success = true
+			result.Summary = finalSummary
+			result.RawSummary = rawContent
+			return result, nil
+
+		case sagaStatusBlocked:
+			blockSummary := stageSummary
+			if blockSummary == "" {
+				if ctx.LastSummary != "" {
+					blockSummary = ctx.LastSummary
+				} else {
+					blockSummary = "Agent reported it is blocked."
+				}
+			}
+			result.Success = false
+			result.Summary = blockSummary
+			result.RawSummary = rawContent
+			return result, nil
+		}
+	}
+
+	result.Success = false
+	result.Summary = "Agent saga exceeded iteration limit."
+	result.RawSummary = result.Summary
+	return result, nil
+}
+
 func (ro *RequestOrchestrator) ExecuteAgentCall(event *AgentCallDecidedEvent) ([]eventsourcing.Event, error) {
 	if !event.CallAgent {
 		logging.Debug("ExecuteAgentCall skipped for request %s: decision resolved without agent", event.RequestID)
 		return nil, nil
 	}
 
-	var events []eventsourcing.Event
 	plugin, err := ro.pluginManager.GetPlugin(event.AgentName)
 	if err != nil {
 		errorMsg := fmt.Sprintf("agent call failed: %v", err)
@@ -800,171 +1327,80 @@ func (ro *RequestOrchestrator) ExecuteAgentCall(event *AgentCallDecidedEvent) ([
 		}}, nil
 	}
 
-	resp, err := ro.CallPluginAgent(plugin, event.Query, event.RequestID)
-	if err != nil {
-		errorMsg := fmt.Sprintf("plugin call failed: %v", err)
-		return []eventsourcing.Event{&AgentExecutionFailedEvent{
+	sagaResult, sagaErr := ro.RunAgentSaga(plugin, event)
+	events := make([]eventsourcing.Event, 0)
+	if sagaResult != nil {
+		events = append(events, sagaResult.Events...)
+	}
+	if sagaErr != nil {
+		errorMsg := fmt.Sprintf("agent saga failed: %v", sagaErr)
+		events = append(events, &AgentExecutionFailedEvent{
 			EventType:   "orchestration_AgentExecutionFailed",
 			RequestID:   event.RequestID,
 			AgentName:   event.AgentName,
 			ErrorMsg:    errorMsg,
 			Timestamp:   eventsourcing.ISOTimestamp(),
 			Recoverable: false,
-		}}, nil
-	}
-
-	responseText := resp.Choices[0].Message.Content
-	stage := "pre_tool"
-	if len(resp.Choices[0].ToolCalls) == 0 {
-		stage = "final"
-	}
-	if strings.TrimSpace(responseText) != "" {
-		events = append(events, &AgentResponseEvent{
-			RequestID:    event.RequestID,
-			AgentName:    event.AgentName,
-			ResponseText: responseText,
-			RawResponse:  responseText,
-			Stage:        stage,
-			Timestamp:    eventsourcing.ISOTimestamp(),
 		})
-	}
-
-	toolCalls := resp.Choices[0].ToolCalls
-	for i, toolCall := range toolCalls {
-		var args map[string]interface{}
-		if err := json.Unmarshal(toolCall.Function.Arguments, &args); err != nil {
-			return nil, fmt.Errorf("failed to decode tool call arguments for %s: %w", toolCall.Function.Name, err)
-		}
-		events = append(events, &ToolCallRequestPlaced{
-			RequestID:  event.RequestID,
-			Function:   toolCall.Function.Name,
-			Arguments:  args,
-			Timestamp:  eventsourcing.ISOTimestamp(),
-			ToolCallID: fmt.Sprintf("%s-toolcall-%d", event.RequestID, i),
-			AgentName:  event.AgentName,
-		})
-	}
-	if len(toolCalls) == 0 {
 		events = append(events, &RequestCompletedEvent{
 			EventType:    "orchestration_RequestCompleted",
 			RequestID:    event.RequestID,
-			ResponseText: resp.Choices[0].Message.Content,
+			ResponseText: fmt.Sprintf("I hit an internal error coordinating %s: %s", event.AgentName, errorMsg),
 			CompletedAt:  eventsourcing.ISOTimestamp(),
 		})
+		return events, nil
 	}
 
+	if sagaResult == nil {
+		errorMsg := "agent saga returned no result"
+		events = append(events, &AgentExecutionFailedEvent{
+			EventType:   "orchestration_AgentExecutionFailed",
+			RequestID:   event.RequestID,
+			AgentName:   event.AgentName,
+			ErrorMsg:    errorMsg,
+			Timestamp:   eventsourcing.ISOTimestamp(),
+			Recoverable: false,
+		})
+		events = append(events, &RequestCompletedEvent{
+			EventType:    "orchestration_RequestCompleted",
+			RequestID:    event.RequestID,
+			ResponseText: fmt.Sprintf("I could not complete the request because %s.", errorMsg),
+			CompletedAt:  eventsourcing.ISOTimestamp(),
+		})
+		return events, nil
+	}
+
+	if sagaResult.Success {
+		finalText := sagaResult.Summary
+		if strings.TrimSpace(finalText) == "" {
+			finalText = fmt.Sprintf("%s completed the requested goal.", event.AgentName)
+		}
+		events = append(events, &RequestCompletedEvent{
+			EventType:    "orchestration_RequestCompleted",
+			RequestID:    event.RequestID,
+			ResponseText: finalText,
+			CompletedAt:  eventsourcing.ISOTimestamp(),
+		})
+		return events, nil
+	}
+
+	failureSummary := sagaResult.Summary
+	if strings.TrimSpace(failureSummary) == "" {
+		failureSummary = fmt.Sprintf("%s was unable to complete the task.", event.AgentName)
+	}
+	events = append(events, &AgentExecutionFailedEvent{
+		EventType:   "orchestration_AgentExecutionFailed",
+		RequestID:   event.RequestID,
+		AgentName:   event.AgentName,
+		ErrorMsg:    failureSummary,
+		Timestamp:   eventsourcing.ISOTimestamp(),
+		Recoverable: false,
+	})
+	events = append(events, &RequestCompletedEvent{
+		EventType:    "orchestration_RequestCompleted",
+		RequestID:    event.RequestID,
+		ResponseText: fmt.Sprintf("I could not finish because %s.", failureSummary),
+		CompletedAt:  eventsourcing.ISOTimestamp(),
+	})
 	return events, nil
-}
-
-// CallPluginAgent calls a plugin-specific agent with appropriate context and prompt
-func (ro *RequestOrchestrator) CallPluginAgent(plugin eventsourcing.Plugin, requestText string, requestID string) (*llmprocessor.ChatResponse, error) {
-	// Get plugin state from its aggregate
-	agg := plugin.Aggregate()
-	stateJSON, err := json.Marshal(agg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal plugin state: %v", err)
-	}
-
-	logging.Debug("current state in agent call %s", stateJSON)
-	// Build dynamic prompt with plugin state
-	prompt := fmt.Sprintf("%s\n\nCurrent State:\n%s", plugin.SystemPrompt(), string(stateJSON))
-
-	messages := []llmprocessor.Message{
-		{Role: "system", Content: prompt},
-		{Role: "user", Content: requestText},
-	}
-
-	// Use plugin-specific model and tools
-	llmTools := ro.gatherPluginTools(plugin)
-	tools := make([]llmprocessor.Tool, len(llmTools))
-	for i, t := range llmTools {
-		funcMap := t.Function
-		params, _ := json.Marshal(funcMap["parameters"])
-		tools[i] = llmprocessor.Tool{
-			Type: t.Type,
-			Function: llmprocessor.FunctionDef{
-				Name:        funcMap["name"].(string),
-				Description: funcMap["description"].(string),
-				Parameters:  params,
-			},
-		}
-	}
-	ctx := context.WithValue(context.Background(), "request_id", requestID)
-	return ro.llmClient.ChatCompletion(ctx, messages, tools, false)
-}
-
-// CompleteRequestCommand checks if all tool calls are done and finalizes the request
-func (ro *RequestOrchestrator) CompleteRequestCommand(event *ToolCallCompleted) ([]eventsourcing.Event, error) {
-	requestID := event.RequestID
-	// Check if all tool calls for this RequestID are complete
-	if pending, exists := ro.agg.PendingToolCalls[requestID]; exists && len(pending) > 0 {
-		logging.Debug("pending toolcalls: %d", len(pending))
-		// Not all tool calls are done yet; no events to emit
-		return nil, nil
-	}
-
-	// Use tag-based context selection for better relevance
-	relevantTags := []string{"task", "completion", "response"} // Basic tags for completion context
-	var activeAgents []string
-	if agentState, exists := ro.agg.AgentStates[requestID]; exists && agentState.AgentName != "" {
-		activeAgents = append(activeAgents, agentState.AgentName)
-	}
-	llmMessages := ro.agg.chatState.GetChatManager().GetLLMContextWithTags(activeAgents, relevantTags)
-	messages := make([]llmprocessor.Message, len(llmMessages))
-	for i, m := range llmMessages {
-		messages[i] = llmprocessor.Message{
-			Role:    m.Role,
-			Content: m.Content,
-		}
-	}
-	resp, err := ro.llmClient.ChatCompletion(context.Background(), messages, nil, false)
-	if err != nil {
-		return nil, fmt.Errorf("error calling llm client: %w", err)
-	}
-
-	// Emit RequestCompletedEvent
-	completedEvent := &RequestCompletedEvent{
-		EventType:    "orchestration_RequestCompleted",
-		RequestID:    requestID,
-		ResponseText: resp.Choices[0].Message.Content,
-		CompletedAt:  eventsourcing.ISOTimestamp(),
-	}
-	marsh, _ := completedEvent.Marshal()
-	logging.Debug("calling marshall in complete request %s", marsh)
-	return []eventsourcing.Event{completedEvent}, nil
-}
-
-// CompleteRequestWithErrorCommand handles completing a request that had an error
-func (ro *RequestOrchestrator) CompleteRequestWithErrorCommand(event eventsourcing.Event) ([]eventsourcing.Event, error) {
-	requestID := ""
-	errorMsg := ""
-
-	// Extract the requestID and errorMsg from different error event types
-	switch e := event.(type) {
-	case *AgentExecutionFailedEvent:
-		requestID = e.RequestID
-		errorMsg = e.ErrorMsg
-	case *ToolCallFailedEvent:
-		requestID = e.RequestID
-		errorMsg = e.ErrorMsg
-	default:
-		return nil, fmt.Errorf("unsupported error event type: %T", event)
-	}
-
-	// Check if we need to finalize the request
-	if pending, exists := ro.agg.PendingToolCalls[requestID]; exists && len(pending) > 0 {
-		// Not all tool calls are done yet; no events to emit
-		// We'll let the CompleteRequest command handle it when all calls finish
-		return nil, nil
-	}
-
-	// Create a completion response with error information
-	completedEvent := &RequestCompletedEvent{
-		EventType:    "orchestration_RequestCompleted",
-		RequestID:    requestID,
-		ResponseText: fmt.Sprintf("I encountered an error while processing your request: %s", errorMsg),
-		CompletedAt:  eventsourcing.ISOTimestamp(),
-	}
-
-	return []eventsourcing.Event{completedEvent}, nil
 }

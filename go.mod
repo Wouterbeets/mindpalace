@@ -10,6 +10,8 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/mutablelogic/go-whisper v0.0.25
 	github.com/pkoukk/tiktoken-go v0.1.8
+	github.com/qmuntal/gltf v0.28.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/stretchr/testify v1.10.0
 	modernc.org/sqlite v1.34.5
 )

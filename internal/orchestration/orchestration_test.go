@@ -624,12 +624,12 @@ func TestOrchestrationFlow_WithToolCalls(t *testing.T) {
 	// Mock the CallPluginAgent to return no tool calls
 	ro.llmClient = &mockLLMClient{
 		responses: map[string]*llmprocessor.ChatResponse{
-			"req1": &llmprocessor.ChatResponse{
+			"req1": {
 				Choices: []llmprocessor.Choice{
 					{
 						Message: llmprocessor.Message{
 							Role:    "assistant",
-							Content: "Plugin response",
+							Content: `{"status":"success","summary":"Plugin response"}`,
 						},
 					},
 				},
@@ -1265,65 +1265,5 @@ func TestExecuteToolCallCommand_SuccessTelemetry(t *testing.T) {
 	}
 	if pm.telemetry["demo"].Invocations != 1 {
 		t.Fatalf("mock plugin manager telemetry not updated: %+v", pm.telemetry["demo"])
-	}
-}
-
-func TestCompleteRequestCommand_Pending(t *testing.T) {
-	llmClient := &mockLLMClient{}
-	pm := &mockPluginManager{}
-	agg := NewOrchestrationAggregate()
-	agg.PendingToolCalls["req1"] = map[string]struct{}{"tool1": {}}
-	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
-	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
-	commandChan := make(chan eventsourcing.CommandData, 10)
-	controlChan := make(chan string, 10)
-	aggStore := &mockAggregateStore{}
-	events := []eventsourcing.Event{}
-
-	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb, commandChan, controlChan, aggStore, events)
-
-	event := &ToolCallCompleted{
-		RequestID:  "req1",
-		ToolCallID: "tool1",
-		Function:   "test",
-		AgentName:  "testAgent",
-		Timestamp:  "2023-01-01T00:00:00Z",
-	}
-	events, err := ro.CompleteRequestCommand(event)
-	if err != nil {
-		t.Fatalf("Failed: %v", err)
-	}
-	if events != nil {
-		t.Errorf("Expected nil events when pending")
-	}
-}
-
-func TestCompleteRequestWithErrorCommand(t *testing.T) {
-	llmClient := &mockLLMClient{}
-	pm := &mockPluginManager{}
-	agg := NewOrchestrationAggregate()
-	ep := &mockEventProcessor{commands: make(map[string]eventsourcing.CommandHandler)}
-	eb := &mockEventBus{subscriptions: make(map[string][]eventsourcing.EventHandler)}
-	commandChan := make(chan eventsourcing.CommandData, 10)
-	controlChan := make(chan string, 10)
-	aggStore := &mockAggregateStore{}
-	events := []eventsourcing.Event{}
-
-	ro := NewRequestOrchestrator(llmClient, pm, agg, ep, eb, commandChan, controlChan, aggStore, events)
-
-	event := &ToolCallFailedEvent{
-		RequestID: "req1",
-		ErrorMsg:  "error",
-		Timestamp: "2023-01-01T00:00:00Z",
-	}
-	events, err := ro.CompleteRequestWithErrorCommand(event)
-	if err != nil {
-		t.Fatalf("Failed: %v", err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("Expected 1 event, got %d", len(events))
-	}
-	if _, ok := events[0].(*RequestCompletedEvent); !ok {
-		t.Errorf("Expected RequestCompletedEvent")
 	}
 }

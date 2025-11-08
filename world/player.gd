@@ -11,13 +11,18 @@ func _ready():
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED  # Capture mouse for looking
 
 func _input(event):
-	if event is InputEventMouseMotion and not get_parent().settings_visible and not get_parent().birdview_active:
+	if event is InputEventMouseMotion and not get_parent().settings_visible and not get_parent().birdview_active and not movement_disabled:
+		var f = get_viewport().gui_get_focus_owner()
+		if f != null and (f is LineEdit or f is TextEdit):
+			return
 		rotate_y(-event.relative.x * mouse_sensitivity)
 		$Camera.rotate_x(-event.relative.y * mouse_sensitivity)
 		$Camera.rotation.x = clamp($Camera.rotation.x, -deg_to_rad(70), deg_to_rad(70))
 
 func _physics_process(delta):
-	if get_parent().settings_visible or movement_disabled:
+	# Disable movement while settings are open or typing in UI
+	var f = get_viewport().gui_get_focus_owner()
+	if get_parent().settings_visible or movement_disabled or (f != null and (f is LineEdit or f is TextEdit)):
 		return  # Disable movement when settings menu is open or birdview active
 
 	# Remove gravity for floating

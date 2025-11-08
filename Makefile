@@ -1,17 +1,22 @@
 # Makefile for MindPalace project
 
 # Variables
-GO = go
-GOFLAGS = -v
-CGO_ENABLED = 1
-BINARY_NAME = mindpalace
-PLUGIN_DIR = plugins
-BUILD_DIR = build
-MAIN_SRC = cmd/mindpalace/main.go
-PLUGIN_NAMES = calendar plugingenerator taskmanager
-PLUGIN_OUTPUTS = $(foreach name, $(PLUGIN_NAMES), $(PLUGIN_DIR)/$(name)/$(name).so)
-MODELS_DIR = models
-WHISPER_MODEL = $(MODELS_DIR)/ggml-base.en.bin
+GO := go
+GOFLAGS := -v
+CGO_ENABLED := 1
+BINARY_NAME := mindpalace
+PLUGIN_DIR := plugins
+BUILD_DIR := build
+MAIN_SRC := cmd/mindpalace/main.go
+PLUGIN_NAMES := calendar plugingenerator taskmanager
+PLUGIN_OUTPUTS := $(foreach name, $(PLUGIN_NAMES), $(PLUGIN_DIR)/$(name)/$(name).so)
+MODELS_DIR := models
+WHISPER_MODEL := $(MODELS_DIR)/ggml-base.en.bin
+
+# Derived paths
+ROOT_DIR := $(shell pwd)
+WHISPER_LIB_DIR := $(ROOT_DIR)/whisper-cpp/build/lib
+PKG_CONFIG_PATH := $(WHISPER_LIB_DIR)/pkgconfig:$(PKG_CONFIG_PATH)
 
 # Allow passing arguments to run
 RUN_ARGS ?=
@@ -25,7 +30,7 @@ all: whisper build plugins
 build: setup world
 	@echo "Building MindPalace binary..."
 	@mkdir -p $(BUILD_DIR)
-	PKG_CONFIG_PATH=$(shell pwd)/whisper-cpp/build/lib/pkgconfig:$(PKG_CONFIG_PATH) CGO_LDFLAGS="-Wl,-rpath,$(shell pwd)/whisper-cpp/build/lib" $(GO) build $(GOFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_SRC)
+	PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) CGO_LDFLAGS="-Wl,-rpath,$(WHISPER_LIB_DIR)" $(GO) build $(GOFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_SRC)
 
 
 
@@ -50,32 +55,36 @@ $(PLUGIN_DIR)/taskmanager/taskmanager.so: $(PLUGIN_DIR)/taskmanager/plugin.go
 .PHONY: run
 run: build plugins
 	@echo "Running MindPalace with args: $(RUN_ARGS)"
-	LD_LIBRARY_PATH=/home/mindpalace/mindpalace/whisper-cpp/build/lib:$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) $(RUN_ARGS)
+	@echo "LD_LIBRARY_PATH=$(WHISPER_LIB_DIR):$$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) $(RUN_ARGS)"
+	LD_LIBRARY_PATH=$(WHISPER_LIB_DIR):$$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) $(RUN_ARGS)
 
 # Run with verbose logging
 .PHONY: run-verbose
 run-verbose: build plugins
 	@echo "Running MindPalace in verbose mode..."
-	LD_LIBRARY_PATH=/home/mindpalace/mindpalace/whisper-cpp/build/lib:$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) -trace
+	@echo "LD_LIBRARY_PATH=$(WHISPER_LIB_DIR):$$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) -trace"
+	LD_LIBRARY_PATH=$(WHISPER_LIB_DIR):$$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) -trace
 
 # Run with debug logging
 .PHONY: run-debug
 run-debug: build plugins
 	@echo "Running MindPalace in debug mode..."
-	LD_LIBRARY_PATH=/home/mindpalace/mindpalace/whisper-cpp/build/lib:$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) -debug
+	@echo "LD_LIBRARY_PATH=$(WHISPER_LIB_DIR):$$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) -debug"
+	LD_LIBRARY_PATH=$(WHISPER_LIB_DIR):$$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) -debug
 
 # Run in headless mode
 .PHONY: run-headless
 run-headless: build plugins
 	@echo "Running MindPalace in headless mode..."
-	LD_LIBRARY_PATH=/home/mindpalace/mindpalace/whisper-cpp/build/lib:$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) -headless
+	@echo "LD_LIBRARY_PATH=$(WHISPER_LIB_DIR):$$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) -headless"
+	LD_LIBRARY_PATH=$(WHISPER_LIB_DIR):$$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) -headless
 
 # Run for testing with log capture and auto-kill after 10s
 .PHONY: run-test
 run-test: build plugins
 	@echo "Running MindPalace for testing (10s timeout)..."
 	@echo "Starting application..."
-	@timeout 10s bash -c 'LD_LIBRARY_PATH=/home/mindpalace/mindpalace/whisper-cpp/build/lib:$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) -debug 2>&1 | tee test_run.log' || true
+	@timeout 10s bash -c 'LD_LIBRARY_PATH=$(WHISPER_LIB_DIR):$$LD_LIBRARY_PATH ./$(BUILD_DIR)/$(BINARY_NAME) -debug 2>&1 | tee test_run.log' || true
 	@echo "Application stopped after 10 seconds. Logs saved to test_run.log"
 
 # Clean build artifacts
@@ -114,7 +123,7 @@ fmt:
 .PHONY: test
 test:
 	@echo "Running tests..."
-	PKG_CONFIG_PATH=$(shell pwd)/whisper-cpp/build/lib/pkgconfig:$(PKG_CONFIG_PATH) CGO_LDFLAGS="-Wl,-rpath,$(shell pwd)/whisper-cpp/build/lib" LD_LIBRARY_PATH=$(shell pwd)/whisper-cpp/build/lib:$(LD_LIBRARY_PATH) $(GO) test ./... -v
+	PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) CGO_LDFLAGS="-Wl,-rpath,$(WHISPER_LIB_DIR)" LD_LIBRARY_PATH=$(WHISPER_LIB_DIR):$$LD_LIBRARY_PATH $(GO) test ./... -v
 
 # Generate documentation
 .PHONY: doc

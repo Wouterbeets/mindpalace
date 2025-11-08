@@ -9,10 +9,13 @@ import (
 	"path/filepath"
 
 	"mindpalace/internal/audio"
+	"mindpalace/internal/entities"
 	"mindpalace/internal/godot_ws"
 	"mindpalace/internal/llmprocessor"
+	"mindpalace/internal/nightscorer"
 	"mindpalace/internal/orchestration"
 	"mindpalace/internal/plugins"
+	"mindpalace/internal/testapi"
 	"mindpalace/pkg/aggregate"
 	"mindpalace/pkg/eventsourcing"
 	"mindpalace/pkg/logging"
@@ -34,6 +37,7 @@ func main() {
 		inference    string
 		model        string
 		shimmyPort   int
+		apiAddr      string
 	)
 
 	// Parse command-line flags
@@ -47,6 +51,7 @@ func main() {
 	flag.StringVar(&inference, "inference", "ollama", "Inference engine: ollama or shimmy")
 	flag.StringVar(&model, "model", "gpt-oss:20b", "Model name")
 	flag.IntVar(&shimmyPort, "shimmy-port", 11435, "Port for Shimmy server")
+	flag.StringVar(&apiAddr, "api-addr", ":8092", "Address for the testing HTTP API (set empty to disable)")
 	flag.Parse()
 
 	// Show help if requested
@@ -105,7 +110,24 @@ func main() {
 	eb := eventsourcing.NewSimpleEventBus(store, aggManager)
 	ep.EventBus = eb
 	eventsourcing.SetGlobalEventBus(eb)
-	pluginManager := plugins.NewPluginManager(ep)
+
+	var (
+		worldRoot    string
+		modelCatalog *modellib.Catalog
+	)
+	if root, err := filepath.Abs("world"); err != nil {
+		logging.Info("MODEL: unable to resolve world directory: %v", err)
+	} else {
+		worldRoot = root
+		if catalog, err := modellib.LoadCatalog(worldRoot); err != nil {
+			logging.Info("MODEL: no baked catalog found: %v", err)
+		} else {
+			modelCatalog = catalog
+			logging.Info("MODEL: loaded catalog with %d entries", len(modelCatalog.Entries()))
+		}
+	}
+
+	pluginManager := plugins.NewPluginManager(ep, modelCatalog)
 
 	// Set global zones for plugins
 	ui3d.SetGlobalZones((&ui3d.LayoutManager{}).CalculateDynamicZones(plugins.PluginNames))
@@ -135,20 +157,19 @@ func main() {
 	}
 	orchAgg := orchestration.NewOrchestrationAggregate()
 	orchAgg.SetChannels(deltaChan, ackChan)
-	if tarPath, err := filepath.Abs("Thingi10K-002.tar.gz"); err == nil {
-		if worldRoot, err := filepath.Abs("world"); err == nil {
-			if modelLibrary, err := modellib.NewLibrary(tarPath, worldRoot); err != nil {
-				logging.Info("MODEL: unable to initialise library: %v", err)
-			} else {
-				orchAgg.SetModelLibrary(modelLibrary)
-			}
-		} else {
-			logging.Info("MODEL: unable to resolve world directory: %v", err)
-		}
-	} else {
-		logging.Info("MODEL: unable to resolve tarball: %v", err)
+	if modelCatalog != nil {
+		orchAgg.SetModelLibrary(modelCatalog)
+	} else if worldRoot == "" {
+		logging.Info("MODEL: no model catalog configured")
 	}
 	aggManager.RegisterAggregate("orchestration", orchAgg)
+
+	// Entities/world aggregate for placing models via UI
+	entitiesAgg := entities.NewAggregate()
+	if modelCatalog != nil {
+		entitiesAgg.SetModelLibrary(modelCatalog)
+	}
+	aggManager.RegisterAggregate("entities", entitiesAgg)
 
 	// Log registered aggregates
 	allAggs := aggManager.AllAggregates()
@@ -160,10 +181,127 @@ func main() {
 	// Create LLM client
 	llmClient := llmprocessor.NewLLMClient(inference, model, shimmyPort)
 	logging.Info("Using %s inference (model: %s)", inference, model)
+	pluginManager.InjectLLMClient(llmClient)
 
 	// Create and start orchestrator
 	ro := orchestration.NewRequestOrchestrator(llmClient, pluginManager, orchAgg, ep, eb, commandChan, controlChan, aggManager, events)
 	ro.Start()
+
+	if apiAddr != "" {
+		testAPIServer := testapi.NewServer(apiAddr, ep, pluginManager, ro)
+		testAPIServer.Start()
+	}
+
+	// Register system commands for purge and nightly scoring
+	type NightlyScoringInput struct {
+		Aggregate string `json:"Aggregate"`
+		ScoreName string `json:"ScoreName"`
+		Label     string `json:"Label"`
+	}
+	ep.RegisterCommand("RunNightlyScoring", eventsourcing.NewCommand(func(input *NightlyScoringInput) ([]eventsourcing.Event, error) {
+		aggName := input.Aggregate
+		if aggName == "" {
+			aggName = "taskmanager"
+		}
+		name := input.ScoreName
+		if name == "" {
+			name = "relevance"
+		}
+		label := input.Label
+		if label == "" {
+			label = "Task List"
+		}
+		logging.Info("NIGHT: Running scoring replay on aggregate='%s' name='%s' label='%s'", aggName, name, label)
+		events := ep.GetEvents()
+		if err := nightscorer.RunScoringReplay(aggManager, events, aggName, llmClient, name, label); err != nil {
+			return nil, fmt.Errorf("night scoring failed: %w", err)
+		}
+		return nil, nil
+	}))
+
+	// Command: PlaceEntity — places a model from the catalog at a position
+	ep.RegisterCommand("PlaceEntity", eventsourcing.NewCommand(func(input map[string]interface{}) ([]eventsourcing.Event, error) {
+		conv := func(v interface{}) float64 {
+			switch t := v.(type) {
+			case float64:
+				return t
+			case float32:
+				return float64(t)
+			case int:
+				return float64(t)
+			case int64:
+				return float64(t)
+			case int32:
+				return float64(t)
+			default:
+				return 0
+			}
+		}
+		modelIDRaw, ok := input["ModelID"]
+		if !ok {
+			return nil, fmt.Errorf("ModelID is required")
+		}
+		modelID, ok := modelIDRaw.(string)
+		if !ok || modelID == "" {
+			return nil, fmt.Errorf("ModelID must be a non-empty string")
+		}
+
+		// Parse position
+		var pos []float64
+		if p, ok := input["Position"].([]interface{}); ok && len(p) >= 3 {
+			pos = []float64{conv(p[0]), conv(p[1]), conv(p[2])}
+		} else if p2, ok := input["Position"].([]float64); ok && len(p2) >= 3 {
+			pos = []float64{p2[0], p2[1], p2[2]}
+		} else {
+			pos = []float64{0, 0, 0}
+		}
+
+		// Optional rotation
+		var rot []float64
+		if r, ok := input["Rotation"].([]interface{}); ok && len(r) >= 3 {
+			rot = []float64{conv(r[0]), conv(r[1]), conv(r[2])}
+		} else if r2, ok := input["Rotation"].([]float64); ok && len(r2) >= 3 {
+			rot = []float64{r2[0], r2[1], r2[2]}
+		}
+
+		// Optional scale
+		var scale []float64
+		if s, ok := input["Scale"].([]interface{}); ok && len(s) >= 3 {
+			scale = []float64{conv(s[0]), conv(s[1]), conv(s[2])}
+		} else if s2, ok := input["Scale"].([]float64); ok && len(s2) >= 3 {
+			scale = []float64{s2[0], s2[1], s2[2]}
+		}
+
+		label, _ := input["Label"].(string)
+		entityID, _ := input["EntityID"].(string)
+		if entityID == "" {
+			entityID = fmt.Sprintf("entity_%d", eventsourcing.GenerateUniqueID())
+		}
+
+		return []eventsourcing.Event{
+			&entities.EntityPlacedEvent{
+				EntityID: entityID,
+				ModelID:  modelID,
+				Position: pos,
+				Rotation: rot,
+				Scale:    scale,
+				Label:    label,
+			},
+		}, nil
+	}))
+
+	ep.RegisterCommand("PurgeAllData", eventsourcing.NewCommand(func(_ *struct{}) ([]eventsourcing.Event, error) {
+		logging.Info("SYSTEM: Purging all events and resetting state")
+		// store is already a *SQLiteEventStore; call DeleteAll directly
+		if err := store.DeleteAll(); err != nil {
+			return nil, fmt.Errorf("purge failed: %w", err)
+		}
+		// Reset runtime state & notify UI
+		if err := aggManager.RebuildState([]eventsourcing.Event{}); err != nil {
+			logging.Error("Failed to rebuild state after purge: %v", err)
+		}
+		return nil, nil
+	}))
 
 	// Initialize voice transcriber with Whisper model
 	modelPath, _ := filepath.Abs("models/ggml-base.en.bin")

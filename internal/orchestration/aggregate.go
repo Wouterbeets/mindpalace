@@ -468,6 +468,69 @@ func (a *OrchestrationAggregate) ApplyEvent(event eventsourcing.Event) error {
 			Description: description,
 			Details:     details,
 		}
+	case "dreamer_DawnReset":
+		raw, err := event.Marshal()
+		if err != nil {
+			logging.Error("orchestration: failed to marshal dreamer_DawnReset payload: %v", err)
+			break
+		}
+		var payload struct {
+			WindowID        string   `json:"window_id"`
+			CrystalIDs      []string `json:"crystal_ids"`
+			EventIDs        []string `json:"event_ids"`
+			AnchorIDs       []string `json:"anchor_ids"`
+			BaselineSummary string   `json:"baseline_summary"`
+			NextGoals       []string `json:"next_goals"`
+			GeneratedAt     string   `json:"generated_at"`
+			SystemPrompt    string   `json:"system_prompt"`
+			FitnessScore    float64  `json:"fitness_score"`
+			WindowTokens    int      `json:"window_tokens"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			logging.Error("orchestration: failed to unmarshal dreamer_DawnReset payload: %v", err)
+			break
+		}
+		logging.Info("orchestration: applying Dreamer dawn reset window=%s fitness=%.3f tokens=%d", payload.WindowID, payload.FitnessScore, payload.WindowTokens)
+		if cm := a.chatState.GetChatManager(); cm != nil {
+			cm.ResetContext(payload.SystemPrompt)
+			baseline := strings.TrimSpace(payload.BaselineSummary)
+			if baseline != "" {
+				meta := map[string]interface{}{
+					"type":        "dreamer_baseline",
+					"crystal_ids": payload.CrystalIDs,
+					"event_ids":   payload.EventIDs,
+				}
+				cm.AddMessage(chat.RoleMindPalace, fmt.Sprintf("Dawn baseline • %s", baseline), payload.WindowID, "dreamer", meta)
+			}
+			for _, goal := range payload.NextGoals {
+				goal = strings.TrimSpace(goal)
+				if goal == "" {
+					continue
+				}
+				meta := map[string]interface{}{
+					"type":  "dreamer_goal",
+					"phase": "dawn",
+				}
+				cm.AddMessage(chat.RoleMindPalace, fmt.Sprintf("Dawn goal • %s", goal), payload.WindowID, "dreamer", meta)
+			}
+		}
+		if a.DisplayInfos == nil {
+			a.DisplayInfos = make(map[string]*DisplayInfo)
+		}
+		a.DisplayInfos["dreamer_window"] = &DisplayInfo{
+			Title:       "Dreamer Dawn Window",
+			Description: payload.BaselineSummary,
+			Details: map[string]interface{}{
+				"type":          "dreamer_dawn_reset",
+				"window_id":     payload.WindowID,
+				"generated_at":  payload.GeneratedAt,
+				"fitness_score": payload.FitnessScore,
+				"tokens":        payload.WindowTokens,
+				"crystal_ids":   payload.CrystalIDs,
+				"event_ids":     payload.EventIDs,
+				"anchor_ids":    payload.AnchorIDs,
+			},
+		}
 	}
 
 	// Emit delta if needed

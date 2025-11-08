@@ -111,12 +111,12 @@ func (m *AggregateManager) broadcastEnvelope(envelope *eventsourcing.DeltaEnvelo
 func (m *AggregateManager) RebuildState(events []eventsourcing.Event) error {
 	logging.Debug("Rebuilding state for %d events across %d aggregates", len(events), len(m.AllAggregates()))
 
-	for _, agg := range m.AllAggregates() {
-		if resettable, ok := agg.(eventsourcing.ResettableAggregate); ok {
-			logging.Debug("Resetting aggregate %s prior to replay", agg.ID())
-			resettable.Reset()
-		}
-	}
+    for _, agg := range m.AllAggregates() {
+        if resettable, ok := agg.(eventsourcing.ResettableAggregate); ok {
+            logging.Debug("Resetting aggregate %s prior to replay", agg.ID())
+            resettable.Reset()
+        }
+    }
 
 	// Notify frontend to clear existing objects before replay
 	resetEnvelope := &eventsourcing.DeltaEnvelope{
@@ -132,13 +132,38 @@ func (m *AggregateManager) RebuildState(events []eventsourcing.Event) error {
 		logging.Error("Failed to broadcast reset signal: %v", err)
 	}
 
-	for i, event := range events {
-		logging.Debug("Applied %d / %d events", i, len(events))
-		logging.Debug("Applying event %s", event.Type())
-		if err := m.ApplyEventToAllAggs(event); err != nil {
-			return err
-		}
-	}
-	logging.Debug("RebuildState completed")
-	return nil
+    for i, event := range events {
+        logging.Debug("Applied %d / %d events", i, len(events))
+        logging.Debug("Applying event %s", event.Type())
+        if err := m.ApplyEventToAllAggs(event); err != nil {
+            return err
+        }
+    }
+    logging.Debug("RebuildState completed")
+    return nil
+}
+
+// RebuildStateSilent resets aggregates and applies events without emitting any deltas
+// or waiting for ACKs. Useful for offline/nightly processing (e.g., scoring) where
+// the UI may not be connected.
+func (m *AggregateManager) RebuildStateSilent(events []eventsourcing.Event) error {
+    logging.Debug("(silent) Rebuilding state for %d events across %d aggregates", len(events), len(m.AllAggregates()))
+
+    for _, agg := range m.AllAggregates() {
+        if resettable, ok := agg.(eventsourcing.ResettableAggregate); ok {
+            logging.Debug("(silent) Resetting aggregate %s prior to replay", agg.ID())
+            resettable.Reset()
+        }
+    }
+
+    for i, event := range events {
+        logging.Debug("(silent) Applying %d / %d events: %s", i+1, len(events), event.Type())
+        for _, agg := range m.AllAggregates() {
+            if err := agg.ApplyEvent(event); err != nil {
+                logging.Error("(silent) Apply failed for event %s on agg %s: %v", event.Type(), agg.ID(), err)
+            }
+        }
+    }
+    logging.Debug("RebuildStateSilent completed")
+    return nil
 }

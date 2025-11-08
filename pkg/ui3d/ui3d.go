@@ -78,43 +78,22 @@ func (db *DeltaBuilder) CreateCapsule(nodeID string, position []float64) *DeltaB
 	return db
 }
 
-// CreateTaskCard adds a card-like plane mesh for tasks
-func (db *DeltaBuilder) CreateTaskCard(nodeID string, title string, priority string, position []float64) *DeltaBuilder {
-	// Determine color based on priority
-	var color []float64
-	switch priority {
-	case "high":
-		color = []float64{1.0, 0.2, 0.2, 1.0} // Red
-	case "medium":
-		color = []float64{1.0, 1.0, 0.2, 1.0} // Yellow
-	case "low":
-		color = []float64{0.2, 1.0, 0.2, 1.0} // Green
-	default:
-		color = []float64{0.5, 0.5, 0.5, 1.0} // Gray
+// CreateModel spawns a MeshInstance3D backed by a GLB resource.
+func (db *DeltaBuilder) CreateModel(nodeID string, modelPath string, position []float64, scale []float64) *DeltaBuilder {
+	props := map[string]interface{}{
+		"position":   position,
+		"model_path": modelPath,
 	}
-
+	if len(scale) == 3 {
+		props["scale"] = scale
+	}
 	action := eventsourcing.DeltaAction{
-		Type:     "create",
-		NodeID:   nodeID,
-		NodeType: "MeshInstance3D",
-		Properties: map[string]interface{}{
-			"mesh":     "plane",
-			"position": position,
-			"scale":    []float64{2.0, 3.0, 1.0}, // Card aspect ratio
-			"material_override": map[string]interface{}{
-				"albedo_color":     color,
-				"emission_enabled": true,
-				"emission":         []float64{0.1, 0.1, 0.1, 1.0}, // Subtle glow
-			},
-			"display_info": map[string]interface{}{
-				"title": title,
-				"type":  "task",
-			},
-		},
+		Type:       "create",
+		NodeID:     nodeID,
+		NodeType:   "MeshInstance3D",
+		Properties: props,
 	}
 	db.actions = append(db.actions, action)
-	// Use GLTF model if available, fallback to primitive
-	db.WithModel("res://models/task.glb")
 	return db
 }
 
@@ -131,6 +110,12 @@ func (db *DeltaBuilder) CreateLabel(nodeID string, text string, position []float
 			"outline_modulate": db.theme.Accent,
 		},
 	}
+	db.actions = append(db.actions, action)
+	return db
+}
+
+// AddAction appends a raw delta action, useful for bespoke geometry outside the predefined helpers.
+func (db *DeltaBuilder) AddAction(action eventsourcing.DeltaAction) *DeltaBuilder {
 	db.actions = append(db.actions, action)
 	return db
 }
@@ -580,7 +565,78 @@ type UIComponent interface {
 
 // Action represents an interaction that triggers a backend command.
 type Action struct {
-	Type    string                 `json:"type"`
-	Data    map[string]interface{} `json:"data"`
-	Trigger string                 `json:"trigger"`
+	Type              string                 `json:"type"`
+	Data              map[string]interface{} `json:"data,omitempty"`
+	Trigger           string                 `json:"trigger,omitempty"`
+	CommandDescriptor *CommandDescriptor     `json:"command_descriptor,omitempty"`
+	Label             string                 `json:"label,omitempty"`
+	Icon              string                 `json:"icon,omitempty"`
+	Hints             map[string]interface{} `json:"hints,omitempty"`
+}
+
+// CommandDescriptor describes how to build a backend command invocation from a UI interaction.
+type CommandDescriptor struct {
+	Command      string                  `json:"command"`
+	Arguments    map[string]ValueBinding `json:"arguments,omitempty"`
+	Description  string                  `json:"description,omitempty"`
+	Confirmation string                  `json:"confirmation,omitempty"`
+	Metadata     map[string]interface{}  `json:"metadata,omitempty"`
+}
+
+// ValueBinding identifies how an argument should be resolved.
+type ValueBinding struct {
+	Source BindingSource `json:"source"`
+	Path   string        `json:"path,omitempty"`
+	Value  interface{}   `json:"value,omitempty"`
+}
+
+// BindingSource enumerates valid argument binding sources.
+type BindingSource string
+
+const (
+	BindingSourceStatic    BindingSource = "static"
+	BindingSourceContext   BindingSource = "context"
+	BindingSourceComponent BindingSource = "component"
+	BindingSourceUserInput BindingSource = "user_input"
+)
+
+// StaticValue returns a binding with a fixed value.
+func StaticValue(val interface{}) ValueBinding {
+	return ValueBinding{
+		Source: BindingSourceStatic,
+		Value:  val,
+	}
+}
+
+// ContextValue returns a binding that pulls from the interaction context (e.g., drop target).
+func ContextValue(path string) ValueBinding {
+	return ValueBinding{
+		Source: BindingSourceContext,
+		Path:   path,
+	}
+}
+
+// ComponentValue returns a binding that references component state.
+func ComponentValue(path string) ValueBinding {
+	return ValueBinding{
+		Source: BindingSourceComponent,
+		Path:   path,
+	}
+}
+
+// UserInputValue returns a binding sourced from user input collected during the interaction.
+func UserInputValue(path string) ValueBinding {
+	return ValueBinding{
+		Source: BindingSourceUserInput,
+		Path:   path,
+	}
+}
+
+// NewCommandAction constructs a command-producing action descriptor.
+func NewCommandAction(trigger string, descriptor CommandDescriptor) Action {
+	return Action{
+		Type:              "command",
+		Trigger:           trigger,
+		CommandDescriptor: &descriptor,
+	}
 }

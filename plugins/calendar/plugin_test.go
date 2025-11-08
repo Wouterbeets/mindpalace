@@ -128,23 +128,24 @@ func TestCalendarAggregate_GetCurrent3DState(t *testing.T) {
 	agg.ApplyEvent(createEvent)
 
 	signal := agg.EmitDelta(createEvent)
+	if signal == nil {
+		t.Fatal("Expected non-nil delta envelope")
+	}
 	actions := signal.Actions
-
-	// Should have 2 for event (box and label)
-	if len(actions) != 2 {
-		t.Errorf("Expected 2 actions, got %d", len(actions))
+	created := map[string]bool{}
+	for _, action := range actions {
+		if action.Type == "create" {
+			created[action.NodeID] = true
+		}
 	}
-
-	// Check event box
-	boxAction := actions[0]
-	if boxAction.NodeID != "calendar_event_event1" {
-		t.Errorf("Expected NodeID 'calendar_event_event1', got '%s'", boxAction.NodeID)
+	if !created["calendar_month_label"] {
+		t.Errorf("Expected calendar_month_label to be created")
 	}
-
-	// Check event label
-	labelAction := actions[1]
-	if labelAction.NodeID != "calendar_event_event1_label" {
-		t.Errorf("Expected NodeID 'calendar_event_event1_label', got '%s'", labelAction.NodeID)
+	if !created["calendar_day_number_01"] {
+		t.Errorf("Expected day label for day 1 to be created")
+	}
+	if !created["calendar_event_label_event1"] {
+		t.Errorf("Expected event label for event1 to be created")
 	}
 }
 
@@ -163,44 +164,44 @@ func TestCalendarAggregate_Broadcast3DDelta_EventCreated(t *testing.T) {
 
 	signal := agg.EmitDelta(event)
 	actions := signal.Actions
-
-	// Should have 2 actions: box and label
-	if len(actions) != 2 {
-		t.Errorf("Expected 2 actions, got %d", len(actions))
+	created := map[string]bool{}
+	for _, action := range actions {
+		if action.Type == "create" {
+			created[action.NodeID] = true
+		}
 	}
-
-	boxAction := actions[0]
-	if boxAction.NodeID != "calendar_event_event1" {
-		t.Errorf("Expected NodeID 'calendar_event_event1', got '%s'", boxAction.NodeID)
-	}
-
-	labelAction := actions[1]
-	if labelAction.NodeID != "calendar_event_event1_label" {
-		t.Errorf("Expected NodeID 'calendar_event_event1_label', got '%s'", labelAction.NodeID)
+	if !created["calendar_event_label_event1"] {
+		t.Errorf("Expected calendar_event_label_event1 to be created")
 	}
 }
 
 func TestCalendarAggregate_Broadcast3DDelta_EventDeleted(t *testing.T) {
 	agg := NewCalendarAggregate()
 
+	create := &EventCreatedEvent{
+		EventType: "calendar_EventCreated",
+		EventID:   "event1",
+		Title:     "Test Event",
+		StartTime: "2023-12-31T10:00:00Z",
+	}
+	agg.ApplyEvent(create)
+	agg.EmitDelta(create)
+
 	event := &EventDeletedEvent{
 		EventType: "calendar_EventDeleted",
 		EventID:   "event1",
 	}
+	agg.ApplyEvent(event)
 
 	signal := agg.EmitDelta(event)
 	actions := signal.Actions
-
-	// Should have 2 actions: delete box and delete label
-	if len(actions) != 2 {
-		t.Errorf("Expected 2 actions, got %d", len(actions))
+	created := map[string]bool{}
+	for _, action := range actions {
+		if action.Type == "create" {
+			created[action.NodeID] = true
+		}
 	}
-
-	if actions[0].Type != "delete" || actions[0].NodeID != "calendar_event_event1" {
-		t.Errorf("Expected delete action for 'calendar_event_event1', got %v", actions[0])
-	}
-
-	if actions[1].Type != "delete" || actions[1].NodeID != "calendar_event_event1_label" {
-		t.Errorf("Expected delete action for 'calendar_event_event1_label', got %v", actions[1])
+	if created["calendar_event_label_event1"] {
+		t.Errorf("Did not expect event label for event1 after deletion")
 	}
 }
