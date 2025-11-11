@@ -18,12 +18,12 @@ noise = SubResource("FastNoiseLite_5vdy2")
 render_priority = 0
 shader = ExtResource("1_swcde")
 shader_parameter/grid_scale = 0.06
-shader_parameter/grid_thickness = 0.018
-shader_parameter/base_color = Color(0.00784314, 0.027451, 0.0470588, 1)
-shader_parameter/grid_color = Color(0, 0.866667, 1, 1)
-shader_parameter/pulse_speed = 1.6
-shader_parameter/pulse_amplitude = 0.8
-shader_parameter/hover_height = 0.35
+shader_parameter/grid_thickness = 0.02
+shader_parameter/base_color = Color(0.152941, 0.156863, 0.133333, 1)
+shader_parameter/grid_color = Color(0.992157, 0.592157, 0.121569, 1)
+shader_parameter/pulse_speed = 0.8
+shader_parameter/pulse_amplitude = 0.25
+shader_parameter/hover_height = 0.08
 
 [sub_resource type="PlaneMesh" id="PlaneMesh_ya4wa"]
 material = SubResource("ShaderMaterial_yp5x2")
@@ -46,28 +46,28 @@ color_ramp = SubResource("Gradient_oyfdt")
 noise = SubResource("FastNoiseLite_a60f0")
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_7bkhj"]
-sky_top_color = Color(0.0392157, 0.0392157, 0.196078, 1)
-sky_horizon_color = Color(0, 0, 0.0392157, 1)
+sky_top_color = Color(0.0666667, 0.0705882, 0.0588235, 1)
+sky_horizon_color = Color(0.152941, 0.156863, 0.133333, 1)
 sky_cover = SubResource("NoiseTexture2D_g7ame")
-sky_cover_modulate = Color(0.517184, 0.517184, 0.517184, 1)
-ground_bottom_color = Color(0, 0, 0, 1)
-ground_horizon_color = Color(0, 0, 0, 1)
-sun_angle_max = 26.1
-sun_curve = 0.0215381
+sky_cover_modulate = Color(0.403922, 0.388235, 0.317647, 1)
+ground_bottom_color = Color(0.105882, 0.109804, 0.0941176, 1)
+ground_horizon_color = Color(0.152941, 0.156863, 0.133333, 1)
+sun_angle_max = 18.0
+sun_curve = 0.012
 
 [sub_resource type="Sky" id="Sky_epkd7"]
 sky_material = SubResource("ProceduralSkyMaterial_7bkhj")
 
 [sub_resource type="Environment" id="Environment_lscom"]
 background_mode = 2
-background_energy_multiplier = 0.4
+background_energy_multiplier = 0.35
 sky = SubResource("Sky_epkd7")
 fog_enabled = true
 fog_mode = 2
-fog_density = 0.1
-fog_color = Color(1, 1, 1, 1)
-fog_light_color = Color(0.00930032, 0.0112573, 0.0147838, 1)
-fog_light_energy = 0.46
+fog_density = 0.08
+fog_color = Color(0.152941, 0.156863, 0.133333, 1)
+fog_light_color = Color(0.992157, 0.592157, 0.121569, 1)
+fog_light_energy = 0.35
 
 [node name="Main" type="Node3D"]
 script = ExtResource("2_main")
@@ -78,6 +78,7 @@ script = ExtResource("2_main")
 shape = SubResource("BoxShape3D_aowa2")
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="Floor"]
+visible = false
 mesh = SubResource("PlaneMesh_ya4wa")
 
 [node name="Sunlight" type="DirectionalLight3D" parent="."]

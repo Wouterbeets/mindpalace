@@ -474,19 +474,20 @@ func CreateLabel(nodeID string, text string, position []float64, theme Theme) ev
 
 // CalculateDynamicZones computes zone offsets for plugins around the orchestrator
 func (lm *LayoutManager) CalculateDynamicZones(pluginNames []string) map[string]Zone {
-	pluginCount := len(pluginNames)
-	zones := make(map[string]Zone)
-	if pluginCount == 0 {
-		return zones
-	}
-	baseDistance := 100.0
-	spacing := 5.0
-	distance := baseDistance + float64(pluginCount-1)*spacing
-	for i, name := range pluginNames {
-		angleRad := 2 * math.Pi * float64(i) / float64(pluginCount)
-		angleDeg := angleRad * 180 / math.Pi
+    pluginCount := len(pluginNames)
+    zones := make(map[string]Zone)
+    if pluginCount == 0 {
+        return zones
+    }
+    // Pull plugin zones closer to the origin so boards are not rendered ~100 units away.
+    // Keep a fixed, human-scale radius independent of plugin count.
+    baseDistance := 28.0
+    distance := baseDistance
+    for i, name := range pluginNames {
+        angleRad := 2 * math.Pi * float64(i) / float64(pluginCount)
+        angleDeg := angleRad * 180 / math.Pi
 
-		// Set grid dimensions based on plugin
+        // Set grid dimensions based on plugin
 		var rows, cols, depth int
 		switch name {
 		case "taskmanager":

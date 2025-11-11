@@ -2,6 +2,9 @@
 
 MindPalace is an open-source AI assistant engineered to prioritize user autonomy and privacy. By granting full control over data and operations, it empowers individuals to customize their AI experience without external dependencies.
 
+## Steam-Friendly Packaging
+Ready-to-ship runtime payloads (Ollama + Whisper) now live under `runtime/`, with a cross-platform bootstrapper located at `cmd/bootstrapper`. See `packaging/steam/README.md` for the full staging + SteamPipe upload flow, including how to prefetch Ollama releases, bundle models, and configure Steam launch options so clean installs work without manual dependency setup.
+
 ## Key Features
 - **Local Execution**: Runs entirely on your device using lightweight, unbiased language models, ensuring data privacy and independence from cloud services or corporate ecosystems.
 - **Event-Sourced Architecture**: Built on a robust, efficient foundation that maintains a complete history of interactions for reliability and easy recovery.

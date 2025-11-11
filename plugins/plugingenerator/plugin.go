@@ -2,8 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +22,9 @@ func NewPlugin() eventsourcing.Plugin {
 	p := &PluginGeneratorPlugin{aggregate: agg}
 	agg.commands = map[string]eventsourcing.CommandHandler{
 		"GeneratePlugin": eventsourcing.NewCommand(func(input *GeneratePluginInput) ([]eventsourcing.Event, error) {
+			return p.generatePluginHandler(input)
+		}),
+		"functions.GeneratePlugin": eventsourcing.NewCommand(func(input *GeneratePluginInput) ([]eventsourcing.Event, error) {
 			return p.generatePluginHandler(input)
 		}),
 	}
@@ -83,7 +86,8 @@ func (i *GeneratePluginInput) New() any {
 
 // GeneratePluginInput defines the input for generating a plugin
 type GeneratePluginInput struct {
-	Description string `json:"Description"`
+	Description  string                              `json:"Description"`
+	Requirements *plugingenerator.PluginRequirements `json:"Requirements,omitempty"`
 }
 
 func (i *GeneratePluginInput) Schema() map[string]interface{} {
@@ -95,6 +99,28 @@ func (i *GeneratePluginInput) Schema() map[string]interface{} {
 				"Description": map[string]interface{}{
 					"type":        "string",
 					"description": "Description of the plugin to generate",
+				},
+				"Requirements": map[string]interface{}{
+					"type":        "object",
+					"description": "Explicit plugin blueprint collected via the front-end interview.",
+					"properties": map[string]interface{}{
+						"name": map[string]interface{}{
+							"type":        "string",
+							"description": "The plugin identifier (letters, numbers, underscore).",
+						},
+						"description": map[string]interface{}{
+							"type":        "string",
+							"description": "Human-readable summary of the plugin.",
+						},
+						"entities": map[string]interface{}{
+							"type":        "array",
+							"description": "List of entity schemas the plugin manages.",
+						},
+						"commands": map[string]interface{}{
+							"type":        "array",
+							"description": "Command specifications (create/update/delete/list).",
+						},
+					},
 				},
 			},
 			"required": []string{"Description"},
@@ -120,25 +146,37 @@ func (e *PluginGeneratedEvent) Unmarshal(data []byte) error { return json.Unmars
 func (p *PluginGeneratorPlugin) generatePluginHandler(input *GeneratePluginInput) ([]eventsourcing.Event, error) {
 	logging.Info("Generating plugin with description: %s", input.Description)
 
-	// For now, hardcode to drinking tracker if description contains "drink"
-	if strings.Contains(strings.ToLower(input.Description), "drink") {
-		pg := plugingenerator.NewPluginGenerator()
-		req, err := pg.ConductInterview()
+	pg := plugingenerator.NewPluginGenerator()
+	var (
+		req *plugingenerator.PluginRequirements
+		err error
+	)
+	if input.Requirements != nil {
+		req = input.Requirements
+	} else {
+		req, err = pg.ConductInterview()
 		if err != nil {
 			return nil, fmt.Errorf("failed to conduct interview: %v", err)
 		}
-		if err := pg.GeneratePlugin(req); err != nil {
-			return nil, fmt.Errorf("failed to generate plugin: %v", err)
-		}
-		event := &PluginGeneratedEvent{
-			EventType:   "plugingenerator_PluginGenerated",
-			PluginName:  req.Name,
-			Description: input.Description,
-		}
-		return []eventsourcing.Event{event}, nil
 	}
 
-	return nil, fmt.Errorf("plugin generation not supported for this description")
+	if err := plugingenerator.ValidateRequirements(req); err != nil {
+		var reqErr *plugingenerator.RequirementsError
+		if errors.As(err, &reqErr) {
+			return nil, fmt.Errorf("plugin blueprint incomplete: %s", reqErr.UserMessage)
+		}
+		return nil, fmt.Errorf("invalid plugin requirements: %w", err)
+	}
+
+	if err := pg.GeneratePlugin(req); err != nil {
+		return nil, fmt.Errorf("failed to generate plugin: %v", err)
+	}
+	event := &PluginGeneratedEvent{
+		EventType:   "plugingenerator_PluginGenerated",
+		PluginName:  req.Name,
+		Description: input.Description,
+	}
+	return []eventsourcing.Event{event}, nil
 }
 
 // Additional Plugin Methods
@@ -151,11 +189,20 @@ func (p *PluginGeneratorPlugin) Type() eventsourcing.PluginType {
 }
 
 func (p *PluginGeneratorPlugin) SystemPrompt() string {
-	return `You are PluginGenerator, an AI that helps create new plugins for MindPalace.
+	return `You are PluginGenerator, MindPalace's architect for new plugins.
 
-The user input will be a JSON object containing the arguments for the command. For example, {"Description": "track daily drinking habits"}.
+Before calling GeneratePlugin you must run a short interview (or confirm the answers already exist):
+  • Name: a short codename (letters / underscores).
+  • Description: one or two sentences about the workflow.
+  • Entity: the record this plugin manages (e.g., FuelLog) plus its fields (Amount, LoggedAt, Notes, etc.).
+  • Commands: which actions (create, list, update, delete) the user needs.
 
-Parse the JSON and use the GeneratePlugin command with the parsed description.`
+Ask follow-up questions, propose sensible defaults, and confirm the user is happy. If they prefer a guided flow, suggest the “Forge Plugin” button inside the Control Matrix UI.
+
+Only after the blueprint is complete should you call GeneratePlugin with a JSON payload like:
+{"Description":"track diesel refills","Requirements":{"name":"dieseltracker","description":"Track diesel refills","entities":[...],"commands":[...]}}
+
+If validation fails, explain what is missing and gather it from the user before trying again.`
 }
 
 func (p *PluginGeneratorPlugin) AgentModel() string {

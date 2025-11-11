@@ -3,17 +3,25 @@ extends Node3D
 # Zone visualizer - paints floors and borders for zones
 # Drops shader floor, draws shapes instead
 
+const MONOKAI_GREEN = Color(0.65098, 0.88627, 0.18039, 1.0)
+const MONOKAI_BLUE = Color(0.4, 0.851, 0.937, 1.0)
+const MONOKAI_PINK = Color(0.97647, 0.15294, 0.44706, 1.0)
+const MONOKAI_PURPLE = Color(0.68235, 0.50588, 1.0, 1.0)
+const MONOKAI_ORANGE = Color(0.99216, 0.59216, 0.12157, 1.0)
+const MONOKAI_SURFACE = Color(0.15294, 0.15686, 0.13333, 1.0)
+const MONOKAI_TEXT = Color(0.97255, 0.97255, 0.94902, 1.0)
+
 const ZONE_COLORS = {
-	"calendar": Color(0.0, 0.82, 1.0, 1.0),
-	"taskmanager": Color(0.45, 0.98, 0.35, 1.0),
-	"notes": Color(0.95, 0.32, 0.9, 1.0),
-	"unknown": Color(0.45, 0.6, 0.72, 1.0)
+	"calendar": MONOKAI_BLUE,
+	"taskmanager": MONOKAI_GREEN,
+	"notes": MONOKAI_PINK,
+	"unknown": MONOKAI_ORANGE,
 }
 
-const ZONE_DEFAULT_COLOR = Color(0.0, 0.65, 1.0, 1.0)
-const LABEL_COLOR = Color(0.82, 0.95, 1.0, 1.0)
-const LABEL_OUTLINE = Color(0.0, 0.18, 0.25, 1.0)
-const BORDER_COLOR = Color(0.0, 0.86, 1.0, 1.0)
+const ZONE_DEFAULT_COLOR = MONOKAI_PURPLE
+const LABEL_COLOR = MONOKAI_TEXT
+const LABEL_OUTLINE = Color(0.06667, 0.07059, 0.05882, 1.0)
+const BORDER_COLOR = MONOKAI_ORANGE
 
 var zone_nodes = []  # Keep track of created nodes for cleanup
 
@@ -24,16 +32,17 @@ func _get_zone_color(zone_name: String) -> Color:
 
 func _build_zone_material(color: Color) -> StandardMaterial3D:
 	var material = StandardMaterial3D.new()
-	var base = Color(color.r * 0.16, color.g * 0.16, color.b * 0.16, 0.22)
+	var base = MONOKAI_SURFACE.darkened(0.35)
+	base.a = 0.32
 	material.albedo_color = base
 	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	material.emission_enabled = true
 	material.emission = color
-	material.emission_energy_multiplier = 1.9
-	material.roughness = 0.18
-	material.metallic = 0.05
-	material.clearcoat = 0.3
-	material.clearcoat_gloss = 0.6
+	material.emission_energy_multiplier = 0.85
+	material.roughness = 0.28
+	material.metallic = 0.08
+	material.clearcoat = 0.1
+	material.clearcoat_gloss = 0.35
 	return material
 
 func draw_zones(zones: Dictionary):
@@ -165,10 +174,10 @@ func create_zone_border(zone1: Dictionary, zone2: Dictionary) -> MeshInstance3D:
 
 	# Add black border material
 	var material = StandardMaterial3D.new()
-	material.albedo_color = Color(BORDER_COLOR.r * 0.2, BORDER_COLOR.g * 0.2, BORDER_COLOR.b * 0.2, 0.4)
+	material.albedo_color = Color(MONOKAI_SURFACE.r, MONOKAI_SURFACE.g, MONOKAI_SURFACE.b, 0.6)
 	material.emission_enabled = true
 	material.emission = BORDER_COLOR
-	material.emission_energy_multiplier = 1.6
+	material.emission_energy_multiplier = 0.9
 	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	line_mesh.material_override = material
 	line_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -187,7 +196,7 @@ func create_zone_label(angle: float, radius: float, zone_name: String) -> Node3D
 	var mid_radius = radius / 2.0
 	var x = mid_radius * cos(deg_to_rad(angle))
 	var z = mid_radius * sin(deg_to_rad(angle))
-	holder.position = Vector3(x, 5.0, z)  # Floating above ground
+	holder.position = Vector3(x, 10.0, z)  # Floating higher above ground (doubled)
 
 	var area = Area3D.new()
 	area.name = holder.name + "_area"

@@ -14,39 +14,112 @@ var debug_timer = 0.0
 const DEBUG_INTERVAL = 5.0	# Send debug every 5 seconds
 # Removed zone and spacing logic - positions come from server
 
+const MONOKAI_BASE = Color(0.15294, 0.15686, 0.13333, 1.0)
+const MONOKAI_BASE_DEEP = Color(0.11765, 0.12157, 0.1098, 1.0)
+const MONOKAI_FOG = Color(0.06667, 0.07059, 0.05882, 1.0)
+const MONOKAI_FG = Color(0.97255, 0.97255, 0.94902, 1.0)
+const MONOKAI_MUTED = Color(0.45882, 0.44314, 0.36863, 1.0)
+const MONOKAI_GREEN = Color(0.65098, 0.88627, 0.18039, 1.0)
+const MONOKAI_ORANGE = Color(0.99216, 0.59216, 0.12157, 1.0)
+const MONOKAI_PINK = Color(0.97647, 0.15294, 0.44706, 1.0)
+const MONOKAI_BLUE = Color(0.4, 0.851, 0.937, 1.0)
+const MONOKAI_PURPLE = Color(0.68235, 0.50588, 1.0, 1.0)
+const MONOKAI_YELLOW = Color(0.902, 0.858, 0.4549, 1.0)
+
 # Mapping of event types to colors
 const EVENT_COLORS = {
-	"user_request_received": Color(0.0, 0.82, 1.0, 1.0),
-	"task_created": Color(0.18, 1.0, 0.62, 1.0),
-	"task_updated": Color(0.42, 0.78, 1.0, 1.0),
-	"task_completed": Color(0.1, 0.95, 0.4, 1.0),
-	"task_deleted": Color(0.98, 0.22, 0.42, 1.0),
-	"task": Color(0.0, 0.62, 0.92, 1.0),
-	"note_created": Color(0.95, 0.32, 0.9, 1.0),
-	"note_updated": Color(0.88, 0.52, 1.0, 1.0),
-	"note_deleted": Color(0.72, 0.1, 0.38, 1.0),
-	"note": Color(0.86, 0.44, 1.0, 1.0),
-	"calendar_event_created": Color(0.38, 0.92, 1.0, 1.0),
-	"calendar_event_updated": Color(0.45, 0.74, 1.0, 1.0),
-	"calendar_event_deleted": Color(0.96, 0.24, 0.35, 1.0),
-	"calendar_event": Color(0.3, 0.85, 1.0, 1.0),
-	"plugin_generated": Color(0.85, 0.18, 1.0, 1.0),
-	"request_completed": Color(0.0, 0.92, 0.78, 1.0),
-	"agent_call_decided": Color(0.96, 0.4, 1.0, 1.0),
-	"agent_execution_failed": Color(1.0, 0.2, 0.2, 1.0),
-	"tool_call_failed": Color(1.0, 0.32, 0.12, 1.0),
-	"tool_call_started": Color(0.98, 0.66, 0.2, 1.0),
-	"tool_call_completed": Color(0.0, 0.95, 0.95, 1.0),
-	"orchestrator_ai": Color(1.0, 0.92, 0.5, 1.0),
+	"user_request_received": MONOKAI_BLUE,
+	"task_created": MONOKAI_GREEN,
+	"task_updated": MONOKAI_YELLOW,
+	"task_completed": MONOKAI_ORANGE,
+	"task_deleted": MONOKAI_PINK,
+	"task": MONOKAI_GREEN,
+	"note_created": MONOKAI_PINK,
+	"note_updated": MONOKAI_PURPLE,
+	"note_deleted": MONOKAI_PINK,
+	"note": MONOKAI_PURPLE,
+	"calendar_event_created": MONOKAI_BLUE,
+	"calendar_event_updated": MONOKAI_YELLOW,
+	"calendar_event_deleted": MONOKAI_PINK,
+	"calendar_event": MONOKAI_BLUE,
+	"plugin_generated": MONOKAI_PURPLE,
+	"request_completed": MONOKAI_GREEN,
+	"agent_call_decided": MONOKAI_ORANGE,
+	"agent_execution_failed": MONOKAI_PINK,
+	"tool_call_failed": MONOKAI_PINK,
+	"tool_call_started": MONOKAI_ORANGE,
+	"tool_call_completed": MONOKAI_GREEN,
+	"orchestrator_ai": MONOKAI_YELLOW,
 }
 
-const UI_BG = Color(0.02, 0.05, 0.08, 0.9)
-const UI_BG_DEEP = Color(0.01, 0.02, 0.04, 0.96)
-const UI_PANEL_BORDER = Color(0.0, 0.82, 1.0, 1.0)
-const UI_ACCENT = Color(0.85, 0.18, 1.0, 1.0)
-const UI_TEXT = Color(0.82, 0.95, 1.0, 1.0)
-const UI_MUTED_TEXT = Color(0.38, 0.75, 0.9, 1.0)
-const LABEL_OUTLINE_COLOR = Color(0.02, 0.24, 0.36, 1.0)
+const PLUGIN_FIELD_TYPES := [
+	{
+		"label": "Text",
+		"go": "string",
+		"hint": "Names, notes, descriptors.",
+	},
+	{
+		"label": "Integer",
+		"go": "int",
+		"hint": "Whole numbers such as counts or rating levels.",
+	},
+	{
+		"label": "Decimal",
+		"go": "float64",
+		"hint": "Measurements that need precision (fuel litres, weights).",
+	},
+	{
+		"label": "Boolean",
+		"go": "bool",
+		"hint": "True/false toggles.",
+	},
+	{
+		"label": "Timestamp",
+		"go": "time.Time",
+		"hint": "Dates or exact times (stored as ISO strings).",
+	},
+]
+
+const PLUGIN_INTERVIEW_STEPS := [
+	{
+		"id": "plugin_name",
+		"title": "Name the Plugin",
+		"prompt": "Give this plugin a short codename (letters, numbers, underscores).",
+	},
+	{
+		"id": "description",
+		"title": "Describe the Work",
+		"prompt": "In one or two sentences, explain what this plugin should help with.",
+	},
+	{
+		"id": "entity_name",
+		"title": "Primary Entity",
+		"prompt": "What's the singular item this plugin tracks? (Examples: Drink, FuelLog, LessonPlan)",
+	},
+	{
+		"id": "fields",
+		"title": "Capture the Fields",
+		"prompt": "List the data you need for each record. We'll auto-add an ID so focus on meaningful attributes.",
+	},
+	{
+		"id": "commands",
+		"title": "Choose Commands",
+		"prompt": "Pick the actions MindPalace should wire up for this plugin.",
+	},
+	{
+		"id": "review",
+		"title": "Review & Forge",
+		"prompt": "Double-check the generated spec, then light the forge.",
+	},
+]
+
+const UI_BG = Color(MONOKAI_BASE.r, MONOKAI_BASE.g, MONOKAI_BASE.b, 0.92)
+const UI_BG_DEEP = Color(MONOKAI_BASE_DEEP.r, MONOKAI_BASE_DEEP.g, MONOKAI_BASE_DEEP.b, 0.98)
+const UI_PANEL_BORDER = MONOKAI_ORANGE
+const UI_ACCENT = MONOKAI_GREEN
+const UI_TEXT = MONOKAI_FG
+const UI_MUTED_TEXT = MONOKAI_MUTED
+const LABEL_OUTLINE_COLOR = Color(MONOKAI_FOG.r, MONOKAI_FOG.g, MONOKAI_FOG.b, 1.0)
 const SCREEN_OVERLAY_SHADER: Shader = preload("res://screen_overlay.gdshader")
 
 const TASK_STATUS_OFFSETS := {
@@ -62,7 +135,7 @@ const ZONE_CAMERA_MIN_RETREAT := 4.0
 
 # Store cubes by event ID for updates/deletes
 var event_cubes = {}
-var model_cache := {}
+var model_cache = {}
 
 # UI for info panel
 var info_panel: Panel
@@ -74,6 +147,9 @@ var conversation_history: RichTextLabel
 var conversation_input: LineEdit
 var conversation_send_button: Button
 var current_conversation_agent: String = ""
+
+# Plugin interview UI
+var plugin_interview_flow = null
 
 # Targeting HUD
 var targeting_hud_panel: Panel
@@ -88,6 +164,7 @@ var zone_scroll_container: ScrollContainer = null
 var zone_camera_targets: Dictionary = {}
 var zone_flight_tween: Tween = null
 var zone_last_focus: Vector3 = Vector3.ZERO
+var zones_state: Dictionary = {}
 
 var last_sequence_id: int = 0
 
@@ -166,6 +243,23 @@ func _lookup_path(container, path: String):
 	return current
 
 
+func _set_nested_path(dict: Dictionary, path: String, value: Variant) -> void:
+	# Creates intermediate dictionaries as needed and sets a value at the dotted path
+	if path == null or path == "":
+		return
+	var segments := path.split(".")
+	var current: Dictionary = dict
+	for i in range(segments.size()):
+		var seg := str(segments[i])
+		var is_last := i == segments.size() - 1
+		if is_last:
+			current[seg] = value
+			return
+		if not current.has(seg) or typeof(current[seg]) != TYPE_DICTIONARY:
+			current[seg] = {}
+		current = current[seg]
+
+
 func _resolve_binding(binding: Dictionary, component_props: Dictionary, context: Dictionary) -> Variant:
 	var source := str(binding.get("source", "static")).to_lower()
 	match source:
@@ -188,7 +282,7 @@ func _resolve_command_descriptor(descriptor: Dictionary, component_props: Dictio
 	var command_name := str(descriptor.get("command", ""))
 	if command_name == "":
 		return {}
-	var args := {}
+	var args: Dictionary = {}
 	var bindings = descriptor.get("arguments", {})
 	if bindings is Dictionary:
 		for arg_name in bindings.keys():
@@ -203,7 +297,7 @@ func _resolve_command_descriptor(descriptor: Dictionary, component_props: Dictio
 	}
 
 
-func dispatch_component_action(node_id: String, action_key: String, context := {}) -> bool:
+func dispatch_component_action(node_id: String, action_key: String, context: Dictionary = {}) -> bool:
 	if typeof(context) != TYPE_DICTIONARY:
 		context = {}
 	var entry: Dictionary = event_cubes.get(node_id, null)
@@ -220,7 +314,7 @@ func dispatch_component_action(node_id: String, action_key: String, context := {
 		return false
 
 	var command_name := ""
-	var payload := {}
+	var payload: Dictionary = {}
 	var component_props: Dictionary = entry.get("component_properties", {})
 
 	if action.has("command_descriptor") and action["command_descriptor"] is Dictionary:
@@ -336,6 +430,11 @@ var model_catalog_entries: Array = []
 var pending_model_id: String = ""
 var placement_hint: Label = null
 
+# Task card constants
+const TASK_CARD_SIZE: Vector3 = Vector3(0.9, 1.3, 0.06)
+const TASK_CARD_FACE: Vector2 = Vector2(0.86, 1.26)
+const TASK_CARD_UI_SIZE: Vector2i = Vector2i(512, 768)
+
 
 func _apply_neon_panel(panel: Panel, border_color: Color = UI_PANEL_BORDER, bg_color: Color = UI_BG, border_thickness: int = 2, radius: int = 12):
 	var style_box = StyleBoxFlat.new()
@@ -387,7 +486,7 @@ func _apply_neon_button(button: Button, font_size: int = 16):
 	button.add_theme_font_size_override("font_size", font_size)
 
 
-func _apply_neon_line_edit(line_edit: LineEdit, font_size: int = 16):
+func _apply_neon_line_edit(line_edit: Control, font_size: int = 16):
 	var base = StyleBoxFlat.new()
 	base.bg_color = Color(UI_BG_DEEP.r, UI_BG_DEEP.g, UI_BG_DEEP.b, 0.75)
 	base.border_color = UI_PANEL_BORDER
@@ -456,93 +555,203 @@ func _create_screen_overlay():
 	)
 
 
+func _create_task_card_ui(viewport: SubViewport) -> Control:
+	# Root UI for task card front; returns the Control root
+	var root = Control.new()
+	root.name = "CardUI"
+	root.size = TASK_CARD_UI_SIZE
+	root.custom_minimum_size = TASK_CARD_UI_SIZE
+
+	var panel = Panel.new()
+	panel.name = "CardPanel"
+	panel.size = TASK_CARD_UI_SIZE
+	_apply_neon_panel(panel, UI_PANEL_BORDER, UI_BG, 3, 18)
+	root.add_child(panel)
+
+	var vbox = VBoxContainer.new()
+	vbox.name = "CardVBox"
+	vbox.anchor_left = 0
+	vbox.anchor_top = 0
+	vbox.anchor_right = 1
+	vbox.anchor_bottom = 1
+	vbox.offset_left = 16
+	vbox.offset_top = 16
+	vbox.offset_right = -16
+	vbox.offset_bottom = -16
+	vbox.add_theme_constant_override("separation", 10)
+	panel.add_child(vbox)
+
+	var title = Label.new()
+	title.name = "Title"
+	_apply_neon_label(title, 30)
+	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(title)
+
+	var divider = ColorRect.new()
+	divider.color = UI_PANEL_BORDER
+	divider.custom_minimum_size = Vector2(0, 2)
+	vbox.add_child(divider)
+
+	var desc = RichTextLabel.new()
+	desc.name = "Description"
+	desc.bbcode_enabled = true
+	desc.scroll_active = false
+	desc.fit_content = true
+	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	desc.add_theme_font_size_override("normal_font_size", 20)
+	desc.add_theme_color_override("default_color", UI_TEXT)
+	vbox.add_child(desc)
+
+	viewport.add_child(root)
+	return root
+
+
+func _refresh_task_card(node: Node):
+	if not (node is Node3D):
+		return
+	if not node.has_meta("task_card"):
+		return
+	var ui_root: Control = node.get_node_or_null("CardViewport/CardUI")
+	if ui_root == null:
+		return
+	var title_label: Label = ui_root.get_node_or_null("CardPanel/CardVBox/Title")
+	var desc_label: RichTextLabel = ui_root.get_node_or_null("CardPanel/CardVBox/Description")
+	if title_label == null or desc_label == null:
+		return
+
+	var entry_info := _find_registered_entry_for_node(node)
+	var component_props: Dictionary = entry_info.get("entry", {}).get("component_properties", {})
+	var display_info = node.get_meta("display_info", {})
+
+	var title_text := ""
+	var desc_text := ""
+	if component_props.has("title"):
+		title_text = str(component_props["title"])
+	elif display_info is Dictionary and display_info.has("title"):
+		title_text = str(display_info["title"])
+	if component_props.has("description"):
+		desc_text = str(component_props["description"])
+	elif display_info is Dictionary and display_info.has("description"):
+		desc_text = str(display_info["description"])
+
+	title_label.text = title_text
+	desc_label.clear()
+	if desc_text != "":
+		desc_label.append_text(desc_text)
+
+	# Update border color by status if present
+	var border_color := UI_PANEL_BORDER
+	var status := str(component_props.get("status", ""))
+	if status != "":
+		match status:
+			"Completed":
+				border_color = MONOKAI_GREEN
+			"Blocked":
+				border_color = MONOKAI_PINK
+			"In Progress":
+				border_color = MONOKAI_YELLOW
+	var panel: Panel = ui_root.get_node_or_null("CardPanel")
+	if panel:
+		_apply_neon_panel(panel, border_color, UI_BG, 3, 18)
+
+	# Force a redraw of the viewport texture
+	var vp: SubViewport = node.get_node_or_null("CardViewport")
+	if vp:
+		vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+
+
 func _augment_orchestrator(node: MeshInstance3D):
 	node.name = "orchestrator_ai"
-	if node.has_node("OrchestratorHalo"):
-		node.get_node("OrchestratorHalo").queue_free()
+
+	# Minimal, bright pinpoint: a tiny sphere with strong light, no bubbles.
 	if node.mesh == null or not (node.mesh is SphereMesh):
 		var sphere = SphereMesh.new()
-		sphere.radial_segments = 64
-		sphere.rings = 32
-		sphere.radius = 0.8
+		sphere.radial_segments = 32
+		sphere.rings = 16
+		sphere.radius = 0.06
 		node.mesh = sphere
-	node.scale = Vector3.ONE * 1.25
+	node.scale = Vector3.ONE
 
 	var core_material = StandardMaterial3D.new()
-	core_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	core_material.albedo_color = Color(0.98, 0.98, 1.0, 0.25)
+	core_material.albedo_color = Color(0, 0, 0, 1)
 	core_material.metallic = 0.0
-	core_material.roughness = 0.08
+	core_material.roughness = 0.2
 	core_material.emission_enabled = true
-	core_material.emission = Color(0.95, 0.98, 1.0, 1.0)
-	core_material.emission_energy_multiplier = 3.2
-	core_material.subsurface_scattering_enabled = true
-	core_material.subsurface_scattering_strength = 0.7
-	core_material.subsurface_scattering_color = Color(1.0, 0.98, 0.93, 1.0)
-	core_material.refraction_enabled = true
-	core_material.refraction_scale = 0.02
+	# Warm-white emission to help the glow pop under bloom
+	core_material.emission = Color(1.0, 0.98, 0.85, 1.0)
+	core_material.emission_energy_multiplier = 1.2
+	core_material.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
 	node.material_override = core_material
 
-	if not node.has_node("OrchestratorLight"):
-		var light = OmniLight3D.new()
+	# Ensure a strong point light to drive volumetric scattering
+	var light: OmniLight3D = node.get_node_or_null("OrchestratorLight")
+	if light == null:
+		light = OmniLight3D.new()
 		light.name = "OrchestratorLight"
-		light.light_color = Color(1.0, 0.96, 0.85, 1.0)
-		light.light_energy = 9.0
-		light.omni_range = 42.0
-		light.shadow_enabled = false
 		node.add_child(light)
+	light.light_color = Color(1.0, 0.98, 0.85, 1.0)
+	light.light_energy = 14.0
+	light.omni_range = 12.0
+	light.shadow_enabled = false
+	# Boost contribution to volumetric fog for a dense halo
+	if light.has_method("set"):
+		# Godot exposes this as a property on Light3D subclasses in 4.x
+		light.set("volumetric_fog_energy", 2.0)
 
-	if node.has_node("OrchestratorAura"):
-		node.get_node("OrchestratorAura").queue_free()
-	if node.has_node("OrchestratorMistShell"):
-		node.get_node("OrchestratorMistShell").queue_free()
+	# Clean up any legacy bubbly effects if present
+	for child_name in ["OrchestratorHalo", "OrchestratorAura", "OrchestratorMistShell"]:
+		if node.has_node(child_name):
+			node.get_node(child_name).queue_free()
 
-	var inner_aura = GPUParticles3D.new()
-	inner_aura.name = "OrchestratorAura"
-	var inner_material = ParticleProcessMaterial.new()
-	inner_material.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
-	inner_material.emission_sphere_radius = 0.15
-	inner_material.initial_velocity_min = 0.12
-	inner_material.initial_velocity_max = 0.4
-	inner_material.gravity = Vector3.ZERO
-	inner_material.orbit_velocity = 0.4
-	inner_material.angular_velocity_min = -0.8
-	inner_material.angular_velocity_max = 0.8
-	inner_material.scale_min = 0.5
-	inner_material.scale_max = 1.1
-	inner_material.color = Color(0.85, 0.95, 1.0, 0.35)
-	inner_material.trail_enabled = true
-	inner_material.trail_divisor = 8
-	inner_material.trail_lifetime = 0.9
-	inner_aura.process_material = inner_material
-	inner_aura.amount = 220
-	inner_aura.lifetime = 3.2
-	inner_aura.speed_scale = 0.9
-	node.add_child(inner_aura)
+	# Kick shimmering animation if available
+	if orchestrator_tween == null:
+		start_orchestrator_animation()
 
-	var mist_shell = GPUParticles3D.new()
-	mist_shell.name = "OrchestratorMistShell"
-	var mist_material = ParticleProcessMaterial.new()
-	mist_material.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
-	mist_material.emission_sphere_radius = 0.6
-	mist_material.initial_velocity_min = 0.05
-	mist_material.initial_velocity_max = 0.18
-	mist_material.gravity = Vector3.ZERO
-	mist_material.orbit_velocity = 0.12
-	mist_material.angular_velocity_min = -0.2
-	mist_material.angular_velocity_max = 0.2
-	mist_material.scale_min = 0.9
-	mist_material.scale_max = 1.7
-	mist_material.color = Color(0.92, 0.99, 1.0, 0.16)
-	mist_material.damping = 0.02
-	mist_material.radial_velocity_min = -0.08
-	mist_material.radial_velocity_max = 0.12
-	mist_shell.process_material = mist_material
-	mist_shell.amount = 640
-	mist_shell.lifetime = 5.0
-	mist_shell.speed_scale = 0.6
-	mist_shell.draw_pass_1 = SphereMesh.new()
-	node.add_child(mist_shell)
+
+func _augment_task_card(node: MeshInstance3D, properties: Dictionary):
+	# Turn a MeshInstance into a thin card with a live UI front
+	node.set_meta("task_card", true)
+	# Body geometry
+	var body := BoxMesh.new()
+	body.size = TASK_CARD_SIZE
+	node.mesh = body
+	var body_mat = StandardMaterial3D.new()
+	body_mat.albedo_color = Color(MONOKAI_BASE_DEEP.r, MONOKAI_BASE_DEEP.g, MONOKAI_BASE_DEEP.b, 1.0)
+	body_mat.roughness = 0.45
+	body_mat.metallic = 0.08
+	body_mat.emission_enabled = true
+	body_mat.emission = UI_PANEL_BORDER.darkened(0.25)
+	body_mat.emission_energy_multiplier = 0.4
+	node.material_override = body_mat
+
+	# SubViewport for front face UI
+	var vp := SubViewport.new()
+	vp.name = "CardViewport"
+	vp.size = TASK_CARD_UI_SIZE
+	vp.own_world_3d = false
+	vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+	vp.transparent_bg = true
+	node.add_child(vp)
+	_create_task_card_ui(vp)
+
+	# Front plane that displays the viewport texture
+	var front := MeshInstance3D.new()
+	front.name = "CardFront"
+	var plane := PlaneMesh.new()
+	plane.size = TASK_CARD_FACE
+	front.mesh = plane
+	# Position slightly in front of the card body on +Z
+	front.position = Vector3(0, 0, (TASK_CARD_SIZE.z * 0.5) + 0.002)
+	# Material for front: show the viewport texture, no shading
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.albedo_texture = vp.get_texture()
+	front.material_override = m
+	node.add_child(front)
+
+	# Initial content
+	_refresh_task_card(node)
 
 
 func _ready():
@@ -671,27 +880,27 @@ func _ready():
 	env = $WorldEnvironment.environment
 	if env:
 		env.background_mode = Environment.BG_COLOR
-		env.background_color = Color(0.01, 0.015, 0.03, 1.0)
-		env.ambient_light_color = Color(0.05, 0.32, 0.45, 1.0)
-		env.ambient_light_energy = 0.35
+		env.background_color = MONOKAI_BASE
+		env.ambient_light_color = Color(0.58, 0.54, 0.42, 1.0)
+		env.ambient_light_energy = 0.3
 		env.fog_enabled = true
-		env.fog_color = Color(0.0, 0.25, 0.4, 0.8)
-		env.fog_density = 0.01
+		env.fog_color = Color(MONOKAI_BASE_DEEP.r, MONOKAI_BASE_DEEP.g, MONOKAI_BASE_DEEP.b, 0.92)
+		env.fog_density = 0.008
 		env.fog_height_min = -10.0
 		env.fog_height_max = 25.0
 		env.glow_enabled = true
-		env.glow_intensity = 1.2
-		env.glow_strength = 1.1
-		env.glow_hdr_threshold = 0.6
+		env.glow_intensity = 0.9
+		env.glow_strength = 0.8
+		env.glow_hdr_threshold = 0.7
 		env.volumetric_fog_enabled = true
 		env.volumetric_fog_density = 0.02
-		env.volumetric_fog_emission = Color(0.05, 0.35, 0.5, 0.6)
+		env.volumetric_fog_emission = Color(MONOKAI_ORANGE.r, MONOKAI_ORANGE.g, MONOKAI_ORANGE.b, 0.4)
 
 	# Add stylised lighting
 	sun_light = DirectionalLight3D.new()
 	sun_light.name = "CyberSun"
 	sun_light.rotation_degrees = Vector3(-35, 40, 0)
-	sun_light.light_color = Color(0.35, 0.7, 1.0, 1.0)
+	sun_light.light_color = MONOKAI_YELLOW
 	sun_light.light_energy = 3.0
 	sun_light.shadow_enabled = true
 	add_child(sun_light)
@@ -699,7 +908,7 @@ func _ready():
 	core_light = OmniLight3D.new()
 	core_light.name = "PulseCore"
 	core_light.position = Vector3(0, 6, 0)
-	core_light.light_color = Color(0.8, 0.1, 1.0, 1.0)
+	core_light.light_color = MONOKAI_PINK
 	core_light.light_energy = 6.0
 	core_light.omni_range = 45.0
 	core_light.shadow_enabled = true
@@ -710,7 +919,7 @@ func _ready():
 	var ambient_material = ParticleProcessMaterial.new()
 	ambient_material.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
 	ambient_material.emission_box_extents = Vector3(60, 25, 60)
-	ambient_material.color = Color(0.0, 0.85, 1.0, 0.35)
+	ambient_material.color = Color(MONOKAI_BLUE.r, MONOKAI_BLUE.g, MONOKAI_BLUE.b, 0.28)
 	ambient_material.gravity = Vector3(0, -0.05, 0)
 	ambient_material.initial_velocity_min = 0.4
 	ambient_material.initial_velocity_max = 1.2
@@ -730,6 +939,9 @@ func _ready():
 
 	# Create settings menu
 	create_settings_menu()
+
+	# Prepare plugin interview workflow helper
+	plugin_interview_flow = PluginInterviewFlow.new(self)
 
 
 
@@ -1048,6 +1260,97 @@ func _on_websocket_message(message: String):
 			else:
 				process_event_message(data)
 
+func _get_zone_basis(zone_name: String) -> Dictionary:
+	var zone_data: Dictionary = {}
+	if zones_state.has(zone_name):
+		zone_data = zones_state[zone_name]
+	var angle_deg: float = float(zone_data.get("angle", 0.0))
+	var radius_source: float = float(zone_data.get("radius", 12.0))
+	var radius: float = max(1.0, radius_source)
+	var angle_rad: float = deg_to_rad(angle_deg)
+	var forward: Vector3 = Vector3(cos(angle_rad), 0.0, sin(angle_rad)).normalized()
+	var right: Vector3 = Vector3(-forward.z, 0.0, forward.x).normalized()
+	# Pull cards much closer to the orchestrator (center)
+	var center_dist: float = clamp(radius * 0.12, 1.2, 3.6)
+	var centerline: Vector3 = forward * center_dist
+	return {
+		"forward": forward,
+		"right": right,
+		"center": centerline,
+		"radius": radius,
+	}
+
+func _collect_task_nodes() -> Array:
+	var tasks: Array = []
+	for id in event_cubes.keys():
+		var entry: Dictionary = event_cubes[id]
+		if entry.get("auxiliary", false):
+			continue
+		var node: Node = entry.get("node", null)
+		if node == null:
+			continue
+		if node is MeshInstance3D:
+			var is_task := false
+			if node.has_meta("event_type") and str(node.get_meta("event_type")) == "task":
+				is_task = true
+			else:
+				var props: Dictionary = entry.get("component_properties", {})
+				if typeof(props) == TYPE_DICTIONARY:
+					if props.has("status") or props.has("title") or props.has("description"):
+						is_task = true
+			if is_task:
+				tasks.append({"id": id, "node": node})
+	return tasks
+
+func reflow_taskmanager_layout():
+	var basis: Dictionary = _get_zone_basis("taskmanager")
+	var forward: Vector3 = basis.get("forward", Vector3(0,0,1))
+	var right: Vector3 = basis.get("right", Vector3(1,0,0))
+	var center: Vector3 = basis.get("center", Vector3(0,0,6))
+	var radius: float = float(basis.get("radius", 12.0))
+
+	var items: Array = _collect_task_nodes()
+	if items.is_empty():
+		return
+
+	# Determine grid size adaptively
+	var count: int = items.size()
+	var cols: int = max(3, int(ceil(sqrt(float(count)))))
+	var rows: int = int(ceil(float(count) / float(cols)))
+	var spacing_x: float = 1.2
+	var spacing_z: float = 1.0
+
+	# Compute grid origin centered around centerline
+	var total_w: float = float(cols - 1) * spacing_x
+	var total_d: float = float(rows - 1) * spacing_z
+	var origin: Vector3 = center - right * (total_w * 0.5) - forward * (total_d * 0.5)
+
+	# Stable ordering by ID
+	items.sort_custom(func(a, b): return str(a["id"]) < str(b["id"]))
+
+	for i in range(items.size()):
+		var col: int = i % cols
+		var row: int = i / cols
+		var pos: Vector3 = origin + right * (float(col) * spacing_x) + forward * (float(row) * spacing_z)
+		var node: Node3D = items[i]["node"]
+		# Keep existing height if not zero
+		pos.y = node.position.y if abs(node.position.y) > 0.001 else 0.0
+		node.position = pos
+		# Face camera yaw-only for clear reading
+		_yaw_face_camera(node)
+
+func _yaw_face_camera(node: Node3D):
+	if camera == null:
+		return
+	var cam_pos: Vector3 = camera.global_position
+	var here: Vector3 = node.global_position
+	var to_cam := Vector3(cam_pos.x - here.x, 0.0, cam_pos.z - here.z)
+	if to_cam.length() < 0.001:
+		return
+	to_cam = to_cam.normalized()
+	var target := here + to_cam
+	node.look_at(target, Vector3.UP)
+
 func send_ready_signal():
 	if websocket.get_ready_state() == WebSocketPeer.STATE_OPEN:
 		print("GODOT: Sending ready signal")
@@ -1111,6 +1414,9 @@ func process_event_message(data: Dictionary):
 
 	if data.has("components") and typeof(data["components"]) == TYPE_ARRAY:
 		apply_components_from_delta(data["components"])
+
+	# After applying changes, tighten taskmanager layout near its center
+	reflow_taskmanager_layout()
 
 	# Send ACK if sequence_id is present
 	print("GODOT: Checking for sequence_id in data: " + str(data.has("sequence_id")))
@@ -1370,6 +1676,7 @@ func process_setup_zones(data: Dictionary):
 		push_error("Invalid setup_zones payload: missing or invalid 'zones' field")
 		return
 	var zones = payload_data["zones"]
+	zones_state = zones
 	print("GODOT: Received setup_zones message with ", zones.size(), " zones")
 	for zone_name in zones.keys():
 		var zone_data = zones[zone_name]
@@ -1379,6 +1686,8 @@ func process_setup_zones(data: Dictionary):
 	print("GODOT: Calling zone_visualizer.draw_zones()")
 	zone_visualizer.draw_zones(zones)
 	update_zone_hud(zones)
+	# With zones established, reflow task grid closer to center
+	reflow_taskmanager_layout()
 	print("GODOT: Zone setup complete")
 
 func process_keypresses(data: Dictionary):
@@ -1567,7 +1876,7 @@ func start_drag(mouse_pos: Vector2):
 
 	if result:
 		var clicked_node: Node = result.collider
-		var entry_info := {}
+		var entry_info: Dictionary = {}
 
 		while clicked_node:
 			entry_info = _find_registered_entry_for_node(clicked_node)
@@ -1906,18 +2215,15 @@ func create_node(node_id: String, node_type: String, properties: Dictionary):
 		node.position.y = clamp(float(backend_pos[1]), -1000.0, 1000.0)
 		node.position.z = clamp(float(backend_pos[2]), -1000.0, 1000.0)
 		print("GODOT: Set position for ", node_id, " to ", node.position)
-		# Make nodes face the center like zone labels
+		# Orient only non-task meshes toward center; tasks are cards and will face camera later
 		if node is MeshInstance3D:
-			print("GODOT: Node position: ", node.position, ", target: (0,0,0)")
-			var dir = (Vector3(0, 0, 0) - node.position).normalized()
-			var up = Vector3.UP
-			var right = dir.cross(up).normalized()
-			up = right.cross(dir).normalized()
-			# For plane mesh, normal is +Y, so set basis.y = dir (normal towards center)
-			# basis.x = right, basis.z = up
-			node.transform.basis = Basis(right, dir, up)
-			print("GODOT: Set basis - right: ", right, ", dir (normal): ", dir, ", up: ", up)
-			print("GODOT: Final basis.z: ", node.transform.basis.z, ", basis.y: ", node.transform.basis.y)
+			var is_task := (properties.has("event_type") and str(properties["event_type"]) == "task")
+			if not is_task:
+				var dir = (Vector3(0, 0, 0) - node.position).normalized()
+				var up = Vector3.UP
+				var right = dir.cross(up).normalized()
+				up = right.cross(dir).normalized()
+				node.transform.basis = Basis(right, dir, up)
 	if properties.has("scale"):
 		var scl = properties["scale"]
 		if scl is Array and scl.size() >= 3:
@@ -1976,7 +2282,7 @@ func create_node(node_id: String, node_type: String, properties: Dictionary):
 	
 	# Add neon material styling for MeshInstance3D nodes
 	if node is MeshInstance3D:
-		var base_color = Color(0.0, 0.78, 1.0, 1.0)
+		var base_color = MONOKAI_BLUE
 		var emission_color = base_color
 		if properties.has("event_type") and EVENT_COLORS.has(properties["event_type"]):
 			base_color = EVENT_COLORS[properties["event_type"]]
@@ -1994,6 +2300,16 @@ func create_node(node_id: String, node_type: String, properties: Dictionary):
 		node.material_override = neon_material
 		if node_id == "orchestrator_ai":
 			_augment_orchestrator(node)
+		elif (properties.has("event_type") and str(properties["event_type"]) == "task") \
+				or properties.has("title") or properties.has("description") or properties.has("status"):
+			_augment_task_card(node, properties)
+
+	if properties.has("event_type"):
+		node.set_meta("event_type", properties["event_type"])
+
+	# Update task card UI if applicable
+	if node.has_meta("task_card"):
+		_refresh_task_card(node)
 
 	# Add particles if requested
 	if properties.has("particles") and properties["particles"] == true:
@@ -2005,7 +2321,7 @@ func create_node(node_id: String, node_type: String, properties: Dictionary):
 		particle_process_material.gravity = Vector3(0, -1, 0)  # Slight downward gravity for smoke
 		particle_process_material.initial_velocity_min = 1.0
 		particle_process_material.initial_velocity_max = 3.0
-		particle_process_material.color = Color(1.0, 0.8, 0.4, 0.6)	 # Warm yellow smoke
+		particle_process_material.color = Color(MONOKAI_ORANGE.r, MONOKAI_ORANGE.g, MONOKAI_ORANGE.b, 0.55)	 # Warm amber smoke
 		particle_process_material.scale_min = 0.5
 		particle_process_material.scale_max = 1.5
 		particles.process_material = particle_process_material
@@ -2047,26 +2363,34 @@ func create_node(node_id: String, node_type: String, properties: Dictionary):
 			# Remove from root and add as child of parent
 			remove_child(node)
 			parent_node.add_child(node)
-			# Set local position relative to parent
-			if node_type == "Label3D":
-				var offset_y = 1.2	# Default for box
-				if properties.has("mesh_type"):
-					var mesh_type = properties["mesh_type"]
-					if mesh_type == "sphere":
-						offset_y = 0.8
-					elif mesh_type == "cylinder":
-						offset_y = 1.5
-					elif mesh_type == "plane":
-						offset_y = 0.1
-					elif mesh_type == "capsule":
-						offset_y = 1.0
-				log_message("About to parent and place label " + node_id + " to " + parent_id + " at local pos " + str(Vector3(0, offset_y, 0)))
-				node.position = Vector3(0, offset_y, 0)
-				log_message("Placed parented label " + node_id + " to " + parent_id + " at local pos " + str(node.position))
+			# If parent is a task card, suppress floating labels (card renders its own text)
+			if node_type == "Label3D" and parent_node.has_meta("task_card"):
+				node.visible = false
+				node.set_meta("suppressed_by_task_card", true)
+			else:
+				# Set local position relative to parent (generic behavior)
+				if node_type == "Label3D":
+					var offset_y = 1.2	# Default for box
+					if properties.has("mesh_type"):
+						var mesh_type = properties["mesh_type"]
+						if mesh_type == "sphere":
+							offset_y = 0.8
+						elif mesh_type == "cylinder":
+							offset_y = 1.5
+						elif mesh_type == "plane":
+							offset_y = 0.1
+						elif mesh_type == "capsule":
+							offset_y = 1.0
+					log_message("About to parent and place label " + node_id + " to " + parent_id + " at local pos " + str(Vector3(0, offset_y, 0)))
+					node.position = Vector3(0, offset_y, 0)
+					log_message("Placed parented label " + node_id + " to " + parent_id + " at local pos " + str(node.position))
 		else:
 			push_warning("Parent node " + parent_id + " not found for " + node_id)
 	else:
 		log_message("Placed node " + node_id + " at " + str(node.position))
+
+	# Reflow grid to bring task cards near center (no-op if none)
+	reflow_taskmanager_layout()
 
 func update_node(node_id: String, properties: Dictionary):
 	var node = event_cubes.get(node_id, {}).get("node", null)
@@ -2116,7 +2440,7 @@ func update_node(node_id: String, properties: Dictionary):
 				var rz = float(rot[2])
 				node.rotation = Vector3(rx, ry, rz)
 		if node is MeshInstance3D:
-			var base_color = Color(0.0, 0.78, 1.0, 1.0)
+			var base_color = MONOKAI_BLUE
 			if node.material_override is StandardMaterial3D:
 				var existing_material: StandardMaterial3D = node.material_override
 				base_color = existing_material.emission if existing_material.emission_enabled else existing_material.albedo_color
@@ -2144,6 +2468,17 @@ func update_node(node_id: String, properties: Dictionary):
 				node.material_override = neon_material
 			if node_id == "orchestrator_ai":
 				_augment_orchestrator(node)
+			elif (properties.has("event_type") and str(properties["event_type"]) == "task") \
+					or properties.has("title") or properties.has("description") or properties.has("status"):
+				if not node.has_meta("task_card"):
+					_augment_task_card(node, properties)
+
+			# Refresh card face if this is a task card
+			if node.has_meta("task_card"):
+				_refresh_task_card(node)
+
+	# Reflow grid to ensure tasks stay near center
+	reflow_taskmanager_layout()
 
 
 func delete_node(node_id: String):
@@ -2245,6 +2580,8 @@ func _populate_info_actions(node_id: String, entry: Dictionary):
 				if di is Dictionary:
 					di["title"] = rename_field.text
 					target_node.set_meta("display_info", di)
+					if target_node.has_meta("task_card"):
+						_refresh_task_card(target_node)
 				show_info_panel(target_node)
 		)
 		rename_field.text_submitted.connect(func(new_text):
@@ -2253,6 +2590,8 @@ func _populate_info_actions(node_id: String, entry: Dictionary):
 				if di is Dictionary:
 					di["title"] = new_text
 					target_node.set_meta("display_info", di)
+					if target_node.has_meta("task_card"):
+						_refresh_task_card(target_node)
 				show_info_panel(target_node)
 		)
 		rename_box.add_child(rename_button)
@@ -2280,6 +2619,8 @@ func _populate_info_actions(node_id: String, entry: Dictionary):
 				if di is Dictionary:
 					di["description"] = desc_field.text
 					target_desc_node.set_meta("display_info", di)
+					if target_desc_node.has_meta("task_card"):
+						_refresh_task_card(target_desc_node)
 				show_info_panel(target_desc_node)
 		)
 		info_actions_container.add_child(desc_button)
@@ -2299,9 +2640,14 @@ func _populate_info_actions(node_id: String, entry: Dictionary):
 		)
 		info_actions_container.add_child(complete_btn)
 
+	# Generic delete support
 	if actions.has("delete"):
 		var delete_btn = Button.new()
-		delete_btn.text = "Delete Task"
+		var delete_label := "Delete Entry"
+		var props_for_label: Dictionary = entry.get("component_properties", {})
+		if props_for_label.has("status") or props_for_label.has("title") or props_for_label.has("description"):
+			delete_label = "Delete Task"
+		delete_btn.text = delete_label
 		_apply_neon_button(delete_btn, 16)
 		delete_btn.add_theme_color_override("font_color", Color(1.0, 0.4, 0.5, 1.0))
 		delete_btn.pressed.connect(func():
@@ -2309,6 +2655,112 @@ func _populate_info_actions(node_id: String, entry: Dictionary):
 				info_panel.visible = false
 		)
 		info_actions_container.add_child(delete_btn)
+
+	# Generic edit UI for plugin-spawned entries ("update" action)
+	if actions.has("update"):
+		var update_action = actions["update"]
+		var command_desc: Dictionary = update_action.get("command_descriptor", {}) if typeof(update_action) == TYPE_DICTIONARY else {}
+		var args_map: Dictionary = command_desc.get("arguments", {}) if typeof(command_desc) == TYPE_DICTIONARY else {}
+
+		# Section label
+		var edit_label = Label.new()
+		edit_label.text = ":: edit fields"
+		_apply_neon_label(edit_label, 16)
+		info_actions_container.add_child(edit_label)
+
+		# Build simple editors for any user_input-bound arguments
+		var field_rows: Array = []  # Each: {"path": String, "control": Control, "key": String}
+		for arg_name in args_map.keys():
+			var binding = args_map[arg_name]
+			if typeof(binding) != TYPE_DICTIONARY:
+				continue
+			if str(binding.get("source", "")) != "user_input":
+				continue
+			var path := str(binding.get("path", str(arg_name)))
+			if path == "":
+				path = str(arg_name)
+			var last_key := path.split(".")[-1]
+
+			var row = HBoxContainer.new()
+			row.add_theme_constant_override("separation", 6)
+			var label = Label.new()
+			label.text = last_key.capitalize()
+			label.custom_minimum_size = Vector2(90, 28)
+			_apply_neon_label(label, 14, true)
+			row.add_child(label)
+
+			var editor = LineEdit.new()
+			editor.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			# Pre-populate using component properties when possible
+			var comp_props: Dictionary = entry.get("component_properties", {})
+			var initial = _lookup_path(comp_props, path)
+			if initial == null and comp_props.has(last_key):
+				initial = comp_props[last_key]
+			editor.text = str(initial) if initial != null else ""
+			# Pause movement while editing
+			editor.focus_entered.connect(Callable(self, "_on_text_input_focus_entered"))
+			editor.focus_exited.connect(Callable(self, "_on_text_input_focus_exited"))
+			_apply_neon_line_edit(editor, 14)
+			row.add_child(editor)
+
+			info_actions_container.add_child(row)
+			field_rows.append({
+				"path": path,
+				"control": editor,
+				"key": last_key,
+			})
+
+		# Action buttons
+		var btn_row = HBoxContainer.new()
+		btn_row.add_theme_constant_override("separation", 10)
+		var apply_btn = Button.new()
+		apply_btn.text = "Save Changes"
+		_apply_neon_button(apply_btn, 14)
+		apply_btn.pressed.connect(func():
+				var user_input: Dictionary = {}
+				for item in field_rows:
+					var ctrl: LineEdit = item["control"]
+					var p: String = item["path"]
+					_set_nested_path(user_input, p, ctrl.text)
+				# Dispatch update
+				if dispatch_component_action(node_id, "update", {"user_input": user_input}):
+					# Optimistically update local properties for immediate feedback
+					var props: Dictionary = entry.get("component_properties", {})
+					for item in field_rows:
+						var key: String = item["key"]
+						var ctrl: LineEdit = item["control"]
+						props[key] = ctrl.text
+					entry["component_properties"] = props
+					var target_node: Node = entry.get("node", null)
+					if target_node and target_node.has_meta("task_card"):
+						_refresh_task_card(target_node)
+					# Re-show to reflect updated info
+					var target: Node = entry.get("node", null)
+					if target:
+						show_info_panel(target)
+		)
+
+		var clear_btn = Button.new()
+		clear_btn.text = "Clear Fields"
+		_apply_neon_button(clear_btn, 14)
+		clear_btn.pressed.connect(func():
+				var user_input: Dictionary = {}
+				for item in field_rows:
+					var p: String = item["path"]
+					_set_nested_path(user_input, p, "")
+					var ctrl: LineEdit = item["control"]
+					ctrl.text = ""
+				if dispatch_component_action(node_id, "update", {"user_input": user_input}):
+					var props: Dictionary = entry.get("component_properties", {})
+					for item in field_rows:
+						var key: String = item["key"]
+						props.erase(key)
+					entry["component_properties"] = props
+		)
+
+		btn_row.add_child(apply_btn)
+		btn_row.add_child(clear_btn)
+		info_actions_container.add_child(btn_row)
 
 	info_actions_container.visible = info_actions_container.get_child_count() > 0
 
@@ -2909,6 +3361,14 @@ func create_settings_menu():
 	_apply_neon_button(send_request_button, 16)
 	request_hbox.add_child(send_request_button)
 
+	var plugin_button = Button.new()
+	plugin_button.text = "forge plugin"
+	plugin_button.tooltip_text = "Launch the interview to scaffold a new MindPalace plugin."
+	plugin_button.size = Vector2(220, 42)
+	plugin_button.connect("pressed", Callable(self, "_on_open_plugin_interview"))
+	_apply_neon_button(plugin_button, 16)
+	actions_vbox.add_child(plugin_button)
+
 	var system_tab = ScrollContainer.new()
 	system_tab.name = "Diagnostics"
 	system_tab.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -3092,22 +3552,22 @@ func _on_toggle_dark_mode():
 	if env:
 		if dark_mode:
 			env.background_mode = Environment.BG_COLOR
-			env.background_color = Color(0.003, 0.006, 0.012, 1.0)
+			env.background_color = MONOKAI_BASE_DEEP
 			env.fog_enabled = true
-			env.fog_color = Color(0.0, 0.18, 0.32, 0.9)
-			env.fog_density = 0.02
-			env.volumetric_fog_density = 0.03
-			env.glow_intensity = 1.35
-			env.ambient_light_energy = 0.22
+			env.fog_color = Color(MONOKAI_BASE.r, MONOKAI_BASE.g, MONOKAI_BASE.b, 0.95)
+			env.fog_density = 0.015
+			env.volumetric_fog_density = 0.025
+			env.glow_intensity = 0.95
+			env.ambient_light_energy = 0.24
 		else:
 			env.background_mode = Environment.BG_COLOR
-			env.background_color = Color(0.2, 0.08, 0.05, 1.0)
+			env.background_color = Color(0.22, 0.17, 0.13, 1.0)
 			env.fog_enabled = true
-			env.fog_color = Color(0.45, 0.12, 0.08, 0.45)
+			env.fog_color = Color(0.32, 0.24, 0.18, 0.6)
 			env.fog_density = 0.006
 			env.volumetric_fog_density = 0.015
-			env.glow_intensity = 0.95
-			env.ambient_light_energy = 0.48
+			env.glow_intensity = 0.75
+			env.ambient_light_energy = 0.42
 
 	if fog_density_slider:
 		fog_density_slider.value = env.fog_density if env else fog_density_slider.value
@@ -3117,10 +3577,10 @@ func _on_toggle_dark_mode():
 		ambient_light_slider.value = env.ambient_light_energy if env else ambient_light_slider.value
 
 	if sun_light:
-		sun_light.light_color = Color(0.22, 0.65, 1.0, 1.0) if dark_mode else Color(1.0, 0.55, 0.25, 1.0)
+		sun_light.light_color = MONOKAI_YELLOW if dark_mode else MONOKAI_ORANGE
 		sun_light.light_energy = 2.0 if dark_mode else 2.6
 	if core_light:
-		core_light.light_color = Color(0.82, 0.16, 1.1, 1.0) if dark_mode else Color(1.0, 0.36, 0.3, 1.0)
+		core_light.light_color = MONOKAI_PINK if dark_mode else MONOKAI_GREEN
 		core_light.light_energy = 3.2 if dark_mode else 4.2
 	if sun_energy_slider and sun_light:
 		sun_energy_slider.value = sun_light.light_energy
@@ -3164,6 +3624,10 @@ func _on_send_request():
 		send_request(text)
 		user_request_input.text = ""
 
+func _on_open_plugin_interview():
+	if plugin_interview_flow:
+		plugin_interview_flow.open()
+
 func send_request(text: String, target_agent: String = ""):
 	if websocket.get_ready_state() != WebSocketPeer.STATE_OPEN:
 		return
@@ -3202,6 +3666,630 @@ func send_toggle_mic():
 	var err = websocket.send_text(json_string)
 	if err != OK:
 		push_error("Failed to send toggle mic: ", err)
+
+# Plugin interview workflow
+class PluginInterviewFlow extends RefCounted:
+	var owner: Node3D
+	var layer: CanvasLayer = null
+	var panel: Panel = null
+	var content: VBoxContainer = null
+	var step_label: Label = null
+	var error_label: Label = null
+	var back_button: Button = null
+	var next_button: Button = null
+	var inputs := {}
+	var field_rows: Array = []
+	var command_checks = {}
+	var state: Dictionary = {}
+	var step_index: int = 0
+
+	func _init(owner: Node3D) -> void:
+		self.owner = owner
+
+	func is_open() -> bool:
+		return layer != null
+
+	func open():
+		if is_open():
+			return
+		state = {
+			"plugin_name": "",
+			"description": "",
+			"entity_name": "",
+			"fields": [],
+			"commands": {
+				"create": true,
+				"list": true,
+				"update": false,
+				"delete": false,
+			},
+		}
+		field_rows.clear()
+		command_checks.clear()
+		inputs.clear()
+		step_index = 0
+
+		layer = CanvasLayer.new()
+		owner.add_child(layer)
+
+		var bg = ColorRect.new()
+		bg.size = owner.get_viewport().size
+		bg.color = Color(0, 0, 0, 0.65)
+		layer.add_child(bg)
+
+		panel = Panel.new()
+		panel.custom_minimum_size = Vector2(680, 540)
+		panel.size = panel.custom_minimum_size
+		panel.position = (owner.get_viewport().size - panel.size) * 0.5
+		owner._apply_neon_panel(panel, UI_PANEL_BORDER, UI_BG_DEEP, 3, 12)
+		layer.add_child(panel)
+
+		var title_label = Label.new()
+		title_label.text = "[PLUGIN FORGE]"
+		title_label.position = Vector2(20, 16)
+		title_label.size = Vector2(panel.size.x - 40, 28)
+		owner._apply_neon_label(title_label, 24)
+		panel.add_child(title_label)
+
+		var close_button = Button.new()
+		close_button.text = "close"
+		close_button.size = Vector2(80, 28)
+		close_button.position = Vector2(panel.size.x - close_button.size.x - 20, 16)
+		close_button.connect("pressed", Callable(self, "close"))
+		owner._apply_neon_button(close_button, 14)
+		panel.add_child(close_button)
+
+		step_label = Label.new()
+		step_label.position = Vector2(20, 54)
+		step_label.size = Vector2(panel.size.x - 40, 24)
+		owner._apply_neon_label(step_label, 18, true)
+		panel.add_child(step_label)
+
+		var scroll = ScrollContainer.new()
+		scroll.position = Vector2(20, 84)
+		scroll.size = Vector2(panel.size.x - 40, panel.size.y - 190)
+		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		panel.add_child(scroll)
+
+		content = VBoxContainer.new()
+		content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		content.add_theme_constant_override("separation", 12)
+		scroll.add_child(content)
+
+		error_label = Label.new()
+		error_label.position = Vector2(20, panel.size.y - 96)
+		error_label.size = Vector2(panel.size.x - 40, 20)
+		error_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		error_label.add_theme_color_override("font_color", Color(1.0, 0.42, 0.42, 1.0))
+		owner._apply_neon_label(error_label, 14, true)
+		error_label.text = ""
+		panel.add_child(error_label)
+
+		var button_bar = HBoxContainer.new()
+		button_bar.position = Vector2(20, panel.size.y - 64)
+		button_bar.size = Vector2(panel.size.x - 40, 36)
+		button_bar.add_theme_constant_override("separation", 12)
+		panel.add_child(button_bar)
+
+		back_button = Button.new()
+		back_button.text = "cancel"
+		back_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		back_button.connect("pressed", Callable(self, "handle_back"))
+		owner._apply_neon_button(back_button, 16)
+		button_bar.add_child(back_button)
+
+		next_button = Button.new()
+		next_button.text = "next"
+		next_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		next_button.connect("pressed", Callable(self, "handle_next"))
+		owner._apply_neon_button(next_button, 16)
+		button_bar.add_child(next_button)
+
+		var player = _player_node()
+		if player:
+			player.movement_disabled = true
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+		render_step()
+
+	func close():
+		if layer:
+			layer.queue_free()
+		layer = null
+		panel = null
+		content = null
+		step_label = null
+		error_label = null
+		back_button = null
+		next_button = null
+		inputs.clear()
+		field_rows.clear()
+		command_checks.clear()
+		var player = _player_node()
+		if player:
+			player.movement_disabled = owner.settings_visible
+		if not owner.settings_visible and owner.model_picker_layer == null:
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+	func handle_back():
+		if not panel:
+			return
+		if step_index == 0:
+			close()
+			return
+		step_index = max(step_index - 1, 0)
+		render_step()
+
+	func handle_next():
+		if not panel:
+			return
+		if not capture_step():
+			return
+		if step_index >= PLUGIN_INTERVIEW_STEPS.size() - 1:
+			submit()
+			return
+		step_index += 1
+		render_step()
+
+	func render_step():
+		if not content:
+			return
+		for child in content.get_children():
+			child.queue_free()
+		inputs.clear()
+		field_rows.clear()
+		command_checks.clear()
+		error_label.text = ""
+
+		var step: Dictionary = PLUGIN_INTERVIEW_STEPS[step_index]
+		var step_title: String = step.get("title", "Step")
+		step_label.text = "Step %d / %d — %s" % [
+			step_index + 1,
+			PLUGIN_INTERVIEW_STEPS.size(),
+			step_title,
+		]
+
+		var prompt = Label.new()
+		prompt.text = step.get("prompt", "")
+		prompt.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		owner._apply_neon_label(prompt, 16)
+		content.add_child(prompt)
+
+		match step.get("id", ""):
+			"plugin_name":
+				var input = LineEdit.new()
+				input.placeholder_text = "e.g., dieseltracker"
+				input.text = state.get("plugin_name", "")
+				input.focus_entered.connect(Callable(owner, "_on_text_input_focus_entered"))
+				input.focus_exited.connect(Callable(owner, "_on_text_input_focus_exited"))
+				owner._apply_neon_line_edit(input, 18)
+				content.add_child(input)
+				inputs["plugin_name"] = input
+				input.grab_focus()
+			"description":
+				var text_edit = TextEdit.new()
+				text_edit.custom_minimum_size = Vector2(0, 160)
+				text_edit.text = state.get("description", "")
+				text_edit.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+				text_edit.focus_entered.connect(Callable(owner, "_on_text_input_focus_entered"))
+				text_edit.focus_exited.connect(Callable(owner, "_on_text_input_focus_exited"))
+				owner._apply_neon_line_edit(text_edit, 16)
+				content.add_child(text_edit)
+				inputs["description"] = text_edit
+				text_edit.grab_focus()
+			"entity_name":
+				var entity_input = LineEdit.new()
+				entity_input.placeholder_text = "e.g., FuelLog"
+				entity_input.text = state.get("entity_name", "")
+				entity_input.focus_entered.connect(Callable(owner, "_on_text_input_focus_entered"))
+				entity_input.focus_exited.connect(Callable(owner, "_on_text_input_focus_exited"))
+				owner._apply_neon_line_edit(entity_input, 18)
+				content.add_child(entity_input)
+				inputs["entity_name"] = entity_input
+				entity_input.grab_focus()
+			"fields":
+				var helper = Label.new()
+				helper.text = "Add one row per attribute. We'll automatically add the unique ID."
+				helper.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+				owner._apply_neon_label(helper, 14, true)
+				content.add_child(helper)
+
+				var fields_container = VBoxContainer.new()
+				fields_container.add_theme_constant_override("separation", 8)
+				content.add_child(fields_container)
+
+				var saved_fields: Array = state.get("fields", [])
+				if saved_fields.is_empty():
+					_add_field_row({}, fields_container)
+				else:
+					for field_data in saved_fields:
+						_add_field_row(field_data, fields_container)
+
+				var add_button = Button.new()
+				add_button.text = "add another field"
+				add_button.connect("pressed", Callable(self, "_on_field_add_pressed").bind(fields_container))
+				owner._apply_neon_button(add_button, 14)
+				content.add_child(add_button)
+			"commands":
+				var cmd_helper = Label.new()
+				cmd_helper.text = "Select the operations MindPalace should scaffold."
+				cmd_helper.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+				owner._apply_neon_label(cmd_helper, 14, true)
+				content.add_child(cmd_helper)
+				var grid = VBoxContainer.new()
+				grid.add_theme_constant_override("separation", 6)
+				content.add_child(grid)
+				var defaults: Dictionary = state.get("commands", {})
+				var command_labels = {
+					"create": "Create entries",
+					"update": "Update entries",
+					"delete": "Delete entries",
+					"list": "List entries",
+				}
+				for action in ["create", "update", "delete", "list"]:
+					var check = CheckButton.new()
+					check.text = command_labels.get(action, action)
+					check.button_pressed = defaults.get(action, action in ["create", "list"])
+					grid.add_child(check)
+					command_checks[action] = check
+			"review":
+				var blueprint = build_blueprint()
+				if not blueprint.get("success", false):
+					error_label.text = blueprint.get("error", "Fix earlier steps.")
+				else:
+					var summary = RichTextLabel.new()
+					summary.bbcode_enabled = true
+					summary.fit_content = true
+					summary.scroll_active = false
+					var payload: Dictionary = blueprint.get("payload", {})
+					var entities: Array = payload.get("entities", [])
+					var entity_info: Dictionary = {}
+					if entities.size() > 0:
+						entity_info = entities[0]
+					var fields: Array = entity_info.get("fields", [])
+					var command_list: Array = payload.get("commands", [])
+					var text := "[b]Plugin[/b]: %s\n[b]Entity[/b]: %s\n\n[b]Fields[/b]:\n" % [
+						payload.get("name", ""),
+						entity_info.get("name", ""),
+					]
+					for field in fields:
+						text += " • %s (%s)\n" % [field.get("name", ""), field.get("type", "string")]
+					text += "\n[b]Commands[/b]:\n"
+					for cmd in command_list:
+						text += " • %s (%s)\n" % [cmd.get("name", ""), cmd.get("action", "")]
+					summary.text = text
+					summary.add_theme_color_override("default_color", UI_TEXT)
+					content.add_child(summary)
+		back_button.text = "cancel" if step_index == 0 else "back"
+		if step_index == PLUGIN_INTERVIEW_STEPS.size() - 1:
+			next_button.text = "generate plugin"
+		else:
+			next_button.text = "next"
+
+	func capture_step() -> bool:
+		var step_id: String = PLUGIN_INTERVIEW_STEPS[step_index].get("id", "")
+		match step_id:
+			"plugin_name":
+				var input: LineEdit = inputs.get("plugin_name", null)
+				if input == null:
+					return false
+				var text = input.text.strip_edges()
+				if text == "":
+					error_label.text = "Name your plugin before proceeding."
+					return false
+				state["plugin_name"] = text
+			"description":
+				var text_edit: TextEdit = inputs.get("description", null)
+				if text_edit == null:
+					return false
+				var desc = text_edit.text.strip_edges()
+				if desc == "":
+					error_label.text = "Describe what this plugin should achieve."
+					return false
+				state["description"] = desc
+			"entity_name":
+				var entity_input: LineEdit = inputs.get("entity_name", null)
+				if entity_input == null:
+					return false
+				var entity_text = entity_input.text.strip_edges()
+				if entity_text == "":
+					error_label.text = "Give the entity a name (e.g., FuelLog)."
+					return false
+				state["entity_name"] = entity_text
+			"fields":
+				var field_result = _gather_field_rows()
+				if field_result.get("error", "") != "":
+					error_label.text = field_result["error"]
+					return false
+				state["fields"] = field_result.get("fields", [])
+			"commands":
+				var selected: Dictionary = {}
+				var any_selected := false
+				for action in command_checks.keys():
+					var check: CheckButton = command_checks[action]
+					var pressed = check and check.button_pressed
+					selected[action] = pressed
+					if pressed:
+						any_selected = true
+				if not any_selected:
+					error_label.text = "Select at least one command to generate."
+					return false
+				state["commands"] = selected
+		return true
+
+	func _on_field_add_pressed(container: VBoxContainer):
+		_add_field_row({}, container)
+
+	func _add_field_row(initial_data: Dictionary, container: VBoxContainer):
+		var row = HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		container.add_child(row)
+
+		var name_input = LineEdit.new()
+		name_input.placeholder_text = "Field name (e.g., Amount)"
+		name_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		name_input.text = initial_data.get("label", "")
+		name_input.focus_entered.connect(Callable(owner, "_on_text_input_focus_entered"))
+		name_input.focus_exited.connect(Callable(owner, "_on_text_input_focus_exited"))
+		owner._apply_neon_line_edit(name_input, 14)
+		row.add_child(name_input)
+
+		var type_option = OptionButton.new()
+		type_option.size = Vector2(140, 32)
+		for type_data in PLUGIN_FIELD_TYPES:
+			var idx = type_option.get_item_count()
+			type_option.add_item(type_data.get("label", ""), idx)
+			type_option.set_item_metadata(idx, type_data.get("go", "string"))
+		var selected_go = initial_data.get("type", "string")
+		for idx in range(type_option.get_item_count()):
+			if type_option.get_item_metadata(idx) == selected_go:
+				type_option.select(idx)
+				break
+		row.add_child(type_option)
+
+		var remove_button = Button.new()
+		remove_button.text = "x"
+		remove_button.tooltip_text = "Remove this field"
+		remove_button.connect("pressed", Callable(self, "_remove_field_row").bind(row, container))
+		owner._apply_neon_button(remove_button, 12)
+		row.add_child(remove_button)
+
+		field_rows.append({
+			"row": row,
+			"name_input": name_input,
+			"type_option": type_option,
+		})
+
+	func _remove_field_row(row: HBoxContainer, container: VBoxContainer):
+		for i in range(field_rows.size()):
+			var entry: Dictionary = field_rows[i]
+			if entry.get("row") == row:
+				field_rows.remove_at(i)
+				break
+		row.queue_free()
+		if field_rows.is_empty():
+			_add_field_row({}, container)
+
+	func _gather_field_rows() -> Dictionary:
+		var result := {
+			"fields": [],
+			"error": "",
+		}
+		var used_names: Dictionary = {}
+		for entry in field_rows:
+			var name_input: LineEdit = entry.get("name_input")
+			if name_input == null:
+				continue
+			var raw_name = name_input.text.strip_edges()
+			if raw_name == "":
+				continue
+			var go_name = _to_pascal_case(raw_name)
+			if go_name == "":
+				result["error"] = "Field names must include letters."
+				return result
+			if used_names.has(go_name):
+				result["error"] = "Duplicate field '%s' detected." % go_name
+				return result
+			used_names[go_name] = true
+			var type_option: OptionButton = entry.get("type_option")
+			var go_type = "string"
+			if type_option:
+				var idx = type_option.get_selected_id()
+				go_type = type_option.get_item_metadata(idx)
+			var json_tag = _to_snake_case(go_name)
+			result["fields"].append({
+				"label": raw_name,
+				"go_name": go_name,
+				"json": json_tag,
+				"type": go_type,
+			})
+		if result["fields"].is_empty():
+			result["error"] = "Add at least one field so the plugin tracks meaningful data."
+		return result
+
+	func build_blueprint() -> Dictionary:
+		var response := {
+			"success": false,
+			"error": "",
+			"payload": {},
+		}
+		var plugin_slug = _sanitize_plugin_name(state.get("plugin_name", ""))
+		if plugin_slug == "":
+			response["error"] = "Plugin name must contain letters or underscores."
+			return response
+		var entity_name = _to_pascal_case(state.get("entity_name", ""))
+		if entity_name == "":
+			response["error"] = "Provide a primary entity name."
+			return response
+		var entity_snake = _to_snake_case(entity_name)
+		var fields: Array = state.get("fields", [])
+		if fields.is_empty():
+			response["error"] = "Add at least one field for the entity."
+			return response
+		var commands_cfg: Dictionary = state.get("commands", {})
+		var command_names = []
+		for action in commands_cfg.keys():
+			if commands_cfg[action]:
+				command_names.append(action)
+		if command_names.is_empty():
+			response["error"] = "Select at least one command."
+			return response
+
+		var entity_fields: Array = []
+		entity_fields.append({
+			"name": "%sID" % entity_name,
+			"type": "string",
+			"json": "%s_id" % entity_snake,
+		})
+		for field in fields:
+			entity_fields.append({
+				"name": field.get("go_name", ""),
+				"type": field.get("type", "string"),
+				"json": field.get("json", _to_snake_case(field.get("go_name", ""))),
+			})
+
+		var commands: Array = []
+		if commands_cfg.get("create", false):
+			var inputs: Array = []
+			for i in range(1, entity_fields.size()):
+				inputs.append(entity_fields[i].duplicate(true))
+			commands.append({
+				"name": "Create%s" % entity_name,
+				"action": "create",
+				"input": inputs,
+			})
+		if commands_cfg.get("update", false):
+			var update_inputs: Array = []
+			for field_dict in entity_fields:
+				update_inputs.append(field_dict.duplicate(true))
+			commands.append({
+				"name": "Update%s" % entity_name,
+				"action": "update",
+				"input": update_inputs,
+			})
+		if commands_cfg.get("delete", false):
+			var delete_inputs: Array = [entity_fields[0].duplicate(true)]
+			commands.append({
+				"name": "Delete%s" % entity_name,
+				"action": "delete",
+				"input": delete_inputs,
+			})
+		if commands_cfg.get("list", false):
+			var plural = entity_name + "s"
+			commands.append({
+				"name": "List%s" % plural,
+				"action": "list",
+				"input": [],
+			})
+
+		var payload = {
+			"name": plugin_slug,
+			"description": state.get("description", ""),
+			"entities": [
+				{
+					"name": entity_name,
+					"fields": entity_fields,
+				},
+			],
+			"commands": commands,
+		}
+		response["success"] = true
+		response["payload"] = payload
+		return response
+
+	func submit():
+		var blueprint = build_blueprint()
+		if not blueprint.get("success", false):
+			error_label.text = blueprint.get("error", "Unable to build plugin blueprint.")
+			return
+		var payload: Dictionary = {
+			"Description": state.get("description", ""),
+			"Requirements": blueprint.get("payload", {}),
+		}
+		if owner.send_ui_command("GeneratePlugin", payload):
+			owner.log_message("Plugin forge dispatched for '%s'." % payload["Requirements"].get("name", "plugin"))
+			close()
+		else:
+			error_label.text = "Failed to reach the backend. Ensure the websocket is connected."
+
+	func _sanitize_plugin_name(input: String) -> String:
+		var text = input.strip_edges()
+		var builder = ""
+		for i in text.length():
+			var ch = text[i]
+			if ch == " " or ch == "-":
+				if builder != "" and not builder.ends_with("_"):
+					builder += "_"
+				continue
+			if ch == "_":
+				if builder != "" and not builder.ends_with("_"):
+					builder += "_"
+				continue
+			var code = ch.unicode_at(0)
+			var is_letter = (code >= 65 and code <= 90) or (code >= 97 and code <= 122)
+			if is_letter:
+				builder += ch.to_lower()
+				continue
+			var is_digit = code >= 48 and code <= 57
+			if is_digit and builder != "":
+				builder += ch
+		while builder.begins_with("_") and builder.length() > 0:
+			builder = builder.substr(1, builder.length() - 1)
+		while builder.ends_with("_") and builder.length() > 0:
+			builder = builder.substr(0, builder.length() - 1)
+		return builder
+
+	func _to_pascal_case(text: String) -> String:
+		var cleaned = text.strip_edges()
+		if cleaned == "":
+			return ""
+		cleaned = cleaned.replace("-", " ")
+		cleaned = cleaned.replace("_", " ")
+		var parts: PackedStringArray = cleaned.split(" ", false)
+		var result = ""
+		for part in parts:
+			if part == "":
+				continue
+			var lower = part.to_lower()
+			if lower.length() == 1:
+				result += lower.to_upper()
+			else:
+				result += lower.substr(0, 1).to_upper() + lower.substr(1, lower.length() - 1)
+		return result
+
+	func _to_snake_case(text: String) -> String:
+		var cleaned = text.strip_edges()
+		if cleaned == "":
+			return ""
+		var result = ""
+		for i in cleaned.length():
+			var ch = cleaned[i]
+			if ch == " " or ch == "-":
+				if result != "" and not result.ends_with("_"):
+					result += "_"
+				continue
+			if ch == "_":
+				if result != "" and not result.ends_with("_"):
+					result += "_"
+				continue
+			var code = ch.unicode_at(0)
+			var is_upper = code >= 65 and code <= 90
+			var is_lower = code >= 97 and code <= 122
+			var is_digit = code >= 48 and code <= 57
+			if is_upper:
+				if result != "" and not result.ends_with("_"):
+					result += "_"
+				result += ch.to_lower()
+			elif is_lower or is_digit:
+				result += ch.to_lower()
+		while result.begins_with("_"):
+			result = result.substr(1, result.length() - 1)
+		while result.ends_with("_"):
+			result = result.substr(0, result.length() - 1)
+		return result
+
+	func _player_node() -> Node:
+		return owner.get_node_or_null(NodePath("Player"))
 
 func show_orchestrator_menu(mouse_pos: Vector2):
 	if orchestrator_menu:
@@ -3359,19 +4447,25 @@ func start_orchestrator_animation():
 		print("GODOT: Killed previous tween")
 	orchestrator_tween = create_tween()
 	print("GODOT: Created new tween")
-	# Define spiral positions downward, simulating reading event cubes
-	var positions = []
-	for i in range(20):
-		var theta = i * 0.3
-		var r = 0.2 + i * 0.05
-		var x = r * cos(theta)
-		var z = r * sin(theta)
-		var y = -i * 0.2
-		positions.append(Vector3(x, y, z))
-	print("GODOT: Defined " + str(positions.size()) + " positions")
-	# Tween to each position sequentially
-	for pos in positions:
-		orchestrator_tween.tween_property(orchestrator, "position", pos, 0.3).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-	# Return to center
-	orchestrator_tween.tween_property(orchestrator, "position", Vector3(0, 0, 0), 0.5)
-	print("GODOT: Animation tween set up")
+
+	# Gentle float and shimmer: small vertical bob + light energy pulse
+	var base_pos: Vector3 = orchestrator.position
+	var up = base_pos + Vector3(0, 0.18, 0)
+	var down = base_pos + Vector3(0, -0.12, 0)
+
+	# Animate position in a loop
+	orchestrator_tween.tween_property(orchestrator, "position", up, 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	orchestrator_tween.tween_property(orchestrator, "position", down, 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	orchestrator_tween.tween_property(orchestrator, "position", base_pos, 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
+	# In parallel, softly pulse the light energy
+	var light: OmniLight3D = orchestrator.get_node_or_null("OrchestratorLight")
+	if light:
+		orchestrator_tween.parallel().tween_property(light, "light_energy", 16.0, 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+		orchestrator_tween.parallel().tween_property(light, "light_energy", 12.0, 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+		orchestrator_tween.parallel().tween_property(light, "light_energy", 14.0, 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
+	# When finished, restart to keep the shimmer perpetual
+	orchestrator_tween.finished.connect(func():
+		start_orchestrator_animation()
+	)

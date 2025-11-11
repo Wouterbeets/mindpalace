@@ -1,344 +1,389 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
-	"sort"
-	"strings"
-	"sync"
-	"time"
+    "encoding/json"
+    "fmt"
+    "sort"
+    "strings"
+    "sync"
+    "time"
 
-	"mindpalace/pkg/eventsourcing"
-	"mindpalace/pkg/ui3d"
+    "mindpalace/pkg/eventsourcing"
+    "mindpalace/pkg/ui3d"
 )
 
-// {{.Requirements.Name}}Aggregate manages the state of {{.Requirements.Entities.0.Name}}s with thread safety
-type {{.Requirements.Name}}Aggregate struct {
-	{{.Requirements.Entities.0.Name}}s map[string]*{{.Requirements.Entities.0.Name}}
-	commands map[string]eventsourcing.CommandHandler
-	Mu       sync.RWMutex
+{{- $req := .Requirements -}}
+{{- $plugin := $req.Name -}}
+{{- $entity := index $req.Entities 0 -}}
+{{- $idField := index $entity.Fields 0 -}}
+{{- $entityID := $idField.Name -}}
+{{- $entityIDJSON := $idField.JSON -}}
+
+// {{$plugin}}Aggregate manages {{$entity.Name}} state
+type {{$plugin}}Aggregate struct {
+    {{$entity.Name}}s map[string]*{{$entity.Name}}
+    commands map[string]eventsourcing.CommandHandler
+    Mu       sync.RWMutex
 }
 
-// New{{.Requirements.Name}}Aggregate creates a new thread-safe {{.Requirements.Name}}Aggregate
-func New{{.Requirements.Name}}Aggregate() *{{.Requirements.Name}}Aggregate {
-	return &{{.Requirements.Name}}Aggregate{
-		{{.Requirements.Entities.0.Name}}s: make(map[string]*{{.Requirements.Entities.0.Name}}),
-		commands: make(map[string]eventsourcing.CommandHandler),
-	}
+// New{{$plugin}}Aggregate creates a new aggregate instance
+func New{{$plugin}}Aggregate() *{{$plugin}}Aggregate {
+    return &{{$plugin}}Aggregate{
+        {{$entity.Name}}s: make(map[string]*{{$entity.Name}}),
+        commands: make(map[string]eventsourcing.CommandHandler),
+    }
 }
 
-// ID returns the aggregate's identifier
-func (a *{{.Requirements.Name}}Aggregate) ID() string {
-	return "{{.Requirements.Name}}"
+func (a *{{$plugin}}Aggregate) ID() string {
+    return "{{$plugin}}"
 }
 
-// ApplyEvent updates the aggregate state based on {{.Requirements.Entities.0.Name}} events
-func (a *{{.Requirements.Name}}Aggregate) ApplyEvent(event eventsourcing.Event) error {
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
+func (a *{{$plugin}}Aggregate) ApplyEvent(event eventsourcing.Event) error {
+    a.Mu.Lock()
+    defer a.Mu.Unlock()
 
-	data, err := json.Marshal(event)
-	if err != nil {
-		return fmt.Errorf("failed to marshal event %s: %v", event.Type(), err)
-	}
-
-	switch event.Type() {
-	case "{{.Requirements.Name}}_{{.Requirements.Entities.0.Name}}Created":
-		var e {{.Requirements.Entities.0.Name}}CreatedEvent
-		if err := json.Unmarshal(data, &e); err != nil {
-			return fmt.Errorf("failed to unmarshal {{.Requirements.Entities.0.Name}}Created: %v", err)
-		}
-		a.{{.Requirements.Entities.0.Name}}s[e.{{.Requirements.Entities.0.Name}}ID] = &{{.Requirements.Entities.0.Name}}{
-			{{range .Requirements.Entities.0.Fields}}{{.Name}}: e.{{.Name}},
-			{{end}}
-			CreatedAt: time.Now().UTC(),
-		}
-
-	case "{{.Requirements.Name}}_{{.Requirements.Entities.0.Name}}Updated":
-		var e {{.Requirements.Entities.0.Name}}UpdatedEvent
-		if err := json.Unmarshal(data, &e); err != nil {
-			return fmt.Errorf("failed to unmarshal {{.Requirements.Entities.0.Name}}Updated: %v", err)
-		}
-		if item, exists := a.{{.Requirements.Entities.0.Name}}s[e.{{.Requirements.Entities.0.Name}}ID]; exists {
-			{{range .Requirements.Entities.0.Fields}}
-			if e.{{.Name}} != "" {
-				item.{{.Name}} = e.{{.Name}}
-			}
-			{{end}}
-		}
-
-	case "{{.Requirements.Name}}_{{.Requirements.Entities.0.Name}}Deleted":
-		var e {{.Requirements.Entities.0.Name}}DeletedEvent
-		if err := json.Unmarshal(data, &e); err != nil {
-			return fmt.Errorf("failed to unmarshal {{.Requirements.Entities.0.Name}}Deleted: %v", err)
-		}
-		delete(a.{{.Requirements.Entities.0.Name}}s, e.{{.Requirements.Entities.0.Name}}ID)
-
-	default:
-		return nil
-	}
-	return nil
+    switch e := event.(type) {
+    case *{{$entity.Name}}CreatedEvent:
+        a.{{$entity.Name}}s[e.{{$entityID}}] = &{{$entity.Name}}{
+{{- range $entity.Fields }}
+            {{ .Name }}: e.{{ .Name }},
+{{- end }}
+            CreatedAt: time.Now().UTC(),
+        }
+    case *{{$entity.Name}}UpdatedEvent:
+        if item, ok := a.{{$entity.Name}}s[e.{{$entityID}}]; ok {
+{{- range $entity.Fields }}
+            item.{{ .Name }} = e.{{ .Name }}
+{{- end }}
+        }
+    case *{{$entity.Name}}DeletedEvent:
+        delete(a.{{$entity.Name}}s, e.{{$entityID}})
+    case *{{$entity.Name}}sListedEvent:
+        for _, item := range e.{{$entity.Name}}s {
+            clone := *item
+            a.{{$entity.Name}}s[item.{{$entityID}}] = &clone
+        }
+    }
+    return nil
 }
 
-// {{.Requirements.Name}}Plugin implements the plugin interface
-type {{.Requirements.Name}}Plugin struct {
-	aggregate *{{.Requirements.Name}}Aggregate
+func (a *{{$plugin}}Aggregate) EmitDelta(event eventsourcing.Event) *eventsourcing.DeltaEnvelope {
+    var actions []eventsourcing.DeltaAction
+    switch event.(type) {
+    case *{{$entity.Name}}sListedEvent:
+        actions = a.GetFull3DState()
+    default:
+        actions = a.Broadcast3DDelta(event)
+    }
+    if len(actions) == 0 {
+        return nil
+    }
+    return &eventsourcing.DeltaEnvelope{
+        Type:       "delta",
+        Aggregate:  a.ID(),
+        EventID:    fmt.Sprintf("%s-%d", event.Type(), time.Now().UnixNano()),
+        Timestamp:  eventsourcing.ISOTimestamp(),
+        SequenceID: eventsourcing.NextSequenceID(),
+        Actions:    actions,
+    }
+}
+
+func (a *{{$plugin}}Aggregate) Reset() {
+    a.Mu.Lock()
+    defer a.Mu.Unlock()
+    a.{{$entity.Name}}s = make(map[string]*{{$entity.Name}})
+}
+
+// {{$plugin}}Plugin implements the plugin interface
+type {{$plugin}}Plugin struct {
+    aggregate *{{$plugin}}Aggregate
 }
 
 func NewPlugin() eventsourcing.Plugin {
-	agg := New{{.Requirements.Name}}Aggregate()
-	p := &{{.Requirements.Name}}Plugin{aggregate: agg}
-	agg.commands = map[string]eventsourcing.CommandHandler{
-		{{range .Requirements.Commands}}"{{.Name}}": eventsourcing.NewCommand(func(input *{{.Name}}Input) ([]eventsourcing.Event, error) {
-			return p.{{lower .Name}}Handler(input)
-		}),
-		{{end}}
-	}
-	eventsourcing.RegisterEvent("{{.Requirements.Name}}_{{.Requirements.Entities.0.Name}}Created", func() eventsourcing.Event { return &{{.Requirements.Entities.0.Name}}CreatedEvent{} })
-	eventsourcing.RegisterEvent("{{.Requirements.Name}}_{{.Requirements.Entities.0.Name}}Updated", func() eventsourcing.Event { return &{{.Requirements.Entities.0.Name}}UpdatedEvent{} })
-	eventsourcing.RegisterEvent("{{.Requirements.Name}}_{{.Requirements.Entities.0.Name}}sListed", func() eventsourcing.Event { return &{{.Requirements.Entities.0.Name}}sListedEvent{} })
-	eventsourcing.RegisterEvent("{{.Requirements.Name}}_{{.Requirements.Entities.0.Name}}Deleted", func() eventsourcing.Event { return &{{.Requirements.Entities.0.Name}}DeletedEvent{} })
-	return p
+    agg := New{{$plugin}}Aggregate()
+    p := &{{$plugin}}Plugin{aggregate: agg}
+    agg.commands = map[string]eventsourcing.CommandHandler{
+{{- range $req.Commands }}
+        "{{ .Name }}": eventsourcing.NewCommand(func(input *{{ .Name }}Input) ([]eventsourcing.Event, error) {
+            return p.{{ lower .Name }}Handler(input)
+        }),
+{{- end }}
+    }
+    eventsourcing.RegisterEvent("{{$req.Name}}_{{$entity.Name}}Created", func() eventsourcing.Event { return &{{$entity.Name}}CreatedEvent{} })
+    eventsourcing.RegisterEvent("{{$req.Name}}_{{$entity.Name}}Updated", func() eventsourcing.Event { return &{{$entity.Name}}UpdatedEvent{} })
+    eventsourcing.RegisterEvent("{{$req.Name}}_{{$entity.Name}}sListed", func() eventsourcing.Event { return &{{$entity.Name}}sListedEvent{} })
+    eventsourcing.RegisterEvent("{{$req.Name}}_{{$entity.Name}}Deleted", func() eventsourcing.Event { return &{{$entity.Name}}DeletedEvent{} })
+    return p
 }
 
-// Commands returns the command handlers
-func (p *{{.Requirements.Name}}Plugin) Commands() map[string]eventsourcing.CommandHandler {
-	return p.aggregate.commands
+func (p *{{$plugin}}Plugin) Commands() map[string]eventsourcing.CommandHandler {
+    return p.aggregate.commands
 }
 
-// Name returns the plugin name
-func (p *{{.Requirements.Name}}Plugin) Name() string {
-	return "{{.Requirements.Name}}"
+func (p *{{$plugin}}Plugin) Name() string {
+    return "{{$req.Name}}"
 }
 
-// Schemas defines the command schemas
-func (p *{{.Requirements.Name}}Plugin) Schemas() map[string]eventsourcing.CommandInput {
-	return map[string]eventsourcing.CommandInput{
-		{{range .Requirements.Commands}}"{{.Name}}": &{{.Name}}Input{},
-		{{end}}
-	}
+func (p *{{$plugin}}Plugin) Schemas() map[string]eventsourcing.CommandInput {
+    return map[string]eventsourcing.CommandInput{
+{{- range $req.Commands }}
+        "{{ .Name }}": &{{ .Name }}Input{},
+{{- end }}
+    }
 }
 
-// Command Input Structs
-
-{{range .Requirements.Commands}}
-func (i *{{.Name}}Input) New() any {
-	return &{{.Name}}Input{}
+{{- range $req.Commands }}
+func (i *{{ .Name }}Input) New() any {
+    return &{{ .Name }}Input{}
 }
 
-// {{.Name}}Input defines the input for {{lower .Name}}
-type {{.Name}}Input struct {
-	{{range .Input}}{{.Name}} {{.Type}} `json:"{{.JSON}}"`
-	{{end}}
+type {{ .Name }}Input struct {
+{{- range .Input }}
+    {{ .Name }} {{ .Type }} `json:"{{ .JSON }}"`
+{{- end }}
 }
 
-func (i *{{.Name}}Input) Schema() map[string]interface{} {
-	return map[string]interface{}{
-		"description": "{{.Name}} a {{$.Requirements.Entities.0.Name}}",
-		"parameters": map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				{{range .Input}}"{{.JSON}}": map[string]interface{}{
-					"type": "{{if eq .Type "string"}}string{{else if eq .Type "int"}}integer{{else}}string{{end}}",
-					"description": "{{.Name}}",
-				},
-				{{end}}
-			},
-			"required": []string{ {{range .Input}}"{{.JSON}}",{{end}} },
-		},
-	}
+func (i *{{ .Name }}Input) Schema() map[string]interface{} {
+    schema := map[string]interface{}{
+        "description": "{{ .Name }} command input",
+        "parameters": map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+{{- range .Input }}
+                "{{ .JSON }}": map[string]interface{}{
+                    "type": "{{ schemaType .Type }}",
+                    "description": "{{ .Name }}",
+                },
+{{- end }}
+            },
+        },
+    }
+{{- if gt (len .Input) 0 }}
+    schema["parameters"].(map[string]interface{})["required"] = []string{
+{{- range .Input }}
+        "{{ .JSON }}",
+{{- end }}
+    }
+{{- else }}
+    schema["parameters"].(map[string]interface{})["required"] = []string{}
+{{- end }}
+    return schema
 }
-{{end}}
+{{- end }}
 
-// Event Types
-type {{.Requirements.Entities.0.Name}}sListedEvent struct {
-	EventType string `json:"event_type"`
-	{{.Requirements.Entities.0.Name}}s []*{{.Requirements.Entities.0.Name}} `json:"listed_{{.Requirements.Entities.0.Name}}s"`
-}
-
-func (e *{{.Requirements.Entities.0.Name}}sListedEvent) Type() string { return "{{.Requirements.Name}}_{{.Requirements.Entities.0.Name}}sListed" }
-func (e *{{.Requirements.Entities.0.Name}}sListedEvent) Marshal() ([]byte, error) {
-	e.EventType = e.Type()
-	return json.Marshal(e)
-}
-func (e *{{.Requirements.Entities.0.Name}}sListedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
-
-type {{.Requirements.Entities.0.Name}}CreatedEvent struct {
-	EventType string `json:"event_type"`
-	{{range .Requirements.Entities.0.Fields}}{{.Name}} {{.Type}} `json:"{{.JSON}}"`
-	{{end}}
+// Event definitions
+type {{$entity.Name}}sListedEvent struct {
+    EventType string        `json:"event_type"`
+    {{$entity.Name}}s []*{{$entity.Name}} `json:"listed_{{ lower $entity.Name }}s"`
 }
 
-func (e *{{.Requirements.Entities.0.Name}}CreatedEvent) Type() string { return "{{.Requirements.Name}}_{{.Requirements.Entities.0.Name}}Created" }
-func (e *{{.Requirements.Entities.0.Name}}CreatedEvent) Marshal() ([]byte, error) {
-	e.EventType = e.Type()
-	return json.Marshal(e)
+func (e *{{$entity.Name}}sListedEvent) Type() string { return "{{$req.Name}}_{{$entity.Name}}sListed" }
+func (e *{{$entity.Name}}sListedEvent) Marshal() ([]byte, error) {
+    e.EventType = e.Type()
+    return json.Marshal(e)
 }
-func (e *{{.Requirements.Entities.0.Name}}CreatedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
+func (e *{{$entity.Name}}sListedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
 
-type {{.Requirements.Entities.0.Name}}UpdatedEvent struct {
-	EventType string `json:"event_type"`
-	{{range .Requirements.Entities.0.Fields}}{{.Name}} {{.Type}} `json:"{{.JSON}}"`
-	{{end}}
-}
-
-func (e *{{.Requirements.Entities.0.Name}}UpdatedEvent) Type() string { return "{{.Requirements.Name}}_{{.Requirements.Entities.0.Name}}Updated" }
-func (e *{{.Requirements.Entities.0.Name}}UpdatedEvent) Marshal() ([]byte, error) {
-	e.EventType = e.Type()
-	return json.Marshal(e)
-}
-func (e *{{.Requirements.Entities.0.Name}}UpdatedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
-
-type {{.Requirements.Entities.0.Name}}DeletedEvent struct {
-	EventType string `json:"event_type"`
-	{{.Requirements.Entities.0.Name}}ID string `json:"{{.Requirements.Entities.0.Name}}_id"`
+type {{$entity.Name}}CreatedEvent struct {
+    EventType string `json:"event_type"`
+{{- range $entity.Fields }}
+    {{ .Name }} {{ .Type }} `json:"{{ .JSON }}"`
+{{- end }}
 }
 
-func (e *{{.Requirements.Entities.0.Name}}DeletedEvent) Type() string { return "{{.Requirements.Name}}_{{.Requirements.Entities.0.Name}}Deleted" }
-func (e *{{.Requirements.Entities.0.Name}}DeletedEvent) Marshal() ([]byte, error) {
-	e.EventType = e.Type()
-	return json.Marshal(e)
+func (e *{{$entity.Name}}CreatedEvent) Type() string { return "{{$req.Name}}_{{$entity.Name}}Created" }
+func (e *{{$entity.Name}}CreatedEvent) Marshal() ([]byte, error) {
+    e.EventType = e.Type()
+    return json.Marshal(e)
 }
-func (e *{{.Requirements.Entities.0.Name}}DeletedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
+func (e *{{$entity.Name}}CreatedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
 
-// Utility functions
-func generate{{.Requirements.Entities.0.Name}}ID() string {
-	return fmt.Sprintf("{{lower .Requirements.Entities.0.Name}}_%d", time.Now().UnixNano())
-}
-
-// Command Handlers
-{{range .Requirements.Commands}}
-func (p *{{$.Requirements.Name}}Plugin) {{lower .Name}}Handler(input *{{.Name}}Input) ([]eventsourcing.Event, error) {
-	{{if eq .Action "create"}}
-	event := &{{$.Requirements.Entities.0.Name}}CreatedEvent{
-		EventType: "{{$.Requirements.Name}}_{{$.Requirements.Entities.0.Name}}Created",
-		{{$.Requirements.Entities.0.Name}}ID: generate{{$.Requirements.Entities.0.Name}}ID(),
-		{{range .Input}}{{.Name}}: input.{{.Name}},
-		{{end}}
-	}
-	return []eventsourcing.Event{event}, nil
-	{{else if eq .Action "list"}}
-	p.aggregate.Mu.RLock()
-	defer p.aggregate.Mu.RUnlock()
-
-	items := make([]*{{$.Requirements.Entities.0.Name}}, 0, len(p.aggregate.{{$.Requirements.Entities.0.Name}}s))
-	for _, item := range p.aggregate.{{$.Requirements.Entities.0.Name}}s {
-		items = append(items, item)
-	}
-
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].CreatedAt.Before(items[j].CreatedAt)
-	})
-
-	event := &{{$.Requirements.Entities.0.Name}}sListedEvent{EventType: "{{$.Requirements.Name}}_{{$.Requirements.Entities.0.Name}}sListed", {{$.Requirements.Entities.0.Name}}s: items}
-	return []eventsourcing.Event{event}, nil
-	{{end}}
-}
-{{end}}
-
-// Additional Plugin Methods
-func (p *{{.Requirements.Name}}Plugin) Aggregate() eventsourcing.Aggregate {
-	return p.aggregate
+type {{$entity.Name}}UpdatedEvent struct {
+    EventType string `json:"event_type"`
+{{- range $entity.Fields }}
+    {{ .Name }} {{ .Type }} `json:"{{ .JSON }}"`
+{{- end }}
 }
 
-func (p *{{.Requirements.Name}}Plugin) Type() eventsourcing.PluginType {
-	return eventsourcing.LLMPlugin
+func (e *{{$entity.Name}}UpdatedEvent) Type() string { return "{{$req.Name}}_{{$entity.Name}}Updated" }
+func (e *{{$entity.Name}}UpdatedEvent) Marshal() ([]byte, error) {
+    e.EventType = e.Type()
+    return json.Marshal(e)
+}
+func (e *{{$entity.Name}}UpdatedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
+
+type {{$entity.Name}}DeletedEvent struct {
+    EventType string `json:"event_type"`
+    {{$entityID}} string `json:"{{$entityIDJSON}}"`
 }
 
-func (p *{{.Requirements.Name}}Plugin) SystemPrompt() string {
-	p.aggregate.Mu.RLock()
-	defer p.aggregate.Mu.RUnlock()
+func (e *{{$entity.Name}}DeletedEvent) Type() string { return "{{$req.Name}}_{{$entity.Name}}Deleted" }
+func (e *{{$entity.Name}}DeletedEvent) Marshal() ([]byte, error) {
+    e.EventType = e.Type()
+    return json.Marshal(e)
+}
+func (e *{{$entity.Name}}DeletedEvent) Unmarshal(data []byte) error { return json.Unmarshal(data, e) }
 
-	var itemList strings.Builder
-	if len(p.aggregate.{{.Requirements.Entities.0.Name}}s) == 0 {
-		itemList.WriteString("There are currently no {{.Requirements.Entities.0.Name}}s.\n")
-	} else {
-		itemList.WriteString("Current {{.Requirements.Entities.0.Name}}s:\n")
-		for _, item := range p.aggregate.{{.Requirements.Entities.0.Name}}s {
-			itemList.WriteString(fmt.Sprintf("- {{.Requirements.Entities.0.Name}} ID: %s\n", item.{{.Requirements.Entities.0.Name}}ID))
-		}
-	}
-
-	prompt := `You are {{.Requirements.Name}}Master, a specialized AI for managing {{.Requirements.Entities.0.Name}}s in MindPalace.
-
-Your job is to interpret user requests about {{.Requirements.Entities.0.Name}}s and execute the right commands based on the current state.
-
-` + itemList.String() + `
-
-Be concise, accurate, and always use the tools provided.`
-
-	return prompt
+func generate{{$entity.Name}}ID() string {
+    return fmt.Sprintf("{{ lower $entity.Name }}_%d", time.Now().UnixNano())
 }
 
-func (p *{{.Requirements.Name}}Plugin) AgentModel() string {
-	return "gpt-oss:20b"
+{{- range $req.Commands }}
+func (p *{{$plugin}}Plugin) {{ lower .Name }}Handler(input *{{ .Name }}Input) ([]eventsourcing.Event, error) {
+{{- if eq .Action "create" }}
+    event := &{{$entity.Name}}CreatedEvent{
+        EventType: "{{$req.Name}}_{{$entity.Name}}Created",
+        {{$entityID}}: generate{{$entity.Name}}ID(),
+{{- range .Input }}
+        {{ .Name }}: input.{{ .Name }},
+{{- end }}
+    }
+    return []eventsourcing.Event{event}, nil
+{{- else if eq .Action "update" }}
+    p.aggregate.Mu.RLock()
+    _, exists := p.aggregate.{{$entity.Name}}s[input.{{$entityID}}]
+    p.aggregate.Mu.RUnlock()
+    if !exists {
+        return nil, fmt.Errorf("{{$entity.Name}} %s not found", input.{{$entityID}})
+    }
+    event := &{{$entity.Name}}UpdatedEvent{
+        EventType: "{{$req.Name}}_{{$entity.Name}}Updated",
+{{- range $entity.Fields }}
+        {{ .Name }}: input.{{ .Name }},
+{{- end }}
+    }
+    return []eventsourcing.Event{event}, nil
+{{- else if eq .Action "delete" }}
+    p.aggregate.Mu.RLock()
+    _, exists := p.aggregate.{{$entity.Name}}s[input.{{$entityID}}]
+    p.aggregate.Mu.RUnlock()
+    if !exists {
+        return nil, fmt.Errorf("{{$entity.Name}} %s not found", input.{{$entityID}})
+    }
+    event := &{{$entity.Name}}DeletedEvent{
+        EventType: "{{$req.Name}}_{{$entity.Name}}Deleted",
+        {{$entityID}}: input.{{$entityID}},
+    }
+    return []eventsourcing.Event{event}, nil
+{{- else if eq .Action "list" }}
+    p.aggregate.Mu.RLock()
+    items := make([]*{{$entity.Name}}, 0, len(p.aggregate.{{$entity.Name}}s))
+    for _, item := range p.aggregate.{{$entity.Name}}s {
+        clone := *item
+        items = append(items, &clone)
+    }
+    p.aggregate.Mu.RUnlock()
+    sort.Slice(items, func(i, j int) bool {
+        return items[i].CreatedAt.Before(items[j].CreatedAt)
+    })
+    event := &{{$entity.Name}}sListedEvent{EventType: "{{$req.Name}}_{{$entity.Name}}sListed", {{$entity.Name}}s: items}
+    return []eventsourcing.Event{event}, nil
+{{- else }}
+    return nil, fmt.Errorf("unsupported action for command {{ .Name }}")
+{{- end }}
+}
+{{- end }}
+
+func (p *{{$plugin}}Plugin) Aggregate() eventsourcing.Aggregate {
+    return p.aggregate
 }
 
-func (p *{{.Requirements.Name}}Plugin) EventHandlers() map[string]eventsourcing.EventHandler {
-	return nil
+func (p *{{$plugin}}Plugin) Type() eventsourcing.PluginType {
+    return eventsourcing.LLMPlugin
 }
 
-func (a *{{.Requirements.Name}}Aggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourcing.DeltaAction {
-	a.Mu.RLock()
-	defer a.Mu.RUnlock()
-	theme := ui3d.DefaultTheme()
-	switch e := event.(type) {
-	case *{{.Requirements.Entities.0.Name}}CreatedEvent:
-		return []eventsourcing.DeltaAction{{
-			Type:     "create",
-			NodeID:   e.{{.Requirements.Entities.0.Name}}ID,
-			NodeType: "MeshInstance3D",
-			Properties: map[string]interface{}{
-				"mesh":     "box",
-				"position": {{randomPos}},
-				"material_override": map[string]interface{}{
-					"albedo_color": []float64{0.8, 0.8, 0.8, 1.0},
-				},
-			},
-			Metadata: map[string]interface{}{
-				"id": e.{{.Requirements.Entities.0.Name}}ID,
-			},
-		}}
-	case *{{.Requirements.Entities.0.Name}}DeletedEvent:
-		return []eventsourcing.DeltaAction{{
-			Type:   "delete",
-			NodeID: e.{{.Requirements.Entities.0.Name}}ID,
-		}}
-	}
-	return nil
+func (p *{{$plugin}}Plugin) SystemPrompt() string {
+    p.aggregate.Mu.RLock()
+    defer p.aggregate.Mu.RUnlock()
+
+    var state strings.Builder
+    if len(p.aggregate.{{$entity.Name}}s) == 0 {
+        state.WriteString("There are currently no {{$entity.Name}} records.\n")
+    } else {
+        state.WriteString("Current {{$entity.Name}} entries:\n")
+        for _, item := range p.aggregate.{{$entity.Name}}s {
+            state.WriteString(fmt.Sprintf("- {{$entityID}}: %s\n", item.{{$entityID}}))
+        }
+    }
+
+    prompt := `You are {{$req.Name}}Master, a specialized AI for managing {{$entity.Name}} records in MindPalace.
+
+` + state.String() + `
+Always use the provided commands to mutate state and keep responses concise.`
+
+    return prompt
 }
 
-func (a *{{.Requirements.Name}}Aggregate) GetFull3DState() []eventsourcing.DeltaAction {
-	a.Mu.RLock()
-	defer a.Mu.RUnlock()
-	theme := ui3d.DefaultTheme()
-	actions := make([]eventsourcing.DeltaAction, 0)
-	i := 0
-	for id, item := range a.{{.Requirements.Entities.0.Name}}s {
-		pos := ui3d.PositionInCircle(i, 6.0+float64(i)*0.5, 2.0)
-		actions = append(actions, eventsourcing.DeltaAction{
-			Type:     "create",
-			NodeID:   id,
-			NodeType: "MeshInstance3D",
-			Properties: map[string]interface{}{
-				"mesh":     "box",
-				"position": pos,
-				"material_override": map[string]interface{}{
-					"albedo_color": []float64{0.8, 0.8, 0.8, 1.0},
-				},
-			},
-			Metadata: map[string]interface{}{
-				"id": id,
-			},
-		})
-		i++
-	}
-	return actions
+func (p *{{$plugin}}Plugin) AgentModel() string {
+    return "gpt-oss:20b"
 }
 
-// {{.Requirements.Entities.0.Name}} represents a single {{.Requirements.Entities.0.Name}}'s state
-type {{.Requirements.Entities.0.Name}} struct {
-	{{range .Requirements.Entities.0.Fields}}{{.Name}} {{.Type}} `json:"{{.JSON}}"`
-	{{end}}
-	CreatedAt time.Time `json:"created_at"`
+func (p *{{$plugin}}Plugin) Description() string {
+    return {{ printf "%q" $req.Description }}
+}
+
+func (p *{{$plugin}}Plugin) EventHandlers() map[string]eventsourcing.EventHandler {
+    return nil
+}
+
+func (a *{{$plugin}}Aggregate) Broadcast3DDelta(event eventsourcing.Event) []eventsourcing.DeltaAction {
+    switch e := event.(type) {
+    case *{{$entity.Name}}CreatedEvent:
+        return []eventsourcing.DeltaAction{ {
+            Type:     "create",
+            NodeID:   e.{{$entityID}},
+            NodeType: "MeshInstance3D",
+            Properties: map[string]interface{}{
+                "mesh":     "box",
+                "position": {{ randomPos }},
+                "material_override": map[string]interface{}{
+                    "albedo_color": []float64{0.8, 0.8, 0.8, 1.0},
+                },
+            },
+            Metadata: map[string]interface{}{
+                "id": e.{{$entityID}},
+            },
+        }}
+    case *{{$entity.Name}}DeletedEvent:
+        return []eventsourcing.DeltaAction{ {
+            Type:   "delete",
+            NodeID: e.{{$entityID}},
+        }}
+    }
+    return nil
+}
+
+func (a *{{$plugin}}Aggregate) GetFull3DState() []eventsourcing.DeltaAction {
+    a.Mu.RLock()
+    defer a.Mu.RUnlock()
+    actions := make([]eventsourcing.DeltaAction, 0, len(a.{{$entity.Name}}s))
+    i := 0
+    for id := range a.{{$entity.Name}}s {
+        pos := ui3d.PositionInCircle(i, 6.0+float64(i)*0.5, 2.0)
+        actions = append(actions, eventsourcing.DeltaAction{
+            Type:     "create",
+            NodeID:   id,
+            NodeType: "MeshInstance3D",
+            Properties: map[string]interface{}{
+                "mesh":     "box",
+                "position": pos,
+                "material_override": map[string]interface{}{
+                    "albedo_color": []float64{0.8, 0.8, 0.8, 1.0},
+                },
+            },
+            Metadata: map[string]interface{}{
+                "id": id,
+            },
+        })
+        i++
+    }
+    return actions
+}
+
+// {{$entity.Name}} represents a single record
+type {{$entity.Name}} struct {
+{{- range $entity.Fields }}
+    {{ .Name }} {{ .Type }} `json:"{{ .JSON }}"`
+{{- end }}
+    CreatedAt time.Time `json:"created_at"`
 }

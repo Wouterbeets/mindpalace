@@ -1,13 +1,13 @@
 shader_type spatial;
 render_mode blend_mix, unshaded, depth_draw_always, cull_disabled;
 
-uniform float grid_scale : hint_range(0.01, 1.0) = 0.08;
-uniform float grid_thickness : hint_range(0.001, 0.2) = 0.025;
-uniform vec3 base_color : source_color = vec3(0.01, 0.035, 0.05);
-uniform vec3 grid_color : source_color = vec3(0.0, 0.85, 1.0);
-uniform float pulse_speed : hint_range(0.0, 5.0) = 1.4;
-uniform float pulse_amplitude : hint_range(0.0, 2.0) = 0.6;
-uniform float hover_height : hint_range(0.0, 2.0) = 0.25;
+uniform float grid_scale : hint_range(0.01, 1.0) = 0.06;
+uniform float grid_thickness : hint_range(0.001, 0.2) = 0.02;
+uniform vec3 base_color : source_color = vec3(0.1529, 0.1568, 0.1333);
+uniform vec3 grid_color : source_color = vec3(0.9922, 0.5921, 0.1215);
+uniform float pulse_speed : hint_range(0.0, 5.0) = 0.8;
+uniform float pulse_amplitude : hint_range(0.0, 2.0) = 0.25;
+uniform float hover_height : hint_range(0.0, 2.0) = 0.08;
 
 varying vec3 world_pos_var;
 
@@ -25,10 +25,10 @@ void fragment() {
     float line_distance = min(cell.x, cell.y);
     float glow_band = smoothstep(grid_thickness, grid_thickness * 0.3, line_distance);
 
-    float pulse = 0.4 + pulse_amplitude * 0.5 * (sin(TIME * pulse_speed + world_pos_var.x * 0.12) * 0.5 + 0.5);
+    float pulse = 0.35 + pulse_amplitude * 0.35 * (sin(TIME * pulse_speed + world_pos_var.x * 0.08) * 0.5 + 0.5);
     vec3 neon = grid_color * glow_band * pulse;
 
-    ALBEDO = base_color + neon * 0.1;
-    EMISSION = neon * 3.5;
-    ALPHA = 0.92;
+    ALBEDO = base_color + neon * 0.12;
+    EMISSION = neon * 0.7;
+    ALPHA = 0.98;
 }
